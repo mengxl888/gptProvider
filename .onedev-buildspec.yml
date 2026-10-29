@@ -22,6 +22,12 @@ jobs:
         set -e
         IMAGE=gptprovider:latest
         NAME=gptprovider
+        # 主机端口：只绑定 127.0.0.1，通过 SSH 隧道访问。1455 在这台主机上已被其他容器占用，回调改用 11455
+        API_PORT=8787
+        CALLBACK_PORT=11455
+
+        echo "== 主机上现有容器的端口"
+        docker ps --format '{{.Names}} {{.Ports}}' | grep -v "^$NAME " || true
 
         echo "== 构建镜像"
         docker build -t $IMAGE .
@@ -29,7 +35,7 @@ jobs:
         echo "== 替换容器（数据在 gptprovider-data 卷里，替换容器不会丢）"
         docker rm -f $NAME >/dev/null 2>&1 || true
         docker run -d --name $NAME --restart unless-stopped --init \
-          -p 127.0.0.1:8787:8787 -p 127.0.0.1:1455:1455 \
+          -p 127.0.0.1:$API_PORT:8787 -p 127.0.0.1:$CALLBACK_PORT:1455 \
           -e TZ=Asia/Shanghai \
           -v gptprovider-data:/app/data \
           $IMAGE
