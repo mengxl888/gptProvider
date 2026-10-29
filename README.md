@@ -1,13 +1,19 @@
 # gptProvider
 
-把你自己的 ChatGPT 账号（通过官方 Codex 登录）提供成 **OpenAI 兼容接口**，包括对话和生图，自带管理后台。
+一个带管理后台的 **OpenAI 兼容网关**，有两种渠道，每个下游 API Key 选一种：
 
-- 管理后台：添加账号、查看额度和请求健康度、调用日志、模型列表、生图图库、调试台、API Key
-- 接口：`/v1/chat/completions`、`/v1/responses`（都支持流式）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
+| 渠道 | 上游 | 适合 |
+|---|---|---|
+| **Codex 账号** | 你自己的 ChatGPT 账号（通过官方 Codex 登录） | 自己用订阅额度对话、生图 |
+| **OpenAI API** | 你添加的 OpenAI 官方 API Key，按量计费 | 需要工具调用的客户端（例如 Codex CLI）、脚本，给团队成员分发子 Key 并限额 |
+
+- 管理后台：账号和 API 上游管理、额度和请求健康度、调用日志、模型列表、生图图库、调试台、API Key（渠道、每月 Token 上限、本月用量）
+- Codex 账号渠道：`/v1/chat/completions`、`/v1/responses`（都支持流式）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
+- OpenAI API 渠道：`/v1` 下所有请求原样转发到官方 API，函数调用、Embeddings、音频等都能用；多个 Key 按优先级自动切换
 - 一键更新：GitHub 发布新版本后，在后台点「更新」即可升级，失败自动回退
 - Docker 一条命令部署，也可以直接用 Node 运行
 
-> **使用须知**：ChatGPT 订阅额度按账号授权给本人使用。本项目只适合**每个人用自己的账号、部署自己的实例、自己使用**，不要把服务开放给他人或转售，否则可能违反 OpenAI 的使用条款并导致账号受限。默认配置只允许本机访问。
+> **使用须知**：ChatGPT 订阅额度按账号授权给本人使用。**Codex 账号渠道只适合每个人用自己的账号、部署自己的实例、自己使用**，不要开放给他人或转售，否则可能违反 OpenAI 的使用条款并导致账号受限。要给别人用，请用 OpenAI API 渠道：费用记在 API Key 所属的 OpenAI 账户上，Key 的所有者要对经过它的使用负责，并遵守 OpenAI 的使用政策。默认配置只允许本机访问。
 
 ---
 
@@ -20,7 +26,7 @@
 - [数据备份与迁移](#数据备份与迁移)
 - [不用 Docker：本地运行](#不用-docker本地运行)
 - [环境变量](#环境变量)
-- [管理后台](#管理后台) · [接口](#接口) · [调用日志与健康度](#调用日志与健康度) · [生图说明](#生图说明)
+- [管理后台](#管理后台) · [接口](#接口) · [官方 API Key 渠道](#官方-api-key-渠道)（[接入 Codex CLI](#接入-codex-cli)） · [调用日志与健康度](#调用日志与健康度) · [生图说明](#生图说明)
 - [工作原理](#工作原理) · [限制和注意事项](#限制和注意事项) · [常见问题](#常见问题)
 - [维护者：发布新版本](#维护者发布新版本)
 
@@ -59,20 +65,23 @@ docker compose logs gptprovider | grep -E "管理口令|快捷登录"
 
 在浏览器打开快捷登录链接，或者打开 <http://127.0.0.1:8787/admin> 后输入管理口令。
 
-### 4. 添加 ChatGPT 账号
+### 4. 添加 ChatGPT 账号或 OpenAI API Key
 
-在「账号」页点「添加账号」，有两种登录方式：
+两种渠道可以只用一种，也可以都配：
+
+- **OpenAI API 渠道**：在「API 上游」页点「添加 API Key」，填入 OpenAI 官方 API Key，保存时会自动测试连接，详见[官方 API Key 渠道](#官方-api-key-渠道)。
+- **Codex 账号渠道**：在「账号」页点「添加账号」，用下面两种方式之一登录。
 
 | 方式 | 适用场景 | 说明 |
 |---|---|---|
 | 浏览器登录 | Docker 和浏览器在同一台电脑上 | 自动打开 ChatGPT 登录页，登录完成后回调到 `localhost:1455`，compose 已映射这个端口 |
 | 设备码登录 | 任何场景，包括服务器部署 | 打开页面输入代码即可。需要先在 ChatGPT 的「设置 → 安全」里允许设备码登录 |
 
-第一个登录成功的账号会自动设为「当前使用」，所有 API 请求都走当前账号。
+第一个登录成功的账号会自动设为「当前使用」，Codex 账号渠道的请求都走当前账号。
 
 ### 5. 创建 API Key 并调用
 
-在「API Key」页新建一个 Key（只显示一次，记得复制），然后：
+在「API Key」页新建一个 Key（只显示一次，记得复制）。新建时选渠道：「OpenAI API」转发到 API 上游，「Codex 账号」走 ChatGPT 账号；还可以设置每月 Token 上限。然后：
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
@@ -81,7 +90,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   -d '{"model": "gpt-6.1-sol", "stream": true, "messages": [{"role": "user", "content": "你好"}]}'
 ```
 
-任何支持 OpenAI 接口的客户端都可以用：Base URL 填 `http://127.0.0.1:8787/v1`，API Key 填刚才的 Key。可用的模型以后台「模型」页为准。
+任何支持 OpenAI 接口的客户端都可以用：Base URL 填 `http://127.0.0.1:8787/v1`，API Key 填刚才的 Key。Codex 账号渠道可用的模型以后台「模型」页为准；OpenAI API 渠道以「API 上游」页测试出来的模型为准。Codex CLI 的配置见[接入 Codex CLI](#接入-codex-cli)。
 
 ### 常用命令
 
@@ -135,7 +144,7 @@ ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 
 1. 在 `docker-compose.yml` 里设置 `ALLOWED_HOSTS: "localhost,127.0.0.1,gpt.example.com"`。不在列表里的 Host 会被拒绝，用来防 DNS rebinding。
 2. 用 Nginx、Caddy 等反向代理到 `127.0.0.1:8787`，**必须配 HTTPS**，否则管理口令和 API Key 会明文传输。
-3. 再次提醒：只给自己用，不要把服务开放给别人。
+3. 再次提醒：Codex 账号渠道只给自己用。要给别人用，只发 OpenAI API 渠道的 Key，并设置每月 Token 上限。
 
 ---
 
@@ -148,6 +157,7 @@ ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 | 后台「检查更新」失败 | 网关只访问 `github.com`（不依赖 `api.github.com`）。还是访问不了时，设置 `GITHUB_PROXY` 为一个 GitHub 加速前缀，例如 `https://your-proxy/`，网关会请求 `https://your-proxy/https://github.com/...` |
 | 后台「升级 Codex」失败 | 设置 `NPM_REGISTRY: "https://registry.npmmirror.com"` |
 | 访问 ChatGPT 失败 | 网关所在机器需要能访问 `chatgpt.com` 和 `auth.openai.com` |
+| API 上游测试提示「连接失败」 | 网关所在机器需要能访问 `api.openai.com`；访问不了时，在上游的 Base URL 里填一个能到官方 API 的转发地址 |
 
 ---
 
@@ -158,7 +168,7 @@ ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 | 内容 | 位置 |
 |---|---|
 | 各账号的 Codex 登录凭据 | `accounts/<id>/home/auth.json` |
-| 管理口令、API Key（只存哈希）、设置、模型目录 | `store.json` |
+| 管理口令、下游 API Key（只存哈希）、上游 OpenAI API Key（明文，转发时要用）、设置、模型目录 | `store.json` |
 | 调用日志 | `requests.db` |
 | 生成的图片 | `images/` |
 | 一键更新下载的版本、升级后的 Codex | `app/`、`runtime/` |
@@ -172,7 +182,7 @@ docker run --rm -v gptprovider_gptprovider-data:/data -v "$PWD":/backup alpine t
 docker run --rm -v gptprovider_gptprovider-data:/data -v "$PWD":/backup alpine sh -c "cd /data && tar xzf /backup/backup.tgz"
 ```
 
-数据卷的完整名字是「compose 项目名_gptprovider-data」，项目名默认是 compose 文件所在的目录名，可以用 `docker volume ls` 查看。**备份文件里有账号凭据，不要分享给别人。**
+数据卷的完整名字是「compose 项目名_gptprovider-data」，项目名默认是 compose 文件所在的目录名，可以用 `docker volume ls` 查看。**备份文件里有账号凭据和上游 API Key，不要分享给别人。**
 
 ---
 
@@ -211,13 +221,14 @@ npm start
 
 | 页面 | 内容 |
 |---|---|
-| 概览 | 当前账号、Codex 额度、模型数、图片数、请求健康度、新版本提示、接入示例代码（cURL / Python / Node / 生图） |
+| 概览 | 当前账号、Codex 额度、模型数、图片数、请求健康度、新版本提示、接入示例（cURL / Python / Node / 生图 / Codex CLI 配置） |
 | 账号 | 添加账号（浏览器登录或设备码登录）、请求记录与健康条、额度进度条、凭据更新时间、设为当前、重新登录、改名、删除 |
-| 日志 | 调用明细、成功/失败统计、健康条，可按账号、状态、接口、来源筛选 |
+| API 上游 | 添加 OpenAI 官方 API Key（Base URL、Organization、Project、优先级），测试连接并列出可用模型，请求记录与健康条，冷却状态，启用/停用、编辑、删除 |
+| 日志 | 调用明细、成功/失败统计、健康条，可按账号或上游、状态、接口、来源筛选 |
 | 模型 | 当前账号可用模型、推理强度、输入类型；自动刷新，也可以手动立即刷新 |
 | 生图 | 输入描述直接生图（画幅、透明背景、1–4 张），图库浏览、查看改写后的提示词、下载、删除 |
 | 调试台 | 流式对话测试，支持 system 提示词、推理强度、附加图片；选 `gpt-image-2` 时直接生图 |
-| API Key | 新建和删除 Key，只保存哈希 |
+| API Key | 新建、编辑、删除 Key（只保存哈希）；选择渠道、设置每月 Token 上限、查看本月请求数和 token 用量 |
 | 设置 | 默认模型、对话中允许生图、联网搜索；网关版本和一键更新、Codex 版本和升级 |
 
 支持亮色和暗色主题，手机宽度也能用。
@@ -227,6 +238,8 @@ npm start
 ---
 
 ## 接口
+
+下面是 **Codex 账号渠道**的接口。OpenAI API 渠道的 Key 把 `/v1` 下所有请求原样转发到官方 API，见[官方 API Key 渠道](#官方-api-key-渠道)。
 
 | 接口 | 说明 |
 |---|---|
@@ -275,7 +288,7 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 | 推理摘要、模型的中间说明 | 放在 `reasoning_content` 字段（流式和非流式都有） |
 | 生成的图片 | 存进图库，回复里以 Markdown 图片 `![image](http://<Host>/images/...)` 返回 |
 
-不支持：`tools` / function calling（会返回 400）、`n > 1`。`temperature`、`max_tokens` 等采样参数会被忽略，Codex 不开放这些参数。
+不支持：`tools` / function calling（会返回 400，需要时改用 OpenAI API 渠道的 Key）、`n > 1`。`temperature`、`max_tokens` 等采样参数会被忽略，Codex 不开放这些参数。
 
 ### Responses 接口（`/v1/responses`）
 
@@ -292,21 +305,65 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 
 和官方语义一样：请求里没带 `image_generation` / `web_search` 工具时，不会生图，也不会联网搜索。`model` 填任意 `gpt-image-*` 时这一轮固定生图。
 
-**不支持客户端自定义工具**：`function`、`custom`、`mcp`、`computer_use`、`local_shell` 等，以及 `function_call` / `function_call_output` 这类输入项，会返回 400（`unsupported_tool` / `unsupported_input_item`）。网关底层是 Codex 智能体，工具调用没法交回客户端执行。所以 Codex CLI 这类需要在本地执行工具的客户端，请直接用 `codex login` 登录自己的账号，不要经过本网关。另外也不支持 `background`、`input_file` / `file_id`，以及 `GET /v1/responses/{id}`。
+**不支持客户端自定义工具**：`function`、`custom`、`mcp`、`computer_use`、`local_shell` 等，以及 `function_call` / `function_call_output` 这类输入项，会返回 400（`unsupported_tool` / `unsupported_input_item`）。网关底层是 Codex 智能体，工具调用没法交回客户端执行。Codex CLI 这类需要在本地执行工具的客户端，请用 [OpenAI API 渠道](#官方-api-key-渠道)的 Key，或者直接用 `codex login` 登录自己的账号。另外也不支持 `background`、`input_file` / `file_id`，以及 `GET /v1/responses/{id}`。
+
+---
+
+## 官方 API Key 渠道
+
+在「API 上游」页添加 OpenAI 官方 API Key，再新建一个渠道为「OpenAI API」的下游 Key。用这个 Key 调用 `/v1` 下的任何接口，网关都会**原样转发**到官方 API。除了下面说的流式 Chat 用量处理，请求体和响应（包括流式 SSE）都不做改动：
+
+```
+客户端 ──/v1/...（sk-local-…）──▶ gptProvider ──/v1/...（你的 sk-proj-…）──▶ api.openai.com
+```
+
+- **所有官方接口都能用**：Responses 和 Chat 的函数调用、`function_call_output` 回传、结构化输出、`previous_response_id`、Embeddings、音频、图片、文件、`DELETE`/`GET` 等，跟直接调官方一样。multipart 和二进制响应也原样转发。
+- **转发的请求头**：`Content-Type`、`Accept`、`OpenAI-Beta`、`User-Agent`、`Idempotency-Key`。`Authorization` 换成上游的 Key，上游配了 Organization / Project 时带上对应的头。响应会去掉 `openai-organization`、`openai-project`、`set-cookie` 等头，不把上游账户信息透露给下游。
+- **多个上游**：按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个；出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
+- **用量和额度**：从响应的 `usage` 里记 token，流式响应边转发边解析。流式 Chat 请求没带 `stream_options.include_usage` 时，网关会替客户端加上，再把多出来的用量块从回给客户端的流里去掉，所以 token 照样能记上。下游 Key 可以设置**每月 Token 上限**（本自然月的输入 + 输出），到了上限返回 429 `insufficient_quota`，Codex CLI 遇到这个错误会直接停止，不会反复重试。
+- **日志**：每个请求记一条，「账号 / 上游」列是实际使用的上游，`GET /v1/models` 不记。上游卡片上的健康条只统计最终落到这个上游的请求。
+- **不支持**：WebSocket（Codex CLI 自定义 provider 默认就用 HTTP，不受影响）；请求体超过 50 MB。
+- **费用**：按 OpenAI API 价格计在上游 Key 所属的账户上。部分新模型需要先在 OpenAI 平台完成组织验证才能调用。
+
+### 接入 Codex CLI
+
+1. 在「API Key」页新建一个渠道为「OpenAI API」的 Key。
+2. 编辑 `~/.codex/config.toml`（Windows 是 `%USERPROFILE%\.codex\config.toml`），后台「概览 → 快速接入 → Codex CLI」里有填好地址的版本：
+
+   ```toml
+   model = "gpt-5.5"              # 换成「API 上游」页测试出来的可用模型
+   model_provider = "gptprovider"
+
+   [model_providers.gptprovider]
+   name = "gptProvider"
+   base_url = "http://127.0.0.1:8787/v1"
+   env_key = "GPTPROVIDER_API_KEY"
+   wire_api = "responses"
+   ```
+
+3. 把 Key 放进环境变量，然后照常使用 `codex`：
+
+   ```bash
+   export GPTPROVIDER_API_KEY=sk-local-...      # macOS / Linux
+   setx GPTPROVIDER_API_KEY sk-local-...        # Windows，执行后重新打开终端
+   codex
+   ```
+
+Codex CLI 的工具（执行命令、改文件等）都在你自己的电脑上运行，网关只负责转发模型请求。已用 codex-cli 0.165.0 实测：工具调用和工具结果回传都能正常往返。
 
 ---
 
 ## 调用日志与健康度
 
-每次调用 `/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`，以及后台调试台的请求，都会记一条日志。`/v1/models` 不记。
+Codex 账号渠道的对话、Responses、生图、改图请求，OpenAI API 渠道转发的所有请求，以及后台调试台的请求，都会记一条日志。`/v1/models` 不记。
 
-- **记录内容**：时间、接口、请求的模型和实际使用的模型、账号、API Key 名称、客户端 User-Agent、状态和 HTTP 状态码、错误码和错误信息、耗时、token（输入、缓存、输出、推理）、生图张数。**不记对话内容**。
-- **存储**：`data/requests.db`（Node 自带的 `node:sqlite`），保留 30 天，后台可以一键清空。
+- **记录内容**：时间、接口、请求的模型和实际使用的模型、账号或上游、API Key 名称、客户端 User-Agent、状态和 HTTP 状态码、错误码和错误信息、耗时、token（输入、缓存、输出、推理）、生图张数。**不记对话内容**。
+- **存储**：`data/requests.db`（Node 自带的 `node:sqlite`），保留 32 天（够算整月用量），后台可以一键清空。清空后本月用量也会清零。
 - **状态的算法**：
   - 成功：正常完成。
-  - 失败：网关或 Codex 返回错误。流式响应中途出错也算失败，虽然 HTTP 状态码已经是 200。
-  - 中断：客户端主动断开，不计入成功率。
-  - 被网关直接拒绝、没到达账号的请求（例如带了 tools、参数不合法）只计入整体统计，不计入账号的健康度。
+  - 失败：网关、Codex 或上游返回错误。流式响应中途出错也算失败，虽然 HTTP 状态码已经是 200。
+  - 中断：客户端主动断开，不计入成功率。OpenAI API 渠道下，网关会同时取消发往上游的请求。
+  - 被网关直接拒绝、没到达账号或上游的请求（例如带了 tools、参数不合法、超出每月额度）只计入整体统计，不计入账号或上游的健康度。
 - **健康条**：把所选时间范围（近 1 小时、24 小时、7 天、30 天）平均分成 20 段，每段按成功率着色：绿色 100%，浅绿 ≥95%，黄色 ≥80%，橙色 ≥50%，红色 <50%，灰色表示没有请求。鼠标悬停可以看到该段的时间和成功/失败数。
 
 账号卡片底部显示凭据 `auth.json` 的大小和最近写入时间。Codex 刷新令牌时会重写这个文件，所以这个时间也就是最近一次刷新令牌的时间。网关只读取文件信息，不读内容。
@@ -332,13 +389,17 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 
 ```
 你的客户端 ──HTTP /v1/...──▶ gptProvider (127.0.0.1:8787)
-                               │  JSON-RPC over stdio
-                               ▼
-                      codex app-server（官方 Codex，每个账号一个进程）
+                               │                              │
+                     Codex 账号渠道                   OpenAI API 渠道
+                               │  JSON-RPC over stdio         │  HTTPS 原样转发，换成上游 Key
+                               ▼                              ▼
+          codex app-server（官方 Codex，每个账号一个进程）   api.openai.com
                                │  Codex 自己的登录态、请求、令牌刷新、生图工具
                                ▼
                            OpenAI
 ```
+
+OpenAI API 渠道就是一个按 Key 鉴权、带故障切换和记账的反向代理，原理和 Codex 官方的 `codex-rs/responses-api-proxy` 一样。下面几条说的是 Codex 账号渠道：
 
 - 网关不直接请求 OpenAI，也不读取、不转存 token。登录、令牌刷新、发请求都由官方 `codex app-server` 完成。
 - 每个账号有独立的 `CODEX_HOME`（`data/accounts/<id>/home`），凭据就是 Codex 自己写的 `auth.json`。
@@ -353,9 +414,10 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 
 ## 限制和注意事项
 
-- **只给你自己用。** 不要把服务开放到局域网或公网给别人用。
-- 底层是 Codex 智能体而不是裸模型，每个请求都会带上 Codex 的基础指令（大部分命中缓存），响应比直接调 API 慢一些。
-- 数据目录里存有各账号的登录凭据和生成的图片，不要提交到 git，也不要分享给别人。图库最多保留最近 500 张。
+- **Codex 账号渠道只给你自己用。** 不要把它开放到局域网或公网给别人用；要给别人用，只发 OpenAI API 渠道的 Key。
+- Codex 账号渠道底层是 Codex 智能体而不是裸模型，每个请求都会带上 Codex 的基础指令（大部分命中缓存），响应比直接调 API 慢一些。OpenAI API 渠道没有这个问题。
+- 数据目录里存有各账号的登录凭据、上游 API Key 和生成的图片，不要提交到 git，也不要分享给别人。图库最多保留最近 500 张。
+- 每月 Token 上限按请求结束后记下的用量计算，并发请求或单个很长的请求可能会略微超出。
 - app-server 协议仍标记为 experimental。升级 Codex 后如果出问题，可以用 `node node_modules/@openai/codex/bin/codex.js app-server generate-ts --out <目录>` 导出新协议来对照。当前在 codex-cli 0.165.0 上测试通过。
 
 ---
@@ -373,6 +435,12 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 
 **模型列表不是最新的**
 Codex 版本旧了。去「模型」页或「设置」页升级 Codex。
+
+**Codex CLI 报 `gpt-… requires Responses for tool calls` 或工具调用失败**
+用的是 Codex 账号渠道的 Key，或者经过的其他聚合服务只支持 Chat Completions。改用 OpenAI API 渠道的 Key，并按[接入 Codex CLI](#接入-codex-cli) 配置 `wire_api = "responses"`，直接指向本网关。
+
+**Codex CLI 提示 Quota exceeded**
+下游 Key 的每月 Token 上限用完了，或者上游 OpenAI 账户余额不足。前者在「API Key」页调高上限，后者看「日志」里的错误信息。
 
 **一键更新提示无法自动重启**
 用 `npm start` 或 Docker 启动，不要直接运行 `node src/server.js`。
@@ -414,9 +482,10 @@ src/
   updater.js          一键更新：检查 GitHub Release、下载并安装新版本
   tar.js              解包 GitHub 源码包
   loginForward.js     Docker 里转发浏览器登录回调（1455 端口）
-  store.js            data/store.json：账号、API Key（只存哈希）、设置、模型目录、图片记录
+  store.js            data/store.json：账号、上游、API Key（只存哈希）、设置、模型目录、图片记录
+  upstreams.js        OpenAI API 渠道：上游管理、原样转发、故障切换、用量解析
   http.js             JSON 响应
-  requestLog.js       调用日志与健康度统计（data/requests.db）
+  requestLog.js       调用日志、健康度统计和每月用量（data/requests.db）
   images.js           图库：保存 Codex 生成的图片
   multipart.js        multipart/form-data 解析（images/edits）
   codex/locate.js     查找要用的 codex

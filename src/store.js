@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
   chatImageGeneration: true,
 };
 const MAX_IMAGE_RECORDS = 500;
+export const CHANNELS = ['codex', 'openai'];
 
 export class Store {
   constructor(dataDir) {
@@ -30,6 +31,9 @@ export class Store {
     data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     data.modelCatalog ||= {};
     data.images ||= [];
+    data.upstreams ||= [];
+    // 1.2 之前的 Key 都走 Codex 账号
+    for (const k of data.apiKeys) k.channel ||= 'codex';
     this.#write(data);
     return data;
   }
@@ -82,20 +86,37 @@ export class Store {
   }
 
   // ---- api keys：只保存哈希，明文只在创建时返回一次 ----
+  // channel：codex = 走 Codex 账号；openai = 原样转发到官方 API Key 上游
+  // monthlyTokenLimit：本自然月输入 + 输出 token 上限，null 表示不限
 
-  createApiKey(name) {
+  createApiKey({ name, channel, monthlyTokenLimit } = {}) {
     const key = `sk-local-${crypto.randomBytes(24).toString('base64url')}`;
     const record = {
       id: crypto.randomUUID(),
       name: name || '未命名',
       hash: hashKey(key),
       preview: `${key.slice(0, 13)}…${key.slice(-4)}`,
+      channel: validChannel(channel ?? 'codex'),
+      monthlyTokenLimit: validLimit(monthlyTokenLimit),
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
     };
     this.data.apiKeys.push(record);
     this.save();
     return { record, key };
+  }
+
+  updateApiKey(id, patch) {
+    const record = this.data.apiKeys.find((k) => k.id === id);
+    if (!record) return null;
+    // 先校验再写入，避免改了一半
+    const channel = 'channel' in patch ? validChannel(patch.channel) : record.channel;
+    const limit = 'monthlyTokenLimit' in patch ? validLimit(patch.monthlyTokenLimit) : record.monthlyTokenLimit;
+    if ('name' in patch) record.name = String(patch.name || '').trim() || record.name;
+    record.channel = channel;
+    record.monthlyTokenLimit = limit;
+    this.save();
+    return record;
   }
 
   deleteApiKey(id) {
@@ -114,6 +135,18 @@ export class Store {
     record.lastUsedAt = new Date(now).toISOString();
     this.save();
   }
+}
+
+function validChannel(channel) {
+  if (!CHANNELS.includes(channel)) throw Object.assign(new Error(`渠道无效：${channel}`), { status: 400 });
+  return channel;
+}
+
+function validLimit(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw Object.assign(new Error('每月 Token 上限必须是非负数'), { status: 400 });
+  return Math.floor(n);
 }
 
 function hashKey(key) {

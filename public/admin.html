@@ -257,6 +257,7 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .account-error { margin: 0 20px 14px; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .account-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 14px 12px 20px; border-top: 1px solid var(--border); }
 .account-foot .when { color: var(--muted); font-size: 12px; margin-right: auto; }
+.account-card.disabled { opacity: .62; }
 .add-card { border: 1.5px dashed var(--border-strong); border-radius: var(--radius); display: grid; place-items: center; min-height: 220px;
   color: var(--text-2); cursor: pointer; background: transparent; transition: border-color .12s, color .12s, background .12s; }
 .add-card:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -427,6 +428,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <nav class="nav" id="nav">
       <a href="#overview" data-page="overview"><svg class="i" data-icon="dashboard"></svg>概览</a>
       <a href="#accounts" data-page="accounts"><svg class="i" data-icon="users"></svg>账号<span class="count" id="count-accounts"></span></a>
+      <a href="#upstreams" data-page="upstreams"><svg class="i" data-icon="server"></svg>API 上游<span class="count" id="count-upstreams"></span></a>
       <a href="#logs" data-page="logs"><svg class="i" data-icon="activity"></svg>日志</a>
       <a href="#models" data-page="models"><svg class="i" data-icon="cpu"></svg>模型<span class="count" id="count-models"></span></a>
       <a href="#images" data-page="images"><svg class="i" data-icon="image"></svg>生图<span class="count" id="count-images"></span></a>
@@ -460,7 +462,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
               </div>
             </div>
             <div class="tabs" id="code-tabs">
-              <button data-tab="curl" class="on">cURL</button><button data-tab="python">Python</button><button data-tab="node">Node.js</button><button data-tab="image">生图</button>
+              <button data-tab="curl" class="on">cURL</button><button data-tab="python">Python</button><button data-tab="node">Node.js</button><button data-tab="image">生图</button><button data-tab="codex">Codex CLI</button>
             </div>
             <div class="card-pad"><div class="code"><button class="btn sm" id="copy-code"><svg class="i" data-icon="copy"></svg>复制</button><pre id="code-sample"></pre></div></div>
           </div>
@@ -471,8 +473,9 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/responses</span><span class="d">Responses 接口，支持流式</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
-            <div class="card-pad small text-2" style="border-top:1px solid var(--border)">
-              在对话里选择模型 <code>gpt-image-2</code> 也会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。
+            <div class="card-pad small text-2 stack" style="border-top:1px solid var(--border);gap:8px">
+              <div><b>Codex 账号渠道</b>：只提供上面这些接口。在对话里选择模型 <code>gpt-image-2</code> 会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
+              <div><b>OpenAI API 渠道</b>：<code>/v1</code> 下所有请求原样转发到「API 上游」里的官方 Key，工具调用、Embeddings、音频等官方接口都能用，Codex CLI 也能直接接入。</div>
             </div>
           </div>
         </div>
@@ -491,10 +494,25 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="grid account-grid" id="account-grid"></div>
     </section>
 
+    <!-- ---------- API 上游 ---------- -->
+    <section data-view="upstreams" hidden>
+      <div class="page-head">
+        <div><h1>API 上游</h1><p>添加 OpenAI 官方 API Key。「OpenAI API」渠道的下游 Key 会把 /v1 请求原样转发到这里，费用记在这些 Key 所属的 OpenAI 账户上</p></div>
+        <div class="actions">
+          <div class="segmented window-switch"></div>
+          <button class="btn primary" data-action="add-upstream"><svg class="i" data-icon="plus"></svg>添加 API Key</button>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="grid account-grid" id="upstream-grid"></div>
+        <div class="card card-pad small text-2">按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个，出错的 Key 冷却一段时间（Key 无效 10 分钟，限流按 retry-after，其他 15–30 秒）后再优先使用。流式输出开始后不会切换。</div>
+      </div>
+    </section>
+
     <!-- ---------- 日志 ---------- -->
     <section data-view="logs" hidden>
       <div class="page-head">
-        <div><h1>调用日志</h1><p>每次调用 /v1 接口和调试台的记录，只记元数据不记内容，保留 30 天</p></div>
+        <div><h1>调用日志</h1><p>每次调用 /v1 接口和调试台的记录，只记元数据不记内容，保留 32 天</p></div>
         <div class="actions">
           <div class="segmented window-switch"></div>
           <button class="btn" id="logs-refresh"><svg class="i" data-icon="refresh"></svg>刷新</button>
@@ -509,12 +527,12 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="filters">
             <select class="select" id="f-account"></select>
             <select class="select" id="f-status"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="aborted">中断</option></select>
-            <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="responses">Responses</option><option value="images.generations">生图</option><option value="images.edits">改图</option></select>
+            <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="responses">Responses</option><option value="images.generations">生图</option><option value="images.edits">改图</option><option value="embeddings">Embeddings</option></select>
             <select class="select" id="f-source"><option value="">全部来源</option><option value="api">API</option><option value="playground">调试台</option></select>
             <span class="right small muted" id="logs-updated"></span>
           </div>
           <div class="table-wrap"><table class="log-table">
-            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th>错误</th></tr></thead>
+            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th>错误</th></tr></thead>
             <tbody id="log-rows"></tbody>
           </table></div>
           <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
@@ -601,7 +619,6 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="page-head">
         <div><h1>API Key</h1><p>调用 /v1 接口时放在 <code>Authorization: Bearer</code> 里。只保存哈希，明文只在创建时显示一次</p></div>
         <div class="actions">
-          <input id="key-name" class="input" style="width:200px" placeholder="名称，如：本机脚本">
           <button class="btn primary" id="create-key"><svg class="i" data-icon="plus"></svg>新建 Key</button>
         </div>
       </div>
@@ -609,9 +626,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
         <div class="card card-pad" id="new-key" hidden style="border-color:color-mix(in srgb, var(--success) 45%, var(--border))">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:600;color:var(--success)"><svg class="i" data-icon="check"></svg>已创建，请立即复制保存，关闭后无法再次查看</div>
           <div class="copy-field"><span class="mono" id="new-key-value"></span><button class="btn sm" data-copy-from="new-key-value"><svg class="i" data-icon="copy"></svg>复制</button></div>
+          <div class="small text-2" id="new-key-hint" style="margin-top:10px"></div>
         </div>
         <div class="card"><div class="table-wrap"><table>
-          <thead><tr><th>名称</th><th>Key</th><th>创建时间</th><th>最近使用</th><th></th></tr></thead>
+          <thead><tr><th>名称</th><th>渠道</th><th>Key</th><th>本月用量</th><th>最近使用</th><th></th></tr></thead>
           <tbody id="key-rows"></tbody>
         </table></div></div>
       </div>
@@ -667,6 +685,50 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   <div class="dlg-foot">
     <button class="btn" data-close-login id="login-cancel">取消</button>
     <button class="btn primary" id="login-submit">开始登录</button>
+  </div>
+</dialog>
+
+<!-- ================= API 上游 ================= -->
+<dialog id="upstream-dialog">
+  <div class="dlg-head"><h3 id="upstream-title">添加 OpenAI API Key</h3><button class="btn ghost sm icon" data-close-upstream><svg class="i" data-icon="x"></svg></button></div>
+  <div class="dlg-body stack" style="gap:14px" id="upstream-form">
+    <div class="field"><label>备注名</label><input id="up-label" class="input" placeholder="例如：主账号"></div>
+    <div class="field"><label>API Key</label><input id="up-key" class="input mono" type="password" autocomplete="off" placeholder="sk-proj-…"></div>
+    <div class="field"><label>Base URL</label><input id="up-base" class="input mono" placeholder="https://api.openai.com/v1">
+      <div class="small muted" style="margin-top:5px">留空用官方地址。服务器直连不了 api.openai.com 时，填一个能到官方 API 的转发地址</div></div>
+    <div class="option-grid">
+      <div class="field"><label>Organization（可选）</label><input id="up-org" class="input mono" placeholder="org-…"></div>
+      <div class="field"><label>Project（可选）</label><input id="up-project" class="input mono" placeholder="proj_…"></div>
+    </div>
+    <div class="field"><label>优先级</label><input id="up-priority" class="input" type="number" step="1" value="0">
+      <div class="small muted" style="margin-top:5px">数字大的优先使用，相同优先级轮流分摊</div></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" data-close-upstream>取消</button>
+    <button class="btn primary" id="up-submit">保存并测试</button>
+  </div>
+</dialog>
+
+<!-- ================= 新建 / 编辑 API Key ================= -->
+<dialog id="key-dialog">
+  <div class="dlg-head"><h3 id="key-title">新建 API Key</h3><button class="btn ghost sm icon" data-close-key><svg class="i" data-icon="x"></svg></button></div>
+  <div class="dlg-body stack" style="gap:14px">
+    <div class="field"><label>名称</label><input id="key-name" class="input" placeholder="例如：Codex CLI"></div>
+    <div>
+      <div class="label">渠道</div>
+      <div class="option-grid" id="key-channels">
+        <label class="option on"><input type="radio" name="channel" value="openai" checked>
+          <div class="ico"><svg class="i" data-icon="server"></svg></div><b>OpenAI API</b><span>原样转发到「API 上游」的官方 Key，支持工具调用，Codex CLI 用这个</span></label>
+        <label class="option"><input type="radio" name="channel" value="codex">
+          <div class="ico"><svg class="i" data-icon="users"></svg></div><b>Codex 账号</b><span>走当前 ChatGPT 账号，只有对话、生图和内置工具，仅供自己使用</span></label>
+      </div>
+    </div>
+    <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
+      <div class="small muted" style="margin-top:5px">按调用日志统计本自然月的输入 + 输出 token，到了上限返回 429，下月 1 日恢复</div></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" data-close-key>取消</button>
+    <button class="btn primary" id="key-submit">创建</button>
   </div>
 </dialog>
 
@@ -728,6 +790,9 @@ const ICONS = {
   type: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
   loader: '<path d="M21 12a9 9 0 1 1-6.22-8.56"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
+  pause: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+  play: '<path d="m6 3 14 9-14 9z"/>',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${ICONS[name] || ''}</svg>`;
 function hydrateIcons(root = document) {
@@ -849,12 +914,13 @@ async function refreshState() {
   renderShell();
   if (S.page === 'overview') renderOverview();
   if (S.page === 'accounts') renderAccounts();
+  if (S.page === 'upstreams') renderUpstreams();
   if (S.page === 'keys') renderKeys();
   if (S.page === 'settings') renderSettings();
   if (S.state.activeAccountId && (!S.models || S.models.updatedAt !== S.state.stats.modelsUpdatedAt || S.models.accountId !== S.state.activeAccountId)) {
     loadModels().catch(() => {});
   } else if (S.page === 'models') renderModels();
-  if (['overview', 'accounts', 'logs'].includes(S.page)) loadStats().catch(() => {});
+  if (STATS_PAGES.includes(S.page)) loadStats().catch(() => {});
   if (S.page === 'logs') {
     fillLogFilters();
     if (S.logs.offset === 0) loadLogs().catch(() => {});
@@ -869,16 +935,17 @@ setInterval(() => {
 setInterval(() => { if (S.page === 'models' && S.models) $('models-updated').textContent = modelsNote(); }, 30000);
 
 // ============ 路由 ============
-const TITLES = { overview: '概览', accounts: '账号', logs: '日志', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
+const TITLES = { overview: '概览', accounts: '账号', upstreams: 'API 上游', logs: '日志', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
+const STATS_PAGES = ['overview', 'accounts', 'upstreams', 'logs'];
 function route() {
   const page = (location.hash || '#overview').slice(1);
   S.page = TITLES[page] ? page : 'overview';
   document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== S.page; });
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === S.page));
   document.title = `${TITLES[S.page]} · Codex Gateway`;
-  ({ overview: renderOverview, accounts: renderAccounts, logs: renderLogsPage, models: renderModels, images: loadImages,
+  ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, models: renderModels, images: loadImages,
      playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
-  if (['overview', 'accounts', 'logs'].includes(S.page)) loadStats().catch(() => {});
+  if (STATS_PAGES.includes(S.page)) loadStats().catch(() => {});
 }
 window.addEventListener('hashchange', () => { if (S.state) route(); });
 
@@ -890,6 +957,7 @@ function renderShell() {
   renderCodexBanners();
   renderAppBanner();
   $('count-accounts').textContent = st.accounts.length || '';
+  $('count-upstreams').textContent = st.upstreams.length || '';
   $('count-models').textContent = st.stats.models || '';
   $('count-images').textContent = st.stats.images || '';
   $('count-keys').textContent = st.apiKeys.length || '';
@@ -906,6 +974,7 @@ async function loadStats() {
   S.stats = await api('GET', `/stats?window=${S.window}`);
   if (S.page === 'overview') renderOverviewHealth();
   if (S.page === 'accounts') renderAccounts();
+  if (S.page === 'upstreams') renderUpstreams();
   if (S.page === 'logs') renderLogStats();
 }
 
@@ -1142,7 +1211,13 @@ function codeSample(tab) {
     python: `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nstream = client.chat.completions.create(\n    model="${model}",\n    messages=[{"role": "user", "content": "你好"}],\n    stream=True,\n)\nfor chunk in stream:\n    print(chunk.choices[0].delta.content or "", end="")`,
     node: `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}", apiKey: "sk-local-..." });\n\nconst res = await client.chat.completions.create({\n  model: "${model}",\n  messages: [{ role: "user", content: "你好" }],\n});\nconsole.log(res.choices[0].message.content);`,
     image: `from openai import OpenAI\nimport base64\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nimg = client.images.generate(\n    model="gpt-image-2",\n    prompt="一只戴着宇航员头盔的橘猫，扁平插画风格",\n    size="1024x1024",\n)\nopen("cat.png", "wb").write(base64.b64decode(img.data[0].b64_json))`,
+    codex: `# ~/.codex/config.toml\n# Key 用「OpenAI API」渠道的，工具调用由官方 API 处理\nmodel ="${upstreamModel()}"  # 换成「API 上游」页测试出来的可用模型\nmodel_provider = "gptprovider"\n\n[model_providers.gptprovider]\nname = "gptProvider"\nbase_url = "${base}"\nenv_key = "GPTPROVIDER_API_KEY"\nwire_api = "responses"\n\n# 然后设置环境变量再启动 codex：\n#   macOS / Linux:  export GPTPROVIDER_API_KEY=sk-local-...\n#   Windows:        setx GPTPROVIDER_API_KEY sk-local-...（重新打开终端生效）`,
   }[tab];
+}
+// 示例里用的模型：优先挑上游测试出来的常用模型
+function upstreamModel() {
+  const ids = new Set((S.state?.upstreams || []).flatMap((u) => u.models || []));
+  return ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5'].find((m) => ids.has(m)) || 'gpt-5.5';
 }
 function renderCode() {
   document.querySelectorAll('#code-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.codeTab));
@@ -1230,6 +1305,109 @@ $('account-grid').addEventListener('click', run(async (e) => {
   await refreshState();
 }));
 document.addEventListener('click', (e) => { if (e.target.closest('[data-action="add-account"]')) openLogin(null); });
+
+// ============ API 上游 ============
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const UP_STATUS = { ready: ['success', '可用'], invalid: ['danger', 'Key 无效'], error: ['warn', '异常'], unknown: ['', '未检测'] };
+const upModelsOpen = new Set();
+
+function renderUpstreams() {
+  const cards = S.state.upstreams.map((u) => {
+    const [cls, text] = UP_STATUS[u.status] || ['', u.status];
+    const cooling = u.coolingUntil > Date.now();
+    const models = u.models || [];
+    return `<div class="card account-card ${u.enabled ? '' : 'disabled'}">
+      <div class="account-top">
+        <span class="badge provider">OpenAI</span>
+        <div class="title" title="${esc(u.label)}">${esc(u.label)}</div>
+        ${u.enabled ? '' : '<span class="badge">已停用</span>'}
+        ${cooling && u.enabled ? `<span class="badge warn" title="出错后暂时排到最后，${esc(new Date(u.coolingUntil).toLocaleTimeString('zh-CN', { hour12: false }))} 恢复">冷却中</span>` : ''}
+        <span class="badge ${cls}"><span class="dot"></span>${text}</span>
+      </div>
+      <div class="ident" style="display:flex;gap:8px;align-items:center">
+        <span class="mono" style="flex:none">${esc(u.keyPreview)}</span>
+        <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(u.baseUrl)}">${esc(u.baseUrl === DEFAULT_BASE_URL ? 'api.openai.com' : u.baseUrl)}</span>
+        <span class="chip" style="flex:none;margin-left:auto" title="数字大的优先使用">优先级 ${esc(u.priority)}</span>
+      </div>
+      <div class="account-section">${requestBlock(S.stats?.accounts[u.id])}</div>
+      ${models.length ? `<div class="account-section"><details class="notes-box" style="margin:0" data-models="${esc(u.id)}" ${upModelsOpen.has(u.id) ? 'open' : ''}>
+        <summary>可用模型 ${models.length} 个（点击复制）</summary>
+        <div class="chips" style="margin-top:8px">${models.map((m) => `<span class="chip mono" style="cursor:pointer" data-copy="${esc(m)}">${esc(m)}</span>`).join('')}</div>
+      </details></div>` : ''}
+      ${u.lastError ? `<div class="account-error">${esc(u.lastError)}</div>` : ''}
+      <div class="account-foot">
+        <span class="when">${u.lastCheckedAt ? `${esc(rel(u.lastCheckedAt))}更新` : '尚未检测'}</span>
+        <button class="btn sm ghost icon" title="测试连接" data-up="test" data-id="${u.id}">${icon('refresh')}</button>
+        <button class="btn sm ghost icon" title="${u.enabled ? '停用' : '启用'}" data-up="toggle" data-id="${u.id}">${icon(u.enabled ? 'pause' : 'play')}</button>
+        <button class="btn sm ghost icon" title="编辑" data-up="edit" data-id="${u.id}">${icon('pencil')}</button>
+        <button class="btn sm ghost icon danger" title="删除" data-up="delete" data-id="${u.id}">${icon('trash')}</button>
+      </div>
+    </div>`;
+  });
+  cards.push(`<button class="add-card" data-action="add-upstream"><div class="inner"><div class="plus">${icon('plus')}</div>添加 OpenAI API Key</div></button>`);
+  $('upstream-grid').innerHTML = cards.join('');
+  renderWindowSwitches();
+}
+
+const testResult = (t) => (t.ok ? toast(`连接正常，可用模型 ${t.models} 个`) : toast(`测试失败：${t.error}`, 'error'));
+$('upstream-grid').addEventListener('toggle', (e) => {
+  const id = e.target.dataset?.models;
+  if (id) e.target.open ? upModelsOpen.add(id) : upModelsOpen.delete(id);
+}, true);
+$('upstream-grid').addEventListener('click', run(async (e) => {
+  const btn = e.target.closest('[data-up]');
+  if (!btn) return;
+  const id = btn.dataset.id, u = S.state.upstreams.find((x) => x.id === id);
+  const act = btn.dataset.up;
+  if (act === 'edit') return openUpstream(u);
+  if (act === 'test') {
+    btn.disabled = true; btn.innerHTML = icon('refresh', 'spin');
+    try { testResult((await api('POST', `/upstreams/${id}/test`)).test); } finally { btn.disabled = false; }
+  }
+  if (act === 'toggle') { await api('PATCH', `/upstreams/${id}`, { enabled: !u.enabled }); toast(u.enabled ? '已停用' : '已启用'); }
+  if (act === 'delete') {
+    if (!confirm(`删除上游「${u.label}」？\n服务器上保存的这个 API Key 会一起删除。`)) return;
+    await api('DELETE', `/upstreams/${id}`); toast('已删除');
+  }
+  await refreshState();
+}));
+document.addEventListener('click', (e) => { if (e.target.closest('[data-action="add-upstream"]')) openUpstream(null); });
+
+let upstreamTarget = null;
+function openUpstream(u) {
+  upstreamTarget = u;
+  $('upstream-title').textContent = u ? `编辑「${u.label}」` : '添加 OpenAI API Key';
+  $('up-label').value = u?.label || '';
+  $('up-key').value = '';
+  $('up-key').placeholder = u ? `${u.keyPreview}（留空表示不修改）` : 'sk-proj-…';
+  $('up-base').value = u && u.baseUrl !== DEFAULT_BASE_URL ? u.baseUrl : '';
+  $('up-org').value = u?.organization || '';
+  $('up-project').value = u?.project || '';
+  $('up-priority').value = u?.priority ?? 0;
+  $('upstream-dialog').showModal();
+  (u ? $('up-label') : $('up-key')).focus();
+}
+document.querySelectorAll('[data-close-upstream]').forEach((b) => b.addEventListener('click', () => $('upstream-dialog').close()));
+$('upstream-form').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) $('up-submit').click(); });
+$('up-submit').addEventListener('click', run(async () => {
+  const body = {
+    label: $('up-label').value.trim(), baseUrl: $('up-base').value.trim(),
+    organization: $('up-org').value.trim(), project: $('up-project').value.trim(), priority: Number($('up-priority').value) || 0,
+  };
+  const key = $('up-key').value.trim();
+  if (key) body.apiKey = key;
+  if (!upstreamTarget && !key) { $('up-key').focus(); return toast('请填写 API Key', 'error'); }
+  const btn = $('up-submit');
+  btn.disabled = true; btn.innerHTML = `${icon('loader', 'spin')}测试中…`;
+  try {
+    const r = upstreamTarget ? await api('PATCH', `/upstreams/${upstreamTarget.id}`, body) : await api('POST', '/upstreams', body);
+    $('upstream-dialog').close();
+    r.test ? testResult(r.test) : toast('已保存');
+  } finally {
+    btn.disabled = false; btn.textContent = '保存并测试';
+  }
+  await refreshState();
+}));
 
 // ---------- 登录对话框 ----------
 let loginTarget = null, loginPoll = null;
@@ -1563,7 +1741,9 @@ async function sendChat() {
 }
 
 // ============ 调用日志 ============
-const ENDPOINT_NAME = { 'chat.completions': '对话', responses: 'Responses', 'images.generations': '生图', 'images.edits': '改图' };
+const ENDPOINT_NAME = { 'chat.completions': '对话', responses: 'Responses', 'images.generations': '生图', 'images.edits': '改图',
+  embeddings: 'Embeddings', 'responses.compact': '上下文压缩', 'responses.input_tokens': '计算 Token', 'audio.speech': '语音合成',
+  'audio.transcriptions': '语音转写', 'audio.translations': '语音翻译', moderations: '内容审核' };
 
 function renderLogsPage() {
   $('logs-disabled').hidden = S.state.logsEnabled !== false;
@@ -1576,8 +1756,10 @@ function renderLogsPage() {
 function fillLogFilters() {
   const sel = $('f-account');
   if (document.activeElement === sel) return;
-  sel.innerHTML = `<option value="">全部账号</option>${S.state.accounts
-    .map((a) => `<option value="${esc(a.id)}">${esc(a.email || a.label)}</option>`).join('')}`;
+  const group = (label, items) => (items.length ? `<optgroup label="${label}">${items.join('')}</optgroup>` : '');
+  sel.innerHTML = `<option value="">全部账号 / 上游</option>${
+    group('Codex 账号', S.state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email || a.label)}</option>`))}${
+    group('OpenAI API 上游', S.state.upstreams.map((u) => `<option value="${esc(u.id)}">${esc(u.label)}</option>`))}`;
   sel.value = S.logs.filters.account || '';
 }
 ['f-account', 'f-status', 'f-endpoint', 'f-source'].forEach((id) => $(id).addEventListener('change', () => {
@@ -1603,7 +1785,7 @@ function renderLogStats() {
     <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
     <div class="stat-value num">${value}</div><div class="stat-foot">${foot}</div></div>`;
   $('log-stats').innerHTML = [
-    card('activity', `请求数 · ${windowLabel()}`, fmtNum(s + f + a), a ? `含中断 ${fmtNum(a)}（客户端断开，不计入成功率）` : '对话、生图、改图'),
+    card('activity', `请求数 · ${windowLabel()}`, fmtNum(s + f + a), a ? `含中断 ${fmtNum(a)}（客户端断开，不计入成功率）` : '所有记录的 /v1 请求和调试台'),
     card('check', '成功率', `<span class="rate ${r.cls}" style="font-size:inherit;text-align:left">${r.text}</span>`,
       `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>`),
     card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
@@ -1652,7 +1834,7 @@ function logDetail(r) {
     ['时间', `${esc(fmtTime(r.ts))}.${ms}`],
     ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
     ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
-    ['账号', esc(r.account_email || '未分配（请求在到达账号前就结束了）')],
+    ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
     ['客户端', `<span class="mono small">${esc(r.user_agent || '—')}</span>`],
     ['状态', `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`],
@@ -1684,23 +1866,81 @@ $('logs-clear').addEventListener('click', run(async () => {
 }));
 
 // ============ API Key ============
+const CHANNEL = { openai: ['accent', 'OpenAI API'], codex: ['', 'Codex 账号'] };
+const fmtTokens = (n) => (n >= 1e8 ? `${(n / 1e8).toFixed(2)} 亿` : n >= 1e4 ? `${(n / 1e4).toFixed(n >= 1e6 ? 0 : 1)} 万` : fmtNum(n));
+
+function usageCell(k) {
+  const used = k.monthUsage?.tokens || 0, limit = k.monthlyTokenLimit;
+  const reqs = `${fmtNum(k.monthUsage?.requests)} 次请求`;
+  if (limit == null) return `<div class="num">${fmtTokens(used)} tokens</div><div class="small muted">${reqs} · 不限额</div>`;
+  const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100;
+  return `<div style="min-width:170px"><div class="small" style="display:flex;justify-content:space-between;gap:8px">
+      <span class="num">${fmtTokens(used)} / ${fmtTokens(limit)}</span><b class="num">${pct}%</b></div>
+    <div class="progress ${pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : ''}" style="margin:6px 0 4px"><i style="width:${pct}%"></i></div>
+    <div class="small muted">${reqs}${pct >= 100 ? ' · 已用完，下月 1 日恢复' : ''}</div></div>`;
+}
+
 function renderKeys() {
   const keys = S.state.apiKeys;
-  $('key-rows').innerHTML = keys.length ? keys.map((k) => `<tr>
-    <td><b style="font-weight:600">${esc(k.name)}</b></td>
+  $('key-rows').innerHTML = keys.length ? keys.map((k) => {
+    const [cls, name] = CHANNEL[k.channel] || ['', k.channel];
+    return `<tr>
+    <td><b style="font-weight:600">${esc(k.name)}</b><div class="small muted">${esc(new Date(k.createdAt).toLocaleString())} 创建</div></td>
+    <td><span class="badge ${cls}">${name}</span></td>
     <td class="mono small">${esc(k.preview)}</td>
-    <td class="text-2 small">${esc(new Date(k.createdAt).toLocaleString())}</td>
+    <td>${usageCell(k)}</td>
     <td class="text-2 small">${k.lastUsedAt ? esc(rel(k.lastUsedAt)) : '<span class="muted">从未使用</span>'}</td>
-    <td style="text-align:right"><button class="btn sm ghost danger" data-del-key="${k.id}">${icon('trash')}删除</button></td>
-  </tr>`).join('') : `<tr><td colspan="5"><div class="empty"><div class="icon-wrap">${icon('key')}</div><h3>还没有 API Key</h3><p>新建一个 Key，就可以在脚本或客户端里调用 /v1 接口</p></div></td></tr>`;
+    <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" data-edit-key="${k.id}">${icon('pencil')}编辑</button>
+      <button class="btn sm ghost danger" data-del-key="${k.id}">${icon('trash')}删除</button></td>
+  </tr>`;
+  }).join('') : `<tr><td colspan="6"><div class="empty"><div class="icon-wrap">${icon('key')}</div><h3>还没有 API Key</h3><p>新建一个 Key，就可以在脚本或客户端里调用 /v1 接口</p></div></td></tr>`;
 }
-$('create-key').addEventListener('click', run(async () => {
-  const { key } = await api('POST', '/keys', { name: $('key-name').value.trim() });
-  $('key-name').value = ''; $('new-key-value').textContent = key; $('new-key').hidden = false;
+
+let keyTarget = null;
+function openKeyDialog(k) {
+  keyTarget = k;
+  $('key-title').textContent = k ? `编辑「${k.name}」` : '新建 API Key';
+  $('key-submit').textContent = k ? '保存' : '创建';
+  $('key-name').value = k?.name || '';
+  // 有 API 上游或者没有 Codex 账号时，默认选 OpenAI API
+  const channel = k?.channel || (S.state.upstreams.length || !S.state.accounts.length ? 'openai' : 'codex');
+  document.querySelector(`input[name=channel][value=${channel}]`).checked = true;
+  $('key-channels').dispatchEvent(new Event('change'));
+  $('key-limit').value = k?.monthlyTokenLimit ?? '';
+  $('key-dialog').showModal();
+  $('key-name').focus();
+}
+$('key-channels').addEventListener('change', () => {
+  document.querySelectorAll('#key-channels .option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked));
+});
+document.querySelectorAll('[data-close-key]').forEach((b) => b.addEventListener('click', () => $('key-dialog').close()));
+$('create-key').addEventListener('click', () => openKeyDialog(null));
+$('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) $('key-submit').click(); });
+$('key-submit').addEventListener('click', run(async () => {
+  const limit = $('key-limit').value.trim();
+  const body = {
+    name: $('key-name').value.trim(),
+    channel: document.querySelector('input[name=channel]:checked').value,
+    monthlyTokenLimit: limit === '' ? null : Number(limit),
+  };
+  if (keyTarget) {
+    await api('PATCH', `/keys/${keyTarget.id}`, body);
+    toast('已保存');
+  } else {
+    const { key } = await api('POST', '/keys', body);
+    $('new-key-value').textContent = key;
+    $('new-key-hint').innerHTML = body.channel === 'openai'
+      ? `渠道：OpenAI API${S.state.upstreams.length ? '' : '（还没有添加上游，请先去 <a href="#upstreams">API 上游</a> 添加官方 Key）'} · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>`
+      : '渠道：Codex 账号 · 请求走当前 ChatGPT 账号';
+    $('new-key').hidden = false;
+  }
+  $('key-dialog').close();
   await refreshState();
 }));
-$('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('create-key').click(); });
+document.addEventListener('click', (e) => { const a = e.target.closest('[data-code-tab]'); if (a) S.codeTab = a.dataset.codeTab; });
 $('key-rows').addEventListener('click', run(async (e) => {
+  const edit = e.target.closest('[data-edit-key]');
+  if (edit) return openKeyDialog(S.state.apiKeys.find((k) => k.id === edit.dataset.editKey));
   const b = e.target.closest('[data-del-key]'); if (!b) return;
   if (!confirm('删除这个 API Key？使用它的客户端会立即失效。')) return;
   await api('DELETE', `/keys/${b.dataset.delKey}`); toast('已删除'); await refreshState();
@@ -1740,9 +1980,12 @@ function renderSettings() {
       <div class="inline-actions"><button class="btn sm" data-codex-check>${icon('refresh')}检查更新</button>
       ${c.canUpgrade && (c.outdated || c.upgrading) ? upgradeBtn(c, 'sm primary') : ''}</div>`],
     ['当前账号', a ? `${esc(a.email || a.label)}（${esc(planName(a.planType))}）` : '未选择'],
+    ['API 上游', S.state.upstreams.length
+      ? `${S.state.upstreams.length} 个 OpenAI API Key，启用 ${S.state.upstreams.filter((u) => u.enabled).length} 个 · <a href="#upstreams">管理</a>`
+      : '未添加 · <a href="#upstreams">添加官方 API Key</a>'],
     ['API 地址', `<span class="mono">${esc(location.origin)}/v1</span>`],
     ['模型刷新', `每 ${Math.round(S.state.refreshIntervalMs / 60000)} 分钟（app-server 自身每 4.5 分钟在线同步一次）`],
-    ['数据目录', '<span class="mono">data/</span>（Docker 部署时是数据卷 /app/data），内含各账号登录凭据，不要分享'],
+    ['数据目录', '<span class="mono">data/</span>（Docker 部署时是数据卷 /app/data），内含各账号登录凭据和上游 API Key，不要分享'],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
 }
 const saveSettings = run(async (patch) => { await api('PUT', '/settings', patch); toast('设置已保存'); await refreshState(); });

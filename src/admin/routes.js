@@ -7,7 +7,7 @@ import { IMAGE_MODEL_ID, handleImageGenerations } from '../openai/images.js';
 import { WINDOWS, withLog } from '../requestLog.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
-  const { accounts, store, codex, images, requestLog, updater } = ctx;
+  const { accounts, upstreams, store, codex, images, requestLog, updater } = ctx;
   const parts = url.pathname.replace(/^\/admin\/api\/?/, '').split('/').filter(Boolean);
   const method = req.method;
   const ok = (payload = { ok: true }) => sendJson(res, 200, payload);
@@ -21,7 +21,8 @@ export async function handleAdmin(req, res, url, body, ctx) {
       codex: codex.info(),
       activeAccountId: activeId,
       accounts: accounts.list(),
-      apiKeys: store.data.apiKeys.map(({ hash, ...rest }) => rest),
+      upstreams: upstreams.list(),
+      apiKeys: apiKeysWithUsage(store, requestLog),
       settings: store.data.settings,
       stats: {
         images: store.data.images.length,
@@ -99,11 +100,46 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
+  // POST /admin/api/upstreams            {label, apiKey, baseUrl, organization, project, priority}，添加后立即测试
+  // PATCH /admin/api/upstreams/:id        同上，apiKey 留空表示不改；也可以只传 {enabled}
+  // POST /admin/api/upstreams/:id/test    用 GET /models 检查 Key 是否可用
+  // DELETE /admin/api/upstreams/:id
+  if (parts[0] === 'upstreams') {
+    const id = parts[1];
+    if (method === 'POST' && !id) {
+      const upstream = upstreams.create(body);
+      return ok({ upstream: upstream.id, test: await upstreams.test(upstream.id) });
+    }
+    if (!id) throw httpError(404, '未知接口');
+    if (method === 'POST' && parts[2] === 'test') return ok({ test: await upstreams.test(id) });
+    if (method === 'PATCH' && !parts[2]) {
+      const before = upstreams.get(id);
+      const connection = before && `${before.apiKey}|${before.baseUrl}|${before.organization}|${before.project}`;
+      const after = upstreams.update(id, body);
+      const changed = connection !== `${after.apiKey}|${after.baseUrl}|${after.organization}|${after.project}`;
+      return ok({ test: changed ? await upstreams.test(id) : null });
+    }
+    if (method === 'DELETE' && !parts[2]) {
+      upstreams.remove(id);
+      return ok();
+    }
+  }
+
+  // POST /admin/api/keys        {name, channel, monthlyTokenLimit}
+  // PATCH /admin/api/keys/:id   同上，字段可选
   if (parts[0] === 'keys') {
     if (method === 'POST' && !parts[1]) {
-      const { record, key } = store.createApiKey(body.name?.trim());
+      const { record, key } = store.createApiKey({
+        name: body.name?.trim(),
+        channel: body.channel || undefined,
+        monthlyTokenLimit: body.monthlyTokenLimit,
+      });
       const { hash, ...rest } = record;
       return ok({ key, record: rest });
+    }
+    if (method === 'PATCH' && parts[1]) {
+      if (!store.updateApiKey(parts[1], body)) throw httpError(404, 'API Key 不存在');
+      return ok();
     }
     if (method === 'DELETE' && parts[1]) {
       store.deleteApiKey(parts[1]);
@@ -189,4 +225,14 @@ export async function handleAdmin(req, res, url, body, ctx) {
 
 function validWindow(value) {
   return value in WINDOWS ? value : '24h';
+}
+
+// 本自然月的请求数和 token 数，和额度检查用的是同一个口径
+function apiKeysWithUsage(store, requestLog) {
+  const now = new Date();
+  const usage = requestLog.keyUsage(new Date(now.getFullYear(), now.getMonth(), 1).getTime());
+  return store.data.apiKeys.map(({ hash, ...rest }) => ({
+    ...rest,
+    monthUsage: usage[rest.id] || { requests: 0, tokens: 0 },
+  }));
 }

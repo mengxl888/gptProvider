@@ -1,11 +1,11 @@
-// 调用日志：每个 /v1 请求和调试台请求一条记录，存 data/requests.db（Node 自带的 node:sqlite），保留 30 天。
-// 只记元数据（账号、接口、模型、状态、耗时、token），不记对话内容。
+// 调用日志：每个 /v1 请求和调试台请求一条记录，存 data/requests.db（Node 自带的 node:sqlite），保留 32 天（够算整月用量）。
+// 只记元数据（账号或上游、接口、模型、状态、耗时、token），不记对话内容。
 // 健康度：把统计窗口等分成 20 段，每段统计成功/失败数；中断（客户端断开）不计入成功率。
 
 import crypto from 'node:crypto';
 import path from 'node:path';
 
-const RETENTION_MS = 30 * 24 * 3600_000;
+const RETENTION_MS = 32 * 24 * 3600_000;
 const PRUNE_INTERVAL_MS = 6 * 3600_000;
 export const BUCKETS = 20;
 export const WINDOWS = {
@@ -68,6 +68,7 @@ export async function openRequestLog(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
     CREATE INDEX IF NOT EXISTS requests_account_ts ON requests (account_id, ts);
+    CREATE INDEX IF NOT EXISTS requests_key_ts ON requests (api_key_id, ts);
   `);
   return new RequestLog(db);
 }
@@ -102,6 +103,31 @@ export class RequestLog {
 
   prune() {
     this.db?.prepare('DELETE FROM requests WHERE ts < ?').run(Date.now() - RETENTION_MS);
+  }
+
+  // 各下游 Key 从 since 起的请求数和 token 数（输入 + 输出），用于本月用量和额度
+  keyUsage(since) {
+    const usage = {};
+    if (!this.db) return usage;
+    const rows = this.db
+      .prepare(
+        `SELECT api_key_id, COUNT(*) AS n, SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) AS t
+         FROM requests WHERE ts >= ? AND api_key_id IS NOT NULL GROUP BY api_key_id`,
+      )
+      .all(since);
+    for (const row of rows) usage[row.api_key_id] = { requests: row.n, tokens: row.t || 0 };
+    return usage;
+  }
+
+  keyTokens(keyId, since) {
+    if (!this.db) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) AS t
+         FROM requests WHERE api_key_id = ? AND ts >= ?`,
+      )
+      .get(keyId, since);
+    return row?.t || 0;
   }
 
   clear() {

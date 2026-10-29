@@ -15,6 +15,7 @@ import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
+import { UpstreamManager, endpointName } from './upstreams.js';
 
 const MAX_BODY_BYTES = 50 * 1024 * 1024;
 // 每次启动不同，页面据此判断一键更新后服务是否已经重启。
@@ -28,12 +29,13 @@ const accounts = new AccountManager({
   cmd: codex.cmd,
   featureNames: codex.featureNames,
 });
+const upstreams = new UpstreamManager({ store });
 const images = new ImageLibrary({ store, dataDir: config.dataDir });
 const requestLog = await openRequestLog(config.dataDir);
 const updater = new AppUpdater({ config });
-const ctx = { store, accounts, images, codex, requestLog, updater, restart };
+const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, restart };
 
-// 记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
+// Codex 账号渠道记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
 const LOGGED_ENDPOINTS = {
   'POST /v1/chat/completions': {
     name: 'chat.completions',
@@ -91,6 +93,7 @@ async function route(req, res) {
     let keyRecord = null;
     requireBearer(req, (token) => (keyRecord = store.findApiKey(token)), 'API Key 无效');
     store.touchApiKey(keyRecord);
+    if (keyRecord.channel === 'openai') return proxyToUpstream(req, res, url, keyRecord);
 
     if (req.method === 'GET' && pathname === '/v1/models') {
       const account = accounts.activeAccount();
@@ -109,11 +112,46 @@ async function route(req, res) {
         apiKey: keyRecord,
         userAgent: req.headers['user-agent'],
       });
-      return withLog(req, res, entry, () => endpoint.handle(req, res));
+      return withLog(req, res, entry, () => {
+        checkQuota(keyRecord);
+        return endpoint.handle(req, res);
+      });
     }
   }
 
   throw httpError(404, `未找到 ${req.method} ${pathname}`, 'not_found');
+}
+
+// OpenAI API 渠道：/v1 下所有请求原样转发给官方 API Key 上游，包括工具调用和流式输出。
+async function proxyToUpstream(req, res, url, keyRecord) {
+  const subPath = url.pathname.slice('/v1'.length);
+  const options = { subPath, search: url.search, body: await readBody(req) };
+  if (req.method === 'GET' && (subPath === '/models' || subPath.startsWith('/models/'))) {
+    return upstreams.proxy(req, res, options);
+  }
+  const entry = requestLog.begin({
+    endpoint: endpointName(subPath),
+    source: 'api',
+    apiKey: keyRecord,
+    userAgent: req.headers['user-agent'],
+  });
+  return withLog(req, res, entry, () => {
+    checkQuota(keyRecord);
+    return upstreams.proxy(req, res, options);
+  });
+}
+
+// 每月 Token 上限：按调用日志统计本自然月的输入 + 输出 token，到了上限返回 429 insufficient_quota（Codex CLI 遇到它不会重试）。
+function checkQuota(keyRecord) {
+  const limit = keyRecord.monthlyTokenLimit;
+  if (limit == null) return;
+  const now = new Date();
+  const used = requestLog.keyTokens(keyRecord.id, new Date(now.getFullYear(), now.getMonth(), 1).getTime());
+  if (used >= limit) {
+    const err = httpError(429, `这个 API Key 本月的 Token 额度已用完（已用 ${used} / 上限 ${limit}），下月 1 日恢复`, 'insufficient_quota');
+    err.type = 'insufficient_quota';
+    throw err;
+  }
 }
 
 function requireBearer(req, check, message) {
@@ -156,8 +194,8 @@ function sendFile(res, file, type, cacheControl = 'no-store') {
 function sendCors(res) {
   res.writeHead(204, {
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type, openai-beta',
+    'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
   });
   res.end();
 }
@@ -172,7 +210,7 @@ function sendError(res, err) {
   sendJson(res, status, {
     error: {
       message: err.message,
-      type: status >= 500 ? 'server_error' : 'invalid_request_error',
+      type: err.type || (status >= 500 ? 'server_error' : 'invalid_request_error'),
       code: err.code || null,
       ...(err.details ? { details: err.details } : {}),
     },
