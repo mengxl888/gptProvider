@@ -44,6 +44,7 @@ export async function runTurn(client, { thread, input, turn, onEvent = () => {},
         case 'item/started':
           if (params.item?.type === 'agentMessage') phases.set(params.item.id, params.item.phase);
           if (params.item?.type === 'imageGeneration') onEvent({ type: 'image_started', itemId: params.item.id });
+          if (params.item?.type === 'webSearch') onEvent({ type: 'search_started', itemId: params.item.id });
           break;
         case 'item/agentMessage/delta': {
           // commentary 是模型的中间说明，归到 reasoning，不算正式回复。
@@ -57,6 +58,16 @@ export async function runTurn(client, { thread, input, turn, onEvent = () => {},
         case 'item/completed':
           if (params.item?.type === 'agentMessage') {
             result.messages.push({ text: params.item.text, phase: params.item.phase });
+            onEvent({
+              type: 'item_done',
+              itemId: params.item.id,
+              kind: params.item.phase === 'commentary' ? 'reasoning' : 'text',
+              text: params.item.text,
+            });
+          } else if (params.item?.type === 'reasoning') {
+            onEvent({ type: 'item_done', itemId: params.item.id, kind: 'reasoning' });
+          } else if (params.item?.type === 'webSearch') {
+            onEvent({ type: 'search', item: params.item });
           } else if (params.item?.type === 'imageGeneration') {
             // 内置 image_gen.imagegen 工具的结果：新版本可能只给 fileId（附件引用）而不内嵌 base64，
             // 但图片总会落盘到 CODEX_HOME/generated_images（app-server/src/extensions.rs），savedPath 指向它。

@@ -13,10 +13,10 @@ const HISTORY_PREAMBLE =
   'Do not repeat the transcript markers in your reply.';
 
 // 在对话里选 gpt-image-* 时，这一轮固定走生图。
-const IMAGE_CHAT_INSTRUCTIONS =
+export const IMAGE_CHAT_INSTRUCTIONS =
   'For this reply, call the image_gen.imagegen tool exactly once to create or edit the image the user asks for. ' +
   'Do not ask for confirmation. After it finishes, reply with one short sentence.';
-const NO_IMAGE_INSTRUCTIONS =
+export const NO_IMAGE_INSTRUCTIONS =
   'Image generation is not available in this conversation. If the user asks for an image, ' +
   'say briefly that image generation is turned off here instead of trying to create one.';
 
@@ -200,7 +200,8 @@ function validate(body) {
 }
 
 // system/developer 消息进 developerInstructions；其余消息拼成一段对话记录作为本回合输入。
-function buildPrompt(body) {
+// /v1/responses 会先把 input 转成同样的 messages 再调用这里。
+export function buildPrompt(body) {
   const instructions = [];
   const turns = [];
   for (const msg of body.messages) {

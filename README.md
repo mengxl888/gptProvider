@@ -3,7 +3,7 @@
 把你自己的 ChatGPT 账号（通过官方 Codex 登录）提供成 **OpenAI 兼容接口**，包括对话和生图，自带管理后台。
 
 - 管理后台：添加账号、查看额度和请求健康度、调用日志、模型列表、生图图库、调试台、API Key
-- 接口：`/v1/chat/completions`（支持流式）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
+- 接口：`/v1/chat/completions`、`/v1/responses`（都支持流式）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
 - 一键更新：GitHub 发布新版本后，在后台点「更新」即可升级，失败自动回退
 - Docker 一条命令部署，也可以直接用 Node 运行
 
@@ -232,6 +232,7 @@ npm start
 |---|---|
 | `GET /v1/models` | 当前账号可用的模型（来自 Codex `model/list`），非 Free 账号额外包含 `gpt-image-2` |
 | `POST /v1/chat/completions` | 支持流式、非流式和 `stream_options.include_usage` |
+| `POST /v1/responses` | OpenAI Responses 接口：流式/非流式、多轮（`previous_response_id`）、推理摘要、结构化输出、内置工具 `image_generation` / `web_search`，详见下文 |
 | `POST /v1/images/generations` | 文生图，返回 `b64_json`（默认）或 `url` |
 | `POST /v1/images/edits` | 图片编辑，支持 OpenAI SDK 的 multipart 表单（`image` / `image[]`，最多 5 张） |
 | `GET /images/<id>.png` | 生成的图片文件（文件名是随机 id，不需要鉴权） |
@@ -245,6 +246,11 @@ client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-local-...")
 
 # 对话
 print(client.chat.completions.create(model="gpt-6.1-sol", messages=[{"role": "user", "content": "你好"}]).choices[0].message.content)
+
+# Responses 接口
+r = client.responses.create(model="gpt-6.1-sol", instructions="用中文回答", input="你好")
+print(r.output_text)
+r2 = client.responses.create(model="gpt-6.1-sol", previous_response_id=r.id, input="刚才我说了什么？")
 
 # 文生图
 img = client.images.generate(model="gpt-image-2", prompt="一只戴着宇航员头盔的橘猫，扁平插画风格", size="1024x1024")
@@ -270,6 +276,23 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 | 生成的图片 | 存进图库，回复里以 Markdown 图片 `![image](http://<Host>/images/...)` 返回 |
 
 不支持：`tools` / function calling（会返回 400）、`n > 1`。`temperature`、`max_tokens` 等采样参数会被忽略，Codex 不开放这些参数。
+
+### Responses 接口（`/v1/responses`）
+
+| Responses 参数 | 转换方式 |
+|---|---|
+| `input` | 字符串，或消息数组（`input_text`、`input_image` 的 URL / data URL、历史里的 `output_text`），和对话接口一样拼成一轮输入 |
+| `instructions` | Codex `developerInstructions`。和官方一致，不会沿用到用 `previous_response_id` 续聊的下一轮 |
+| `previous_response_id` | 网关在内存里保存每次的对话记录，6 小时有效，重启后失效；`store: false` 时不保存 |
+| `reasoning.effort` / `reasoning.summary` | 回合 `effort` / `summary`，推理摘要输出为 `reasoning` 项 |
+| `text.format` | `json_schema` 转成回合 `outputSchema`；`json_object` 追加"只输出 JSON"的指令 |
+| `tools: [{type: "image_generation"}]` | 允许生图，输出 `image_generation_call`，`result` 是 base64 图片，同时存进图库 |
+| `tools: [{type: "web_search"}]`（或 `web_search_preview`） | 允许联网搜索，输出 `web_search_call` |
+| `stream: true` | 标准 Responses SSE 事件，从 `response.created` 到 `response.completed`，不发 `[DONE]` |
+
+和官方语义一样：请求里没带 `image_generation` / `web_search` 工具时，不会生图，也不会联网搜索。`model` 填任意 `gpt-image-*` 时这一轮固定生图。
+
+**不支持客户端自定义工具**：`function`、`custom`、`mcp`、`computer_use`、`local_shell` 等，以及 `function_call` / `function_call_output` 这类输入项，会返回 400（`unsupported_tool` / `unsupported_input_item`）。网关底层是 Codex 智能体，工具调用没法交回客户端执行。所以 Codex CLI 这类需要在本地执行工具的客户端，请直接用 `codex login` 登录自己的账号，不要经过本网关。另外也不支持 `background`、`input_file` / `file_id`，以及 `GET /v1/responses/{id}`。
 
 ---
 
@@ -402,6 +425,7 @@ src/
   codex/accounts.js   账号、登录、进程管理、模型和额度的后台刷新
   codex/turn.js       单次回合执行（文本、推理、生图事件）、错误映射
   openai/chat.js      Chat Completions 协议转换
+  openai/responses.js Responses 协议转换（输出项和流式事件）
   openai/images.js    Images API 协议转换
   admin/routes.js     管理后台 API
 public/admin.html     管理后台页面

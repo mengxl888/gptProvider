@@ -468,6 +468,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="card-head"><h2>接口</h2></div>
             <div class="endpoint"><span class="m get">GET</span><span class="p mono">/v1/models</span><span class="d">模型列表</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/chat/completions</span><span class="d">对话，支持流式</span></div>
+            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/responses</span><span class="d">Responses 接口，支持流式</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
             <div class="card-pad small text-2" style="border-top:1px solid var(--border)">
@@ -508,7 +509,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="filters">
             <select class="select" id="f-account"></select>
             <select class="select" id="f-status"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="aborted">中断</option></select>
-            <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="images.generations">生图</option><option value="images.edits">改图</option></select>
+            <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="responses">Responses</option><option value="images.generations">生图</option><option value="images.edits">改图</option></select>
             <select class="select" id="f-source"><option value="">全部来源</option><option value="api">API</option><option value="playground">调试台</option></select>
             <span class="right small muted" id="logs-updated"></span>
           </div>
@@ -1562,7 +1563,7 @@ async function sendChat() {
 }
 
 // ============ 调用日志 ============
-const ENDPOINT_NAME = { 'chat.completions': '对话', 'images.generations': '生图', 'images.edits': '改图' };
+const ENDPOINT_NAME = { 'chat.completions': '对话', responses: 'Responses', 'images.generations': '生图', 'images.edits': '改图' };
 
 function renderLogsPage() {
   $('logs-disabled').hidden = S.state.logsEnabled !== false;

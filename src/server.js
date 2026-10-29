@@ -11,6 +11,7 @@ import { ImageLibrary } from './images.js';
 import { startLoginCallbackForward } from './loginForward.js';
 import { handleChatCompletions } from './openai/chat.js';
 import { IMAGE_MODEL_ID, handleImageEdits, handleImageGenerations } from './openai/images.js';
+import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
@@ -37,6 +38,10 @@ const LOGGED_ENDPOINTS = {
   'POST /v1/chat/completions': {
     name: 'chat.completions',
     handle: async (req, res) => handleChatCompletions(req, res, parseJson(await readBody(req)), ctx),
+  },
+  'POST /v1/responses': {
+    name: 'responses',
+    handle: async (req, res) => handleResponses(req, res, parseJson(await readBody(req)), ctx),
   },
   'POST /v1/images/generations': {
     name: 'images.generations',
