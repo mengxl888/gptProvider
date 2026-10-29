@@ -1,0 +1,60 @@
+version: 54
+jobs:
+- name: deploy
+  steps:
+  - type: CheckoutStep
+    name: checkout
+    cloneCredential:
+      type: DefaultCredential
+    withLfs: false
+    withSubmodules: false
+    condition: SUCCESSFUL
+    optional: false
+  - type: CommandStep
+    name: build and run
+    runInContainer: true
+    image: docker:27-cli
+    interpreter:
+      type: PosixInterpreter
+      shell: sh
+      commands: |
+        # 需要执行器开启「挂载 Docker Sock」：镜像构建和容器都在 OneDev 所在主机的 Docker 上
+        set -e
+        IMAGE=gptprovider:latest
+        NAME=gptprovider
+
+        echo "== 构建镜像"
+        docker build -t $IMAGE .
+
+        echo "== 替换容器（数据在 gptprovider-data 卷里，替换容器不会丢）"
+        docker rm -f $NAME >/dev/null 2>&1 || true
+        docker run -d --name $NAME --restart unless-stopped --init \
+          -p 127.0.0.1:8787:8787 -p 127.0.0.1:1455:1455 \
+          -e TZ=Asia/Shanghai \
+          -v gptprovider-data:/app/data \
+          $IMAGE
+
+        echo "== 等待服务就绪"
+        ok=0
+        for i in $(seq 1 60); do
+          if docker exec $NAME node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(1))"; then ok=1; break; fi
+          sleep 2
+        done
+        docker ps --filter name=$NAME
+        if [ "$ok" != 1 ]; then docker logs $NAME; exit 1; fi
+        docker logs $NAME 2>&1 | grep -E "codex:|管理口令|快捷登录" || true
+        docker image prune -f >/dev/null 2>&1 || true
+    runAs: 0:0
+    useTTY: false
+    condition: SUCCESSFUL
+    optional: false
+  triggers:
+  - type: BranchUpdateTrigger
+    branches: main
+    userMatch: anyone
+  retryCondition: never
+  maxAttempts: 1
+  retryDelay: 30
+  includeUpstreamWhenRebuild: false
+  includeDownstreamWhenRebuild: false
+  timeout: 3600
