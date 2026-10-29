@@ -1,0 +1,21 @@
+{
+  "name": "gptprovider",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本机 OpenAI 兼容网关：账号管理后台 + /v1 接口，底层驱动官方 codex app-server",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mengxl888/gptProvider"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node launcher.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "@openai/codex": "^0.165.0"
+  }
+}

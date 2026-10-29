@@ -1,0 +1,5 @@
+# 运行数据：每个账号的 CODEX_HOME（含 auth.json 登录凭据）、管理口令、API Key 哈希、调用日志、生成的图片
+data/
+node_modules/
+*.log
+.DS_Store

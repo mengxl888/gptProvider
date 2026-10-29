@@ -1,0 +1,278 @@
+// 调用日志：每个 /v1 请求和调试台请求一条记录，存 data/requests.db（Node 自带的 node:sqlite），保留 30 天。
+// 只记元数据（账号、接口、模型、状态、耗时、token），不记对话内容。
+// 健康度：把统计窗口等分成 20 段，每段统计成功/失败数；中断（客户端断开）不计入成功率。
+
+import crypto from 'node:crypto';
+import path from 'node:path';
+
+const RETENTION_MS = 30 * 24 * 3600_000;
+const PRUNE_INTERVAL_MS = 6 * 3600_000;
+export const BUCKETS = 20;
+export const WINDOWS = {
+  '1h': 3600_000,
+  '24h': 24 * 3600_000,
+  '7d': 7 * 24 * 3600_000,
+  '30d': 30 * 24 * 3600_000,
+};
+
+const COLUMNS = [
+  'id', 'ts', 'duration_ms', 'endpoint', 'source', 'stream', 'model', 'resolved_model',
+  'account_id', 'account_email', 'api_key_id', 'api_key_name', 'user_agent',
+  'status', 'http_status', 'error_code', 'error_message',
+  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images',
+];
+
+export async function openRequestLog(dataDir) {
+  let DatabaseSync;
+  // node:sqlite 加载时会打一条 ExperimentalWarning，这里只屏蔽这一条。
+  const emitWarning = process.emitWarning;
+  process.emitWarning = (warning, ...args) => {
+    if (String(warning?.message ?? warning).includes('SQLite')) return;
+    emitWarning.call(process, warning, ...args);
+  };
+  try {
+    ({ DatabaseSync } = await import('node:sqlite'));
+  } catch {
+    console.warn('[gateway] 当前 Node 不支持 node:sqlite（需要 22.13+），调用日志不可用');
+    return new RequestLog(null);
+  } finally {
+    process.emitWarning = emitWarning;
+  }
+
+  const db = new DatabaseSync(path.join(dataDir, 'requests.db'));
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS requests (
+      id TEXT PRIMARY KEY,
+      ts INTEGER NOT NULL,
+      duration_ms INTEGER,
+      endpoint TEXT NOT NULL,
+      source TEXT NOT NULL,
+      stream INTEGER NOT NULL DEFAULT 0,
+      model TEXT,
+      resolved_model TEXT,
+      account_id TEXT,
+      account_email TEXT,
+      api_key_id TEXT,
+      api_key_name TEXT,
+      user_agent TEXT,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      input_tokens INTEGER,
+      cached_tokens INTEGER,
+      output_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      images INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
+    CREATE INDEX IF NOT EXISTS requests_account_ts ON requests (account_id, ts);
+  `);
+  return new RequestLog(db);
+}
+
+export class RequestLog {
+  constructor(db) {
+    this.db = db;
+    if (!db) return;
+    this.insert = db.prepare(
+      `INSERT INTO requests (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
+    );
+    this.prune();
+    setInterval(() => this.prune(), PRUNE_INTERVAL_MS).unref();
+  }
+
+  get enabled() {
+    return Boolean(this.db);
+  }
+
+  begin(meta) {
+    return new LogEntry(this, meta);
+  }
+
+  write(row) {
+    if (!this.db) return;
+    try {
+      this.insert.run(...COLUMNS.map((c) => row[c] ?? null));
+    } catch (err) {
+      console.warn('[gateway] 写调用日志失败:', err.message);
+    }
+  }
+
+  prune() {
+    this.db?.prepare('DELETE FROM requests WHERE ts < ?').run(Date.now() - RETENTION_MS);
+  }
+
+  clear() {
+    this.db?.exec('DELETE FROM requests');
+  }
+
+  list({ window = '24h', limit = 50, offset = 0, account, status, endpoint, source } = {}) {
+    if (!this.db) return { total: 0, data: [] };
+    const where = ['ts >= ?'];
+    const args = [Date.now() - (WINDOWS[window] || WINDOWS['24h'])];
+    for (const [column, value] of [['account_id', account], ['status', status], ['endpoint', endpoint], ['source', source]]) {
+      if (value) {
+        where.push(`${column} = ?`);
+        args.push(value);
+      }
+    }
+    const sql = where.join(' AND ');
+    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM requests WHERE ${sql}`).get(...args).n;
+    const data = this.db
+      .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
+      .all(...args, Math.min(Number(limit) || 50, 200), Number(offset) || 0);
+    return { total, data };
+  }
+
+  // 整体和每个账号：窗口内的成功/失败/中断数、平均耗时、token，以及 20 段健康度序列。
+  stats(window = '24h') {
+    const windowMs = WINDOWS[window] || WINDOWS['24h'];
+    const until = Date.now();
+    const since = until - windowMs;
+    const bucketMs = windowMs / BUCKETS;
+    const result = { window, since, until, bucketMs, buckets: BUCKETS, overall: emptyStats(), accounts: {} };
+    if (!this.db) return result;
+
+    const totals = this.db
+      .prepare(
+        `SELECT account_id,
+                SUM(status = 'success') AS s, SUM(status = 'error') AS f, SUM(status = 'aborted') AS a,
+                SUM(CASE WHEN status = 'success' THEN duration_ms END) AS dsum,
+                SUM(input_tokens) AS it, SUM(cached_tokens) AS ct, SUM(output_tokens) AS ot, SUM(images) AS im
+         FROM requests WHERE ts >= ? GROUP BY account_id`,
+      )
+      .all(since);
+    const durations = { overall: 0 };
+    for (const row of totals) {
+      const targets = [result.overall];
+      if (row.account_id) targets.push((result.accounts[row.account_id] ||= emptyStats()));
+      for (const t of targets) {
+        t.success += row.s;
+        t.failure += row.f;
+        t.aborted += row.a;
+        t.inputTokens += row.it || 0;
+        t.cachedTokens += row.ct || 0;
+        t.outputTokens += row.ot || 0;
+        t.images += row.im || 0;
+      }
+      durations.overall += row.dsum || 0;
+      if (row.account_id) durations[row.account_id] = row.dsum || 0;
+    }
+    result.overall.avgMs = result.overall.success ? Math.round(durations.overall / result.overall.success) : null;
+    for (const [id, stats] of Object.entries(result.accounts)) {
+      stats.avgMs = stats.success ? Math.round(durations[id] / stats.success) : null;
+    }
+
+    const series = this.db
+      .prepare(
+        `SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b,
+                SUM(status = 'success') AS s, SUM(status = 'error') AS f
+         FROM requests WHERE ts >= ? GROUP BY account_id, b`,
+      )
+      .all(since, bucketMs, since);
+    for (const row of series) {
+      const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
+      const targets = [result.overall.series];
+      if (row.account_id) targets.push((result.accounts[row.account_id] ||= emptyStats()).series);
+      for (const t of targets) {
+        t[b].s += row.s;
+        t[b].f += row.f;
+      }
+    }
+    return result;
+  }
+}
+
+function emptyStats() {
+  return {
+    success: 0,
+    failure: 0,
+    aborted: 0,
+    avgMs: null,
+    inputTokens: 0,
+    cachedTokens: 0,
+    outputTokens: 0,
+    images: 0,
+    series: Array.from({ length: BUCKETS }, () => ({ s: 0, f: 0 })),
+  };
+}
+
+// 一次请求的日志条目：处理过程中逐步补充信息，结束时写入一行。
+class LogEntry {
+  constructor(log, { endpoint, source, apiKey, userAgent }) {
+    this.log = log;
+    this.done = false;
+    this.row = {
+      id: crypto.randomUUID(),
+      ts: Date.now(),
+      endpoint,
+      source,
+      stream: 0,
+      api_key_id: apiKey?.id ?? null,
+      api_key_name: apiKey?.name ?? (source === 'playground' ? '后台调试台' : null),
+      user_agent: userAgent ? String(userAgent).slice(0, 200) : null,
+      status: 'success',
+    };
+  }
+
+  request({ model, stream }) {
+    this.row.model = model || null;
+    this.row.stream = stream ? 1 : 0;
+  }
+
+  account(account) {
+    this.row.account_id = account.id;
+    this.row.account_email = account.email || account.label || null;
+  }
+
+  resolvedModel(model) {
+    if (model) this.row.resolved_model = model;
+  }
+
+  // Codex 的 TokenUsageBreakdown
+  usage(usage) {
+    if (!usage) return;
+    this.row.input_tokens = usage.inputTokens ?? null;
+    this.row.cached_tokens = usage.cachedInputTokens ?? null;
+    this.row.output_tokens = usage.outputTokens ?? null;
+    this.row.reasoning_tokens = usage.reasoningOutputTokens ?? null;
+  }
+
+  images(count) {
+    this.row.images = count;
+  }
+
+  fail(err) {
+    if (err?.aborted) {
+      this.row.status = 'aborted';
+      return;
+    }
+    this.row.status = 'error';
+    this.row.http_status = err?.status || 500;
+    this.row.error_code = err?.code ? String(err.code) : null;
+    this.row.error_message = String(err?.message || err).slice(0, 2000);
+  }
+
+  end(res) {
+    if (this.done) return;
+    this.done = true;
+    this.row.duration_ms = Date.now() - this.row.ts;
+    if (this.row.http_status == null && this.row.status !== 'aborted') this.row.http_status = res?.statusCode || 200;
+    this.log.write(this.row);
+  }
+}
+
+// 包一层处理函数：抛错记为失败，结束时写日志。处理函数通过 req.log 补充信息。
+export async function withLog(req, res, entry, fn) {
+  req.log = entry;
+  try {
+    await fn();
+  } catch (err) {
+    entry.fail(err);
+    throw err;
+  } finally {
+    entry.end(res);
+  }
+}

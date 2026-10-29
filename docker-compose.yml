@@ -1,0 +1,25 @@
+services:
+  gptprovider:
+    image: ghcr.io/mengxl888/gptprovider:latest
+    # 想从源码构建（比如拉不到 ghcr.io 的镜像）：注释上一行，打开下面这行，再执行 docker compose up -d --build
+    # build: .
+    container_name: gptprovider
+    restart: unless-stopped
+    init: true
+    ports:
+      # 默认只对本机开放。部署在服务器上时用 SSH 隧道访问，见 README「部署在服务器上」
+      - "127.0.0.1:8787:8787"   # 管理后台 + /v1 接口
+      - "127.0.0.1:1455:1455"   # 浏览器登录 ChatGPT 的回调
+    environment:
+      TZ: Asia/Shanghai
+      # 允许访问的域名/IP（默认只允许 localhost、127.0.0.1）
+      # ALLOWED_HOSTS: "localhost,127.0.0.1,gpt.example.com"
+      # 访问不了 GitHub 时，给一键更新配一个 GitHub 代理前缀
+      # GITHUB_PROXY: "https://your-github-proxy/"
+      # 后台「升级 Codex」用的 npm 镜像
+      # NPM_REGISTRY: "https://registry.npmmirror.com"
+    volumes:
+      - gptprovider-data:/app/data
+
+volumes:
+  gptprovider-data:

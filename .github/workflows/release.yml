@@ -1,0 +1,88 @@
+name: Release
+
+# 推送 v1.2.3 这样的标签时：校验版本号 → 构建镜像并冒烟测试 → 推送多架构镜像到 GHCR → 创建 GitHub Release。
+# 后台的一键更新读取的就是这里创建的 Release。
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/gptprovider
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验标签和 package.json 版本一致
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::package.json 版本是 $PKG_VERSION，标签是 $GITHUB_REF_NAME，请先用 npm version 更新版本号"
+            exit 1
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建冒烟测试镜像（amd64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: gptprovider:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 冒烟测试
+        run: |
+          docker run -d --name smoke -p 127.0.0.1:8787:8787 gptprovider:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/healthz; then break; fi
+            sleep 2
+          done
+          echo
+          curl -fsS http://127.0.0.1:8787/healthz | grep -q "\"version\":\"${GITHUB_REF_NAME#v}\""
+          docker exec smoke node /app/node_modules/@openai/codex/bin/codex.js --version
+          docker logs smoke
+          docker rm -f smoke
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: 构建并推送多架构镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=""
+          case "$GITHUB_REF_NAME" in *-*) FLAGS="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $FLAGS

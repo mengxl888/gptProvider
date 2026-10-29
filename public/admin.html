@@ -1,0 +1,1756 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Gateway</title>
+<style>
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f2f4f7; --surface-3: #e9ecf1;
+  --border: #e4e7ec; --border-strong: #d0d5dd;
+  --text: #101828; --text-2: #475467; --muted: #8a94a6;
+  --accent: #4f46e5; --accent-hover: #4338ca; --accent-soft: #eef0ff; --accent-text: #ffffff;
+  --success: #12a150; --success-soft: #e8f8ef; --warn: #d97706; --warn-soft: #fff6e6;
+  --danger: #dc2626; --danger-soft: #fdeeee;
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.05);
+  --shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+  --shadow-lg: 0 20px 40px -12px rgba(16,24,40,.22);
+  --code-bg: #0f1420; --code-text: #d7dce5;
+  --radius: 12px; --radius-sm: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0d12; --surface: #12151c; --surface-2: #181c25; --surface-3: #222736;
+    --border: #232836; --border-strong: #303748;
+    --text: #e8eaf0; --text-2: #a7afc0; --muted: #6f788b;
+    --accent: #818cf8; --accent-hover: #939cfa; --accent-soft: rgba(129,140,248,.13); --accent-text: #0b0d12;
+    --success: #34d399; --success-soft: rgba(52,211,153,.12); --warn: #fbbf24; --warn-soft: rgba(251,191,36,.12);
+    --danger: #f87171; --danger-soft: rgba(248,113,113,.12);
+    --shadow-sm: none; --shadow: 0 0 0 1px rgba(255,255,255,.02); --shadow-lg: 0 24px 48px -12px rgba(0,0,0,.6);
+    --code-bg: #0a0d14; --code-text: #d7dce5;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mono, code, pre { font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace; }
+.num { font-variant-numeric: tabular-nums; }
+[hidden] { display: none !important; }
+
+/* ---------- layout ---------- */
+.layout { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
+.sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px;
+  background: var(--surface); border-right: 1px solid var(--border); padding: 18px 14px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 18px; }
+.brand-mark { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: #fff;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 55%, #ec4899); box-shadow: 0 6px 16px -6px rgba(99,102,241,.6); }
+.brand-mark svg.i { width: 18px; height: 18px; stroke-width: 2.4; }
+.brand-name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
+.brand-sub { color: var(--muted); font-size: 12px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text-2);
+  font-weight: 500; text-decoration: none; transition: background .12s, color .12s; }
+.nav a:hover { background: var(--surface-2); color: var(--text); }
+.nav a.active { background: var(--accent-soft); color: var(--accent); }
+.nav .count { margin-left: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 0 7px; }
+.nav a.active .count { background: transparent; color: var(--accent); }
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.mini-account { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.mini-account .who { min-width: 0; flex: 1; }
+.mini-account .email { font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-account .meta { font-size: 11.5px; color: var(--muted); }
+.foot-row { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; padding: 0 4px; }
+
+.main { min-width: 0; padding: 28px 36px 56px; max-width: 1240px; width: 100%; }
+.page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+.page-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+.page-head p { margin: 4px 0 0; color: var(--text-2); }
+.page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ---------- primitives ---------- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card-pad { padding: 20px; }
+.card-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.card-head h2 { margin: 0; font-size: 14.5px; font-weight: 620; }
+.card-head .sub { color: var(--muted); font-size: 12.5px; }
+.card-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.grid { display: grid; gap: 16px; }
+.muted { color: var(--muted); } .text-2 { color: var(--text-2); }
+.small { font-size: 12.5px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 14px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+  font-weight: 550; cursor: pointer; white-space: nowrap; box-shadow: var(--shadow-sm); transition: background .12s, border-color .12s, color .12s, opacity .12s; }
+.btn:hover { background: var(--surface-2); text-decoration: none; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
+.btn.ghost:hover { background: var(--surface-2); color: var(--text); }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { background: var(--danger-soft); border-color: transparent; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.btn.icon { width: 32px; padding: 0; }
+.btn.sm.icon { width: 28px; }
+.btn.block { width: 100%; }
+.btn .spin, .spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.input, .select, .textarea { width: 100%; height: 36px; padding: 0 12px; background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); outline: none; transition: border-color .12s, box-shadow .12s; }
+.textarea { height: auto; padding: 10px 12px; resize: vertical; line-height: 1.5; }
+.select { appearance: none; padding-right: 32px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238a94a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; }
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field label, .label { display: block; font-size: 12.5px; font-weight: 550; color: var(--text-2); margin-bottom: 6px; }
+
+.badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 550;
+  background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.badge.accent { background: var(--accent-soft); color: var(--accent); }
+.badge.success { background: var(--success-soft); color: var(--success); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.danger { background: var(--danger-soft); color: var(--danger); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 12px;
+  border: 1px solid var(--border); color: var(--text-2); background: var(--surface); }
+.chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+.progress { height: 6px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
+.progress > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .4s; }
+.progress.warn > i { background: var(--warn); } .progress.danger > i { background: var(--danger); }
+
+.avatar { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 650; color: #fff; flex: none; font-size: 14px; }
+.avatar.sm { width: 30px; height: 30px; border-radius: 8px; font-size: 12.5px; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; font-weight: 550; color: var(--muted); text-transform: none; padding: 10px 20px; background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 14px 20px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+
+.empty { text-align: center; padding: 48px 20px; color: var(--text-2); }
+.empty .icon-wrap { width: 48px; height: 48px; border-radius: 14px; margin: 0 auto 14px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.empty .icon-wrap svg.i { width: 22px; height: 22px; }
+.empty h3 { margin: 0 0 4px; font-size: 15px; color: var(--text); }
+.empty p { margin: 0 0 16px; }
+
+.switch { position: relative; width: 40px; height: 22px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; background: var(--surface-3); border-radius: 999px; cursor: pointer; transition: background .15s; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(18px); }
+
+.segmented { display: inline-flex; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; gap: 2px; }
+.segmented button { border: none; background: transparent; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--text-2); font-weight: 550; font-size: 13px; }
+.segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+.copy-field { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.copy-field .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+
+.code { position: relative; background: var(--code-bg); color: var(--code-text); border-radius: 10px; }
+.code pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-size: 12.5px; line-height: 1.65; }
+.code .btn { position: absolute; top: 8px; right: 8px; background: rgba(255,255,255,.08); border-color: transparent; color: #cbd2de; box-shadow: none; }
+.code .btn:hover { background: rgba(255,255,255,.16); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding: 0 20px; }
+.tabs button { border: none; background: none; padding: 11px 4px; margin-right: 14px; cursor: pointer; color: var(--text-2); font-weight: 550; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+
+.banner { display: flex; gap: 14px; align-items: center; padding: 14px 18px; border-radius: var(--radius); border: 1px solid; margin-bottom: 16px; }
+.banner.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.banner > svg.i { color: var(--warn); width: 20px; height: 20px; }
+.banner .txt { flex: 1; min-width: 0; }
+.banner .txt b { display: block; margin-bottom: 2px; font-weight: 620; }
+.banner .txt span { color: var(--text-2); font-size: 13px; }
+.banner.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.banner.info > svg.i { color: var(--accent); }
+.banner .notes, .release-notes { margin: 6px 0 2px; font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.release-notes { max-height: 240px; overflow-y: auto; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+details.notes-box { margin-top: 8px; font-size: 12.5px; }
+details.notes-box summary { cursor: pointer; color: var(--accent); }
+.overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgba(10,12,18,.55); backdrop-filter: blur(3px); }
+.overlay .box { background: var(--surface); color: var(--text); border-radius: 16px; padding: 28px 32px; text-align: center; box-shadow: var(--shadow-lg); width: min(420px, 100%); }
+.overlay .box svg.i { width: 30px; height: 30px; color: var(--accent); margin-bottom: 12px; }
+.overlay .box b { display: block; font-size: 15px; margin-bottom: 6px; }
+.update-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 6px; vertical-align: middle; }
+.inline-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+/* ---------- overview ---------- */
+.stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.stat { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.stat .stat-label { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; font-weight: 550; }
+.stat .stat-icon { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.stat .stat-value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.stat .stat-value.text { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; line-height: 1.5; }
+.stat .stat-foot { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.overview-grid { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); align-items: start; }
+.endpoint { display: flex; align-items: center; gap: 10px; padding: 11px 20px; border-bottom: 1px solid var(--border); }
+.endpoint:last-child { border-bottom: none; }
+.endpoint .m { font-size: 11px; font-weight: 700; width: 42px; text-align: center; border-radius: 5px; padding: 2px 0; }
+.endpoint .m.get { background: var(--success-soft); color: var(--success); }
+.endpoint .m.post { background: var(--accent-soft); color: var(--accent); }
+.endpoint .p { font-size: 13px; }
+.endpoint .d { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+
+/* ---------- health ---------- */
+:root { --hb-ok: #22c55e; --hb-good: #84cc16; --hb-warn: #eab308; --hb-bad: #f97316; --hb-down: #ef4444; }
+.health { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 4px; flex: 1; min-width: 0; }
+.health .hb { height: 22px; border-radius: 4px; background: var(--surface-3); transition: transform .1s; }
+.health .hb:hover { transform: scaleY(1.12); }
+.health.lg .hb { height: 34px; border-radius: 5px; }
+.hb.ok { background: var(--hb-ok); } .hb.good { background: var(--hb-good); } .hb.warn { background: var(--hb-warn); }
+.hb.bad { background: var(--hb-bad); } .hb.down { background: var(--hb-down); }
+.health-row { display: flex; align-items: center; gap: 14px; }
+.rate { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 58px; text-align: right; font-size: 15px; }
+.rate.ok { color: var(--success); } .rate.warn { color: var(--warn); } .rate.bad { color: var(--danger); } .rate.none { color: var(--muted); }
+.req-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; font-size: 13px; flex-wrap: wrap; }
+.req-head .req-label { letter-spacing: .12em; color: var(--text-2); font-weight: 550; }
+.req-counts { display: flex; gap: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.req-counts .ok { color: var(--success); } .req-counts .bad { color: var(--danger); } .req-counts .mid { color: var(--muted); font-weight: 550; }
+.health-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-top: 6px; margin-right: 72px; }
+.health-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
+.health-meta b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------- logs ---------- */
+.filters { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); align-items: center; }
+.filters .select { width: auto; min-width: 140px; height: 32px; font-size: 13px; }
+.filters .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.log-table td { padding: 11px 10px; font-size: 13px; white-space: nowrap; }
+.log-table th { padding: 10px; }
+.log-table td:first-child, .log-table th:first-child { padding-left: 20px; }
+.log-table tr.log-row { cursor: pointer; }
+.log-table tr.open td { background: var(--surface-2); }
+.log-table .clip { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.log-table td.err-cell { white-space: normal; min-width: 150px; max-width: 320px; color: var(--danger); font-size: 12.5px; }
+.log-table td.err-cell div { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.log-detail td { background: var(--surface-2); white-space: normal; padding: 4px 16px 16px; }
+.log-detail .kv { padding: 10px 0 0; grid-template-columns: 110px 1fr; }
+.log-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; color: var(--danger); }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); }
+.pager .btns { display: flex; gap: 8px; }
+
+/* ---------- accounts ---------- */
+.account-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+.account-top .title { font-weight: 650; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.provider { height: 26px; padding: 0 12px; font-size: 13px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; flex: none; }
+.ident { padding: 0 20px 14px; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.account-section { padding: 0 20px 16px; }
+.account-card { display: flex; flex-direction: column; }
+.account-card.active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 3px var(--accent-soft); }
+.account-top { display: flex; gap: 10px; align-items: center; padding: 18px 20px 6px; }
+.account-top .who { min-width: 0; flex: 1; }
+.account-top .name { font-weight: 620; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.account-top .email { color: var(--text-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.limits { padding: 0 20px 16px; display: flex; flex-direction: column; gap: 12px; }
+.limit-row .top { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 6px; color: var(--text-2); }
+.limit-row .top b { color: var(--text); font-weight: 600; }
+.limit-row .reset { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.account-error { margin: 0 20px 14px; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.account-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 14px 12px 20px; border-top: 1px solid var(--border); }
+.account-foot .when { color: var(--muted); font-size: 12px; margin-right: auto; }
+.add-card { border: 1.5px dashed var(--border-strong); border-radius: var(--radius); display: grid; place-items: center; min-height: 220px;
+  color: var(--text-2); cursor: pointer; background: transparent; transition: border-color .12s, color .12s, background .12s; }
+.add-card:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.add-card .inner { display: flex; flex-direction: column; align-items: center; gap: 10px; font-weight: 550; }
+.add-card .plus { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--surface-2); }
+
+/* ---------- models ---------- */
+.model-name { font-weight: 600; }
+.model-id { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-2); }
+.model-desc { color: var(--text-2); font-size: 13px; max-width: 380px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.refresh-note { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+
+/* ---------- images ---------- */
+.gen-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.gen-options { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.gen-options .field { min-width: 140px; }
+.gen-options .grow { flex: 1; }
+.gallery { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.tile { position: relative; aspect-ratio: 1; border-radius: var(--radius); overflow: hidden; background: var(--surface-2); border: 1px solid var(--border); cursor: zoom-in; }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .3s; }
+.tile:hover img { transform: scale(1.03); }
+.tile .overlay { position: absolute; inset: auto 0 0 0; padding: 30px 12px 10px; background: linear-gradient(transparent, rgba(0,0,0,.72)); color: #fff;
+  font-size: 12.5px; opacity: 0; transition: opacity .2s; }
+.tile:hover .overlay { opacity: 1; }
+.tile .overlay .p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tile .src { position: absolute; top: 8px; left: 8px; }
+.tile.loading { cursor: default; display: grid; place-items: center; color: var(--text-2);
+  background: linear-gradient(100deg, var(--surface-2) 30%, var(--surface-3) 50%, var(--surface-2) 70%); background-size: 300% 100%; animation: shimmer 1.6s infinite; }
+.tile.loading .inner { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 12.5px; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* ---------- playground ---------- */
+.pg { grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; }
+.pg-side { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; align-self: start; }
+.chat { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 520px; }
+.chat-log { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: flex; gap: 10px; max-width: 100%; }
+.msg.user { flex-direction: row-reverse; }
+.msg .bubble { max-width: min(720px, 85%); padding: 10px 14px; border-radius: 12px; line-height: 1.6; word-wrap: break-word; overflow-wrap: anywhere; }
+.msg.user .bubble { background: var(--accent); color: var(--accent-text); border-bottom-right-radius: 4px; }
+.msg.assistant .bubble { background: var(--surface-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.msg .bubble img { max-width: 100%; max-height: 420px; border-radius: 8px; display: block; margin: 6px 0; cursor: zoom-in; }
+.msg .bubble pre { background: var(--code-bg); color: var(--code-text); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; margin: 8px 0; }
+.msg .bubble code.inline { background: var(--surface-3); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+.msg.user .bubble code.inline { background: rgba(255,255,255,.2); }
+.msg .bubble p { margin: 0 0 8px; } .msg .bubble p:last-child { margin-bottom: 0; }
+.msg .avatar.sm { margin-top: 2px; }
+.msg .meta { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.msg .err { color: var(--danger); font-size: 13px; }
+details.think { margin-bottom: 8px; font-size: 12.5px; color: var(--text-2); }
+details.think summary { cursor: pointer; color: var(--muted); user-select: none; }
+details.think div { white-space: pre-wrap; padding: 6px 0 2px 10px; border-left: 2px solid var(--border-strong); margin-top: 6px; }
+.typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.composer { border-top: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.composer .row { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 42px; max-height: 200px; resize: none; overflow-y: hidden; }
+.attachments { display: flex; gap: 8px; flex-wrap: wrap; }
+.attachments .att { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+.attachments .att img { width: 100%; height: 100%; object-fit: cover; }
+.attachments .att button { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.attachments .att button svg.i { width: 11px; height: 11px; }
+
+/* ---------- settings ---------- */
+.setting { display: flex; gap: 24px; align-items: center; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+.setting:last-child { border-bottom: none; }
+.setting .desc { flex: 1; min-width: 0; }
+.setting .desc b { display: block; font-weight: 600; margin-bottom: 2px; }
+.setting .desc span { color: var(--text-2); font-size: 13px; }
+.setting .control { flex: none; min-width: 220px; display: flex; justify-content: flex-end; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; padding: 18px 20px; margin: 0; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; }
+
+/* ---------- dialogs & toast ---------- */
+dialog { border: none; padding: 0; border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); width: min(500px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(10,12,18,.5); backdrop-filter: blur(2px); }
+.dlg-head { display: flex; align-items: center; gap: 10px; padding: 18px 20px 6px; }
+.dlg-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
+.dlg-head .btn { margin-left: auto; }
+.dlg-body { padding: 10px 20px 20px; }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 16px 16px; }
+.option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.option { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1.5px solid var(--border); border-radius: 12px; cursor: pointer; transition: border-color .12s, background .12s; }
+.option:hover { border-color: var(--border-strong); }
+.option input { position: absolute; opacity: 0; }
+.option.on { border-color: var(--accent); background: var(--accent-soft); }
+.option .ico { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); }
+.option.on .ico { background: var(--accent); color: var(--accent-text); }
+.option b { font-size: 13.5px; } .option span { font-size: 12px; color: var(--text-2); }
+.waiting { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; padding: 12px 0 4px; }
+.waiting .ring { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; }
+.waiting .ring.wait { background: var(--accent-soft); color: var(--accent); }
+.waiting .ring.ok { background: var(--success-soft); color: var(--success); }
+.waiting .ring.bad { background: var(--danger-soft); color: var(--danger); }
+.waiting .ring svg.i { width: 24px; height: 24px; }
+.device-code { font-size: 30px; font-weight: 700; letter-spacing: 6px; padding: 14px 22px; border-radius: 12px; background: var(--surface-2); border: 1px dashed var(--border-strong); }
+dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
+.lb { display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+.lb .img { background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 0 0 / 20px 20px; display: grid; place-items: center; border-radius: 16px 0 0 16px; min-height: 360px; }
+.lb .img img { max-width: 100%; max-height: 80vh; display: block; }
+.lb .info { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; border-left: 1px solid var(--border); max-height: 80vh; overflow-y: auto; }
+.lb .info .label { margin-bottom: 4px; }
+.lb .info .val { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast { display: flex; align-items: center; gap: 8px; background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 13px; max-width: 380px; animation: toast-in .2s ease-out; }
+.toast.error { background: var(--danger); color: #fff; }
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+
+/* ---------- gate ---------- */
+.gate { min-height: 100vh; display: grid; place-items: center; padding: 16px;
+  background: radial-gradient(1200px 600px at 50% -10%, var(--accent-soft), transparent 70%), var(--bg); }
+.gate .card { width: min(400px, 100%); padding: 28px; }
+.gate .brand { padding: 0 0 18px; }
+.gate h2 { margin: 0 0 6px; font-size: 18px; }
+.gate p { margin: 0 0 18px; color: var(--text-2); font-size: 13px; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1100px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .overview-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .sidebar { position: sticky; z-index: 10; height: auto; flex-direction: row; align-items: center; padding: 10px 16px; border-right: none; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+  .brand { padding: 0 8px 0 0; } .brand-name { white-space: nowrap; } .brand-sub, .sidebar-foot, .nav .count { display: none; }
+  .nav { flex-direction: row; } .nav a { padding: 7px 10px; white-space: nowrap; }
+  .main { padding: 20px 16px 48px; }
+  .page-head .actions { margin-left: 0; }
+  .pg { grid-template-columns: minmax(0, 1fr); } .chat { height: 70vh; }
+  .lb { grid-template-columns: 1fr; } .lb .img { border-radius: 16px 16px 0 0; } .lb .info { border-left: none; border-top: 1px solid var(--border); }
+  .setting { flex-direction: column; align-items: stretch; gap: 12px; } .setting .control { justify-content: flex-start; min-width: 0; }
+}
+@media (max-width: 560px) {
+  .stats, .account-grid, .option-grid { grid-template-columns: minmax(0, 1fr); }
+  .health { gap: 2px; } .health-axis { margin-right: 0; }
+  .account-top { flex-wrap: wrap; } .account-top .title { order: 5; flex: 1 1 100%; }
+  .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+
+<!-- ================= 登录口令 ================= -->
+<div id="gate" class="gate" hidden>
+  <div class="card">
+    <div class="brand">
+      <div class="brand-mark"><svg class="i" data-icon="terminal"></svg></div>
+      <div><div class="brand-name">Codex Gateway</div><div class="brand-sub">本地 OpenAI 兼容网关</div></div>
+    </div>
+    <h2>输入管理口令</h2>
+    <p>口令在启动网关时打印在终端里，也保存在 <code>data/store.json</code> 的 <code>adminToken</code> 字段。</p>
+    <form id="gate-form" class="stack" style="gap:12px">
+      <input id="gate-token" class="input mono" type="password" placeholder="adm-…" autocomplete="off" autofocus>
+      <div id="gate-error" class="small" style="color:var(--danger)" hidden></div>
+      <button class="btn primary block">进入后台</button>
+    </form>
+  </div>
+</div>
+
+<!-- ================= 主界面 ================= -->
+<div id="app" class="layout" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><svg class="i" data-icon="terminal"></svg></div>
+      <div><div class="brand-name">Codex Gateway</div><div class="brand-sub">本地 OpenAI 兼容网关</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#overview" data-page="overview"><svg class="i" data-icon="dashboard"></svg>概览</a>
+      <a href="#accounts" data-page="accounts"><svg class="i" data-icon="users"></svg>账号<span class="count" id="count-accounts"></span></a>
+      <a href="#logs" data-page="logs"><svg class="i" data-icon="activity"></svg>日志</a>
+      <a href="#models" data-page="models"><svg class="i" data-icon="cpu"></svg>模型<span class="count" id="count-models"></span></a>
+      <a href="#images" data-page="images"><svg class="i" data-icon="image"></svg>生图<span class="count" id="count-images"></span></a>
+      <a href="#playground" data-page="playground"><svg class="i" data-icon="message"></svg>调试台</a>
+      <a href="#keys" data-page="keys"><svg class="i" data-icon="key"></svg>API Key<span class="count" id="count-keys"></span></a>
+      <a href="#settings" data-page="settings"><svg class="i" data-icon="sliders"></svg>设置</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="mini-account" id="mini-account"></div>
+      <div class="foot-row"><span id="codex-version" class="mono"></span>
+        <button class="btn ghost sm" id="logout"><svg class="i" data-icon="logout"></svg>退出</button></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- ---------- 概览 ---------- -->
+    <section data-view="overview">
+      <div class="page-head"><div><h1>概览</h1><p>当前账号状态、额度和接入方式</p></div></div>
+      <div class="banner info" id="app-banner" hidden></div>
+      <div class="banner warn codex-banner" hidden></div>
+      <div class="stack">
+        <div class="grid stats" id="stats"></div>
+        <div class="card card-pad" id="overview-health"></div>
+        <div class="grid overview-grid">
+          <div class="card">
+            <div class="card-head"><h2>快速接入</h2><span class="sub">任何支持 OpenAI 接口的客户端都能直接用</span></div>
+            <div class="card-pad stack" style="gap:14px">
+              <div>
+                <div class="label">Base URL</div>
+                <div class="copy-field"><span class="mono" id="base-url"></span><button class="btn ghost sm icon" data-copy-from="base-url" title="复制"><svg class="i" data-icon="copy"></svg></button></div>
+              </div>
+            </div>
+            <div class="tabs" id="code-tabs">
+              <button data-tab="curl" class="on">cURL</button><button data-tab="python">Python</button><button data-tab="node">Node.js</button><button data-tab="image">生图</button>
+            </div>
+            <div class="card-pad"><div class="code"><button class="btn sm" id="copy-code"><svg class="i" data-icon="copy"></svg>复制</button><pre id="code-sample"></pre></div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>接口</h2></div>
+            <div class="endpoint"><span class="m get">GET</span><span class="p mono">/v1/models</span><span class="d">模型列表</span></div>
+            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/chat/completions</span><span class="d">对话，支持流式</span></div>
+            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
+            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
+            <div class="card-pad small text-2" style="border-top:1px solid var(--border)">
+              在对话里选择模型 <code>gpt-image-2</code> 也会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 账号 ---------- -->
+    <section data-view="accounts" hidden>
+      <div class="page-head">
+        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，所有 API 请求走「当前使用」的账号</p></div>
+        <div class="actions">
+          <div class="segmented window-switch"></div>
+          <button class="btn primary" data-action="add-account"><svg class="i" data-icon="plus"></svg>添加账号</button>
+        </div>
+      </div>
+      <div class="grid account-grid" id="account-grid"></div>
+    </section>
+
+    <!-- ---------- 日志 ---------- -->
+    <section data-view="logs" hidden>
+      <div class="page-head">
+        <div><h1>调用日志</h1><p>每次调用 /v1 接口和调试台的记录，只记元数据不记内容，保留 30 天</p></div>
+        <div class="actions">
+          <div class="segmented window-switch"></div>
+          <button class="btn" id="logs-refresh"><svg class="i" data-icon="refresh"></svg>刷新</button>
+          <button class="btn danger" id="logs-clear"><svg class="i" data-icon="trash"></svg>清空</button>
+        </div>
+      </div>
+      <div class="banner warn" id="logs-disabled" hidden><svg class="i" data-icon="alert"></svg><div class="txt"><b>调用日志不可用</b><span>当前 Node 不支持 node:sqlite，需要 Node 22.13 以上版本。</span></div></div>
+      <div class="stack">
+        <div class="grid stats" id="log-stats"></div>
+        <div class="card card-pad" id="log-health"></div>
+        <div class="card">
+          <div class="filters">
+            <select class="select" id="f-account"></select>
+            <select class="select" id="f-status"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="aborted">中断</option></select>
+            <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="images.generations">生图</option><option value="images.edits">改图</option></select>
+            <select class="select" id="f-source"><option value="">全部来源</option><option value="api">API</option><option value="playground">调试台</option></select>
+            <span class="right small muted" id="logs-updated"></span>
+          </div>
+          <div class="table-wrap"><table class="log-table">
+            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th>错误</th></tr></thead>
+            <tbody id="log-rows"></tbody>
+          </table></div>
+          <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 模型 ---------- -->
+    <section data-view="models" hidden>
+      <div class="page-head">
+        <div><h1>模型</h1><p>当前账号在 Codex 里可用的模型。服务端按 Codex 客户端版本下发模型目录</p></div>
+        <div class="actions">
+          <span class="refresh-note"><span class="live-dot"></span><span id="models-updated"></span></span>
+          <button class="btn" id="refresh-models"><svg class="i" data-icon="refresh"></svg>立即刷新</button>
+        </div>
+      </div>
+      <div class="banner warn codex-banner" hidden></div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>模型</th><th>说明</th><th>推理强度</th><th>输入</th></tr></thead>
+        <tbody id="model-rows"></tbody>
+      </table></div></div>
+    </section>
+
+    <!-- ---------- 生图 ---------- -->
+    <section data-view="images" hidden>
+      <div class="page-head">
+        <div><h1>生图</h1><p>通过 Codex 内置的 image_gen 工具生成（gpt-image-2），消耗当前账号的额度</p></div>
+      </div>
+      <div class="stack">
+        <div class="card gen-card">
+          <textarea id="gen-prompt" class="textarea" rows="3" placeholder="描述你想要的画面，例如：清晨薄雾中的江南水乡，水彩风格，柔和的光线"></textarea>
+          <div class="gen-options">
+            <div class="field"><label>画幅</label>
+              <select id="gen-size" class="select">
+                <option value="auto">自动</option><option value="1024x1024">方形 1:1</option>
+                <option value="1536x1024">横版 3:2</option><option value="1024x1536">竖版 2:3</option>
+                <option value="1792x1024">宽屏 16:9</option><option value="1024x1792">长图 9:16</option>
+              </select></div>
+            <div class="field"><label>背景</label>
+              <select id="gen-bg" class="select"><option value="auto">自动</option><option value="transparent">透明</option></select></div>
+            <div class="field" style="min-width:110px"><label>张数</label>
+              <select id="gen-n" class="select"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+            <div class="grow small muted" id="gen-hint">每张通常需要 30–60 秒</div>
+            <button class="btn primary" id="gen-submit"><svg class="i" data-icon="sparkles"></svg>生成</button>
+          </div>
+        </div>
+        <div class="grid gallery" id="gallery"></div>
+        <div style="text-align:center" id="gallery-more" hidden><button class="btn" id="load-more">加载更多</button></div>
+      </div>
+    </section>
+
+    <!-- ---------- 调试台 ---------- -->
+    <section data-view="playground" hidden>
+      <div class="page-head">
+        <div><h1>调试台</h1><p>直接在后台测试对话和生图，走的是和 /v1/chat/completions 完全相同的处理逻辑</p></div>
+        <div class="actions"><button class="btn" id="chat-clear"><svg class="i" data-icon="rotate"></svg>清空对话</button></div>
+      </div>
+      <div class="grid pg">
+        <div class="card pg-side">
+          <div class="field"><label>模型</label><select id="pg-model" class="select"></select></div>
+          <div class="field"><label>推理强度</label>
+            <select id="pg-effort" class="select"><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+          <div class="field"><label>System 提示词</label><textarea id="pg-system" class="textarea" rows="6" placeholder="可选，例如：你是一个简洁的中文助手"></textarea></div>
+          <div class="small muted">选择 <code>gpt-image-2</code> 时每次发送都会生成图片；可以附加图片让它在原图上修改。</div>
+        </div>
+        <div class="card chat">
+          <div class="chat-log" id="chat-log"></div>
+          <div class="composer">
+            <div class="attachments" id="attachments"></div>
+            <div class="row">
+              <input type="file" id="attach-input" accept="image/*" multiple hidden>
+              <button class="btn icon" id="attach" title="附加图片"><svg class="i" data-icon="paperclip"></svg></button>
+              <textarea id="chat-input" class="textarea" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+              <button class="btn primary icon" id="chat-send" title="发送"><svg class="i" data-icon="send"></svg></button>
+              <button class="btn icon" id="chat-stop" title="停止" hidden><svg class="i" data-icon="stop"></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- API Key ---------- -->
+    <section data-view="keys" hidden>
+      <div class="page-head">
+        <div><h1>API Key</h1><p>调用 /v1 接口时放在 <code>Authorization: Bearer</code> 里。只保存哈希，明文只在创建时显示一次</p></div>
+        <div class="actions">
+          <input id="key-name" class="input" style="width:200px" placeholder="名称，如：本机脚本">
+          <button class="btn primary" id="create-key"><svg class="i" data-icon="plus"></svg>新建 Key</button>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card card-pad" id="new-key" hidden style="border-color:color-mix(in srgb, var(--success) 45%, var(--border))">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:600;color:var(--success)"><svg class="i" data-icon="check"></svg>已创建，请立即复制保存，关闭后无法再次查看</div>
+          <div class="copy-field"><span class="mono" id="new-key-value"></span><button class="btn sm" data-copy-from="new-key-value"><svg class="i" data-icon="copy"></svg>复制</button></div>
+        </div>
+        <div class="card"><div class="table-wrap"><table>
+          <thead><tr><th>名称</th><th>Key</th><th>创建时间</th><th>最近使用</th><th></th></tr></thead>
+          <tbody id="key-rows"></tbody>
+        </table></div></div>
+      </div>
+    </section>
+
+    <!-- ---------- 设置 ---------- -->
+    <section data-view="settings" hidden>
+      <div class="page-head"><div><h1>设置</h1><p>修改后自动保存</p></div></div>
+      <div class="stack">
+        <div class="card">
+          <div class="setting">
+            <div class="desc"><b>默认模型</b><span>请求里没写 model 时使用；选「Codex 默认」则跟随 Codex 的推荐模型</span></div>
+            <div class="control"><select id="set-model" class="select" style="width:240px"></select></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>对话中允许生图</b><span>开启后，普通对话里用户要求画图时 Codex 会调用生图工具，图片以 Markdown 链接返回</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>联网搜索</b><span>Codex 的 web_search 工具。修改后会重启各账号的 codex app-server</span></div>
+            <div class="control"><div class="segmented" id="set-web">
+              <button data-v="disabled">关闭</button><button data-v="cached">缓存</button><button data-v="live">实时</button></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>运行信息</h2></div>
+          <dl class="kv" id="runtime-info"></dl>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ================= 添加账号 / 登录 ================= -->
+<dialog id="login-dialog">
+  <div class="dlg-head"><h3 id="login-title">添加账号</h3><button class="btn ghost sm icon" data-close-login><svg class="i" data-icon="x"></svg></button></div>
+  <div class="dlg-body">
+    <div id="login-step-form" class="stack" style="gap:14px">
+      <div class="field" id="login-label-field"><label>备注名</label><input id="login-label" class="input" placeholder="例如：个人 Plus"></div>
+      <div>
+        <div class="label">登录方式</div>
+        <div class="option-grid" id="login-methods">
+          <label class="option on"><input type="radio" name="method" value="browser" checked>
+            <div class="ico"><svg class="i" data-icon="monitor"></svg></div><b>浏览器登录</b><span>在本机浏览器完成 ChatGPT 登录，推荐</span></label>
+          <label class="option"><input type="radio" name="method" value="device">
+            <div class="ico"><svg class="i" data-icon="phone"></svg></div><b>设备码登录</b><span>在任意设备输入代码，需在 ChatGPT 安全设置中开启</span></label>
+        </div>
+      </div>
+    </div>
+    <div id="login-step-wait" hidden></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" data-close-login id="login-cancel">取消</button>
+    <button class="btn primary" id="login-submit">开始登录</button>
+  </div>
+</dialog>
+
+<!-- ================= 图片详情 ================= -->
+<dialog id="lightbox" class="lightbox">
+  <div class="lb">
+    <div class="img"><img id="lb-img" alt=""></div>
+    <div class="info">
+      <div style="display:flex;align-items:center"><b>图片详情</b><button class="btn ghost sm icon" style="margin-left:auto" id="lb-close"><svg class="i" data-icon="x"></svg></button></div>
+      <div id="lb-meta" class="stack" style="gap:14px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:auto">
+        <a class="btn sm" id="lb-download" download><svg class="i" data-icon="download"></svg>下载</a>
+        <button class="btn sm" id="lb-copy"><svg class="i" data-icon="copy"></svg>复制链接</button>
+        <button class="btn sm danger" id="lb-delete"><svg class="i" data-icon="trash"></svg>删除</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<div class="overlay" id="update-overlay" hidden>
+  <div class="box"><svg class="i spin" data-icon="loader"></svg><b id="update-overlay-title">正在更新…</b>
+    <div class="small text-2" id="update-overlay-text">期间服务会中断几秒，完成后页面会自动刷新</div></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+// ============ 图标 ============
+const ICONS = {
+  terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
+  sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  login: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/>',
+  zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  paperclip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  sparkles: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16v5M16.5 18.5h5"/>',
+  alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
+  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  phone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  rotate: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  type: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+  loader: '<path d="M21 12a9 9 0 1 1-6.22-8.56"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+};
+const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${ICONS[name] || ''}</svg>`;
+function hydrateIcons(root = document) {
+  root.querySelectorAll('svg[data-icon]').forEach((el) => {
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.innerHTML = ICONS[el.dataset.icon] || '';
+    el.removeAttribute('data-icon');
+  });
+}
+
+// ============ 工具 ============
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const TOKEN_KEY = 'codex-gateway-admin-token';
+const readToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
+const writeToken = (v) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch {} };
+const readPref = (k) => { try { return localStorage.getItem(`codex-gateway-${k}`); } catch { return null; } };
+const writePref = (k, v) => { try { localStorage.setItem(`codex-gateway-${k}`, v); } catch {} };
+
+const WINDOWS = [['1h', '近 1 小时', '1 小时前'], ['24h', '近 24 小时', '24 小时前'], ['7d', '近 7 天', '7 天前'], ['30d', '近 30 天', '30 天前']];
+const LOG_PAGE = 50;
+const S = { token: readToken(), state: null, page: 'overview', models: null, images: { total: 0, data: [] },
+  chat: { messages: [], abort: null }, attachments: [], codeTab: 'curl', lightbox: null, generating: false,
+  window: WINDOWS.some(([v]) => v === readPref('window')) ? readPref('window') : '24h', stats: null,
+  logs: { total: 0, data: [], offset: 0, filters: {}, open: null, loadedAt: 0 } };
+
+async function api(method, path, body) {
+  const res = await fetch(`/admin/api${path}`, {
+    method, headers: { authorization: `Bearer ${S.token}`, 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { showGate('口令无效，请重新输入'); throw new Error('口令无效'); }
+  if (!res.ok) throw new Error(data.error?.message || `请求失败 (${res.status})`);
+  return data;
+}
+
+function toast(msg, type = '') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `${icon(type === 'error' ? 'alert' : 'check')}<span>${esc(msg)}</span>`;
+  $('toasts').append(el);
+  setTimeout(() => el.remove(), type === 'error' ? 5000 : 2600);
+}
+const run = (fn) => async (...args) => { try { await fn(...args); } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error'); } };
+
+function rel(iso) {
+  if (!iso) return '—';
+  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
+  if (s < 45) return '刚刚';
+  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
+  return new Date(iso).toLocaleString();
+}
+function until(ts) {
+  if (!ts) return '';
+  const s = ts - Date.now() / 1000;
+  if (s <= 0) return '即将重置';
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return `${d ? `${d} 天 ` : ''}${d || h ? `${h} 小时` : `${m} 分钟`}后重置`;
+}
+function windowName(mins) {
+  if (!mins) return '';
+  if (mins === 10080) return '每周';
+  if (mins % 1440 === 0) return `${mins / 1440} 天`;
+  if (mins % 60 === 0) return `${mins / 60} 小时`;
+  return `${mins} 分钟`;
+}
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  return n < 1048576 ? `${(n / 1024).toFixed(2)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { hour12: false });
+const fmtShortTime = (t) => {
+  const d = new Date(t), p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
+const fmtMs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#10b981', '#0ea5e9', '#14b8a6', '#f43f5e'];
+function avatar(seed, text, cls = '') {
+  let h = 0; for (const c of String(seed)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `<div class="avatar ${cls}" style="background:${AVATAR_COLORS[h % AVATAR_COLORS.length]}">${esc((text || '?').trim().charAt(0).toUpperCase())}</div>`;
+}
+const STATUS = { ready: ['success', '可用'], pending: ['warn', '登录中'], failed: ['danger', '失败'], expired: ['danger', '已失效'] };
+const statusBadge = (s) => { const [c, t] = STATUS[s] || ['', s]; return `<span class="badge ${c}"><span class="dot"></span>${t}</span>`; };
+const PLAN = { free: 'Free', plus: 'Plus', pro: 'Pro', prolite: 'Pro Lite', team: 'Team', business: 'Business', enterprise: 'Enterprise', edu: 'Edu' };
+const planName = (p) => PLAN[p] || p || '';
+const LIMIT_NAME = { codex: 'Codex', image_gen: '生图', imagegen_premium: '高级生图' };
+const activeAccount = () => S.state?.accounts.find((a) => a.id === S.state.activeAccountId) || null;
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+  toast('已复制');
+}
+
+// ============ 启动 / 鉴权 ============
+function showGate(err = '') {
+  $('app').hidden = true; $('gate').hidden = false;
+  $('gate-error').hidden = !err; $('gate-error').textContent = err;
+  $('gate-token').focus();
+}
+$('gate-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  S.token = $('gate-token').value.trim(); writeToken(S.token);
+  run(boot)();
+});
+$('logout').addEventListener('click', () => { S.token = ''; writeToken(''); showGate(); });
+
+async function boot() {
+  await refreshState();
+  $('gate').hidden = true; $('app').hidden = false;
+  route();
+}
+
+async function refreshState() {
+  S.state = await api('GET', '/state');
+  renderShell();
+  if (S.page === 'overview') renderOverview();
+  if (S.page === 'accounts') renderAccounts();
+  if (S.page === 'keys') renderKeys();
+  if (S.page === 'settings') renderSettings();
+  if (S.state.activeAccountId && (!S.models || S.models.updatedAt !== S.state.stats.modelsUpdatedAt || S.models.accountId !== S.state.activeAccountId)) {
+    loadModels().catch(() => {});
+  } else if (S.page === 'models') renderModels();
+  if (['overview', 'accounts', 'logs'].includes(S.page)) loadStats().catch(() => {});
+  if (S.page === 'logs') {
+    fillLogFilters();
+    if (S.logs.offset === 0) loadLogs().catch(() => {});
+  }
+}
+
+// 自动刷新：页面可见时每 20 秒拉一次状态（账号额度、模型目录更新时间都在里面）
+setInterval(() => {
+  if (document.visibilityState !== 'visible' || $('app').hidden || $('login-dialog').open) return;
+  refreshState().catch(() => {});
+}, 20000);
+setInterval(() => { if (S.page === 'models' && S.models) $('models-updated').textContent = modelsNote(); }, 30000);
+
+// ============ 路由 ============
+const TITLES = { overview: '概览', accounts: '账号', logs: '日志', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
+function route() {
+  const page = (location.hash || '#overview').slice(1);
+  S.page = TITLES[page] ? page : 'overview';
+  document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== S.page; });
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === S.page));
+  document.title = `${TITLES[S.page]} · Codex Gateway`;
+  ({ overview: renderOverview, accounts: renderAccounts, logs: renderLogsPage, models: renderModels, images: loadImages,
+     playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
+  if (['overview', 'accounts', 'logs'].includes(S.page)) loadStats().catch(() => {});
+}
+window.addEventListener('hashchange', () => { if (S.state) route(); });
+
+// ============ 外壳 ============
+function renderShell() {
+  const st = S.state, a = activeAccount();
+  const hasUpdate = st.app.updateAvailable || st.codex.outdated;
+  $('codex-version').innerHTML = `v${esc(st.app.version)} · codex ${esc(st.codex.version || '?')}${hasUpdate ? '<a href="#settings" class="update-dot" title="有新版本"></a>' : ''}`;
+  renderCodexBanners();
+  renderAppBanner();
+  $('count-accounts').textContent = st.accounts.length || '';
+  $('count-models').textContent = st.stats.models || '';
+  $('count-images').textContent = st.stats.images || '';
+  $('count-keys').textContent = st.apiKeys.length || '';
+  $('mini-account').innerHTML = a
+    ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · 当前使用</div></div>`
+    : `<div class="avatar sm" style="background:var(--surface-3);color:var(--muted)">${icon('users')}</div><div class="who"><div class="email">未选择账号</div><div class="meta"><a href="#accounts">去添加</a></div></div>`;
+}
+
+// ============ 请求健康度 ============
+const windowLabel = () => WINDOWS.find(([v]) => v === S.window)[1];
+const windowFrom = () => WINDOWS.find(([v]) => v === S.window)[2];
+
+async function loadStats() {
+  S.stats = await api('GET', `/stats?window=${S.window}`);
+  if (S.page === 'overview') renderOverviewHealth();
+  if (S.page === 'accounts') renderAccounts();
+  if (S.page === 'logs') renderLogStats();
+}
+
+// 成功率：没有失败显示 100%，有失败时向下取一位小数，避免 99.96% 显示成 100.0%。
+function rateInfo(s, f) {
+  if (s + f === 0) return { text: '—', cls: 'none' };
+  const rate = (s / (s + f)) * 100;
+  const text = f === 0 ? '100%' : `${(Math.floor(rate * 10) / 10).toFixed(1)}%`;
+  return { text, cls: rate >= 95 ? 'ok' : rate >= 80 ? 'warn' : 'bad' };
+}
+
+function fmtRange(a, b) {
+  const da = new Date(a), db = new Date(b);
+  const hm = (d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const today = new Date().toDateString();
+  if (da.toDateString() === today && db.toDateString() === today) return `${hm(da)}–${hm(db)}`;
+  const md = (d) => `${d.getMonth() + 1}/${d.getDate()} ${hm(d)}`;
+  return `${md(da)}–${md(db)}`;
+}
+
+// 20 段健康条：每段颜色按该时间段的成功率，无请求为灰色，悬停显示明细。
+function healthBar(series, large = false) {
+  const st = S.stats;
+  const list = series || Array.from({ length: 20 }, () => ({ s: 0, f: 0 }));
+  return `<div class="health ${large ? 'lg' : ''}">${list.map((b, i) => {
+    const total = b.s + b.f;
+    const rate = total ? b.s / total : null;
+    const cls = rate === null ? '' : rate >= 1 ? 'ok' : rate >= 0.95 ? 'good' : rate >= 0.8 ? 'warn' : rate >= 0.5 ? 'bad' : 'down';
+    const range = st ? fmtRange(st.since + i * st.bucketMs, st.since + (i + 1) * st.bucketMs) : '';
+    const detail = total ? `成功 ${b.s} · 失败 ${b.f} · 成功率 ${rateInfo(b.s, b.f).text}` : '无请求';
+    return `<i class="hb ${cls}" title="${esc(`${range}\n${detail}`)}"></i>`;
+  }).join('')}</div>`;
+}
+
+function requestBlock(stat) {
+  const s = stat?.success ?? 0, f = stat?.failure ?? 0, r = rateInfo(s, f);
+  return `<div class="req-head"><span class="req-label">请求记录 · ${windowLabel()}</span>
+      <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span></span></div>
+    <div class="health-row">${healthBar(stat?.series)}<span class="rate ${r.cls}">${r.text}</span></div>`;
+}
+
+function healthCard(o, { title, link, switcher }) {
+  const s = o?.success ?? 0, f = o?.failure ?? 0, r = rateInfo(s, f);
+  return `<div class="req-head"><b style="font-size:14.5px">${title}${switcher ? '' : ` · ${windowLabel()}`}</b>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span>${o?.aborted ? `<span class="mid">中断 ${fmtNum(o.aborted)}</span>` : ''}</span>
+        ${switcher ? '<div class="segmented window-switch"></div>' : ''}
+      </div></div>
+    <div class="health-row">${healthBar(o?.series, true)}<span class="rate ${r.cls}">${r.text}</span></div>
+    <div class="health-axis"><span>${windowFrom()}</span><span>现在</span></div>
+    <div class="health-meta"><span>平均耗时 <b>${fmtMs(o?.avgMs)}</b></span>
+      <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span><span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
+      <span>生图 <b>${fmtNum(o?.images)}</b> 张</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>`;
+}
+
+function renderWindowSwitches() {
+  document.querySelectorAll('.window-switch').forEach((el) => {
+    el.innerHTML = WINDOWS.map(([v, t]) => `<button data-window="${v}" class="${v === S.window ? 'on' : ''}">${t}</button>`).join('');
+  });
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-window]');
+  if (!b || b.dataset.window === S.window) return;
+  S.window = b.dataset.window;
+  writePref('window', S.window);
+  S.logs.offset = 0;
+  S.logs.open = null;
+  renderWindowSwitches();
+  run(async () => { await loadStats(); if (S.page === 'logs') await loadLogs(); })();
+});
+
+function renderOverviewHealth() {
+  $('overview-health').innerHTML = healthCard(S.stats?.overall, { title: '请求健康度', link: true, switcher: true });
+  renderWindowSwitches();
+}
+
+// ============ 网关版本（一键更新） ============
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const appUpdateBtn = (a, cls = 'primary') => {
+  if (!a.canUpdate) return `<span class="small text-2">${a.repo ? '用 npm start 或 Docker 启动后可一键更新' : '未配置更新源'}</span>`;
+  if (a.updating) return `<button class="btn ${cls}" disabled>${icon('loader', 'spin')}更新中…</button>`;
+  return `<button class="btn ${cls}" data-app-update>${icon('download')}更新到 v${esc(a.latest.version)}</button>`;
+};
+
+function renderAppBanner() {
+  const a = S.state.app, el = $('app-banner');
+  el.hidden = !a.updateAvailable;
+  if (el.hidden) return;
+  const notes = (a.latest.notes || '').split('\n').filter((l) => l.trim()).slice(0, 4).join('\n');
+  el.innerHTML = `${icon('download')}<div class="txt"><b>发现新版本 v${esc(a.latest.version)}（当前 v${esc(a.version)}）</b>
+      ${notes ? `<div class="notes">${esc(notes)}</div>` : ''}
+      <span><a href="${esc(a.latest.url)}" target="_blank" rel="noopener">查看完整更新说明</a></span></div>
+    ${appUpdateBtn(a)}`;
+}
+
+function showOverlay(title, text) {
+  $('update-overlay-title').textContent = title;
+  if (text) $('update-overlay-text').textContent = text;
+  $('update-overlay').hidden = false;
+}
+
+async function healthz() {
+  const r = await fetch(`/healthz?t=${Date.now()}`, { cache: 'no-store' });
+  return r.ok ? r.json() : null;
+}
+
+const updateApp = run(async () => {
+  const a = S.state.app;
+  if (!confirm(`更新到 v${a.latest.version}？\n\n会从 GitHub 下载新版本并自动重启，期间服务会中断几秒，正在进行的请求会失败。新版本启动失败会自动回退。`)) return;
+  const before = await healthz().catch(() => null);
+  showOverlay(`正在下载 v${a.latest.version}…`, '期间服务会中断几秒，完成后页面会自动刷新');
+  let target;
+  try {
+    target = (await api('POST', '/app/update')).version;
+  } catch (e) {
+    $('update-overlay').hidden = true;
+    throw e;
+  }
+  showOverlay(`正在重启到 v${target}…`);
+  // 启动 ID 变了说明已经重启；版本不是目标版本说明新版本没起来、启动器已回退。
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    const now = await healthz().catch(() => null);
+    if (!now || now.boot === before?.boot) continue;
+    if (now.version === target) {
+      showOverlay(`已更新到 v${target}`, '正在刷新页面…');
+      await sleep(800);
+      location.reload();
+      return;
+    }
+    $('update-overlay').hidden = true;
+    toast(`v${target} 启动失败，已自动回退到 v${now.version}，请查看服务日志`, 'error');
+    await refreshState();
+    return;
+  }
+  $('update-overlay').hidden = true;
+  toast('等待新版本启动超时，请查看服务日志', 'error');
+});
+
+const checkApp = run(async () => {
+  const r = await api('POST', '/app/check');
+  S.state.app = r.app;
+  const a = r.app;
+  toast(a.updateAvailable ? `发现新版本 v${a.latest.version}` : a.latest ? `已是最新版本 v${a.version}` : '仓库还没有发布版本');
+  renderShell();
+  if (S.page === 'settings') renderSettings();
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-app-update]')) updateApp();
+  if (e.target.closest('[data-app-check]')) checkApp();
+});
+
+// ============ Codex 版本 ============
+const SOURCE_NAME = { runtime: '数据目录', local: '项目内置', global: '全局 npm', env: 'CODEX_BIN 指定' };
+const upgradeBtn = (c, cls = 'primary') => c.upgrading
+  ? `<button class="btn ${cls}" disabled>${icon('loader', 'spin')}升级中…</button>`
+  : `<button class="btn ${cls}" data-codex-upgrade>${icon('download')}升级到 ${esc(c.latest)}</button>`;
+function renderCodexBanners() {
+  const c = S.state.codex;
+  document.querySelectorAll('.codex-banner').forEach((el) => {
+    el.hidden = !c.outdated && !c.upgrading;
+    if (el.hidden) return;
+    el.innerHTML = `${icon('alert')}<div class="txt"><b>Codex 版本较旧：${esc(c.version)}，最新 ${esc(c.latest)}</b>
+      <span>Codex 服务端按客户端版本下发模型目录，旧版本拿不到最新模型。升级后会自动重启各账号的 app-server 并重新获取模型。</span></div>
+      ${c.canUpgrade ? upgradeBtn(c) : '<span class="small text-2">当前用 CODEX_BIN 指定，请自行替换</span>'}`;
+  });
+}
+const upgradeCodex = run(async () => {
+  const c = S.state.codex;
+  if (c.upgrading) return;
+  const where = '会把最新的 @openai/codex 安装到数据目录 data/runtime（Docker 下随数据卷保留），不改动项目文件和全局安装的 codex。';
+  if (!confirm(`升级 Codex 到 ${c.latest || '最新版'}？\n\n${where}\n升级期间会停掉各账号的 app-server，正在进行的请求会中断，通常需要 10–60 秒。`)) return;
+  S.state.codex.upgrading = true;
+  renderShell(); if (S.page === 'settings') renderSettings();
+  try {
+    const r = await api('POST', '/codex/upgrade');
+    toast(`Codex 已升级到 ${r.codex.version}`);
+  } finally {
+    await refreshState().catch(() => {});
+    loadModels(true).catch(() => {});
+  }
+});
+const checkCodex = run(async () => {
+  const r = await api('POST', '/codex/check');
+  S.state.codex = r.codex;
+  toast(r.codex.outdated ? `发现新版本 ${r.codex.latest}` : `已是最新版本 ${r.codex.version}`);
+  renderShell(); if (S.page === 'settings') renderSettings();
+});
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-codex-upgrade]')) upgradeCodex();
+  if (e.target.closest('[data-codex-check]')) checkCodex();
+});
+
+// ============ 概览 ============
+function renderOverview() {
+  const st = S.state, a = activeAccount();
+  const rl = a?.rateLimits?.primary;
+  const pct = rl ? Math.round(rl.usedPercent) : null;
+  const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '';
+  $('stats').innerHTML = `
+    <div class="card stat">
+      <div class="stat-label"><span class="stat-icon">${icon('users')}</span>当前账号</div>
+      <div class="stat-value text">${esc(a ? a.email || a.label : '未选择')}</div>
+      <div class="stat-foot">${a ? `${statusBadge(a.status)}${a.planType ? `<span class="badge accent">${esc(planName(a.planType))}</span>` : ''}` : '<a href="#accounts">添加账号</a>'}</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label"><span class="stat-icon">${icon('zap')}</span>Codex 额度${rl ? ` · ${windowName(rl.windowDurationMins)}` : ''}</div>
+      <div class="stat-value num">${pct === null ? '—' : `${pct}<span style="font-size:15px;color:var(--muted)">% 已用</span>`}</div>
+      ${pct === null ? '<div class="stat-foot">登录后显示</div>' : `<div class="progress ${level}"><i style="width:${Math.min(pct, 100)}%"></i></div><div class="stat-foot">${until(rl.resetsAt)}</div>`}
+    </div>
+    <div class="card stat">
+      <div class="stat-label"><span class="stat-icon">${icon('cpu')}</span>可用模型</div>
+      <div class="stat-value num">${st.stats.models || '—'}</div>
+      <div class="stat-foot">${st.stats.modelsUpdatedAt ? `${rel(st.stats.modelsUpdatedAt)}更新 · 自动刷新` : '等待首次获取'}</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label"><span class="stat-icon">${icon('image')}</span>已生成图片</div>
+      <div class="stat-value num">${st.stats.images}</div>
+      <div class="stat-foot"><a href="#images">打开图库</a></div>
+    </div>`;
+  $('base-url').textContent = `${location.origin}/v1`;
+  renderCode();
+  renderOverviewHealth();
+}
+
+function codeSample(tab) {
+  const models = S.models?.data || [];
+  const base = `${location.origin}/v1`;
+  const model = S.state.settings.defaultModel || models.find((m) => m.isDefault)?.id || models[0]?.id || 'gpt-5.6-sol';
+  return {
+    curl: `curl ${base}/chat/completions \\\n  -H "Authorization: Bearer $API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "${model}",\n    "stream": true,\n    "messages": [{"role": "user", "content": "你好"}]\n  }'`,
+    python: `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nstream = client.chat.completions.create(\n    model="${model}",\n    messages=[{"role": "user", "content": "你好"}],\n    stream=True,\n)\nfor chunk in stream:\n    print(chunk.choices[0].delta.content or "", end="")`,
+    node: `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}", apiKey: "sk-local-..." });\n\nconst res = await client.chat.completions.create({\n  model: "${model}",\n  messages: [{ role: "user", content: "你好" }],\n});\nconsole.log(res.choices[0].message.content);`,
+    image: `from openai import OpenAI\nimport base64\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nimg = client.images.generate(\n    model="gpt-image-2",\n    prompt="一只戴着宇航员头盔的橘猫，扁平插画风格",\n    size="1024x1024",\n)\nopen("cat.png", "wb").write(base64.b64decode(img.data[0].b64_json))`,
+  }[tab];
+}
+function renderCode() {
+  document.querySelectorAll('#code-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.codeTab));
+  $('code-sample').textContent = codeSample(S.codeTab);
+}
+$('code-tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { S.codeTab = b.dataset.tab; renderCode(); } });
+$('copy-code').addEventListener('click', () => copyText($('code-sample').textContent));
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-copy-from]'); if (b) copyText($(b.dataset.copyFrom).textContent); });
+
+// ============ 账号 ============
+function limitBuckets(a) {
+  const byId = a.rateLimitsByLimitId && Object.keys(a.rateLimitsByLimitId).length ? a.rateLimitsByLimitId : (a.rateLimits ? { codex: a.rateLimits } : {});
+  const rows = [];
+  for (const [id, snap] of Object.entries(byId)) {
+    for (const w of [snap.primary, snap.secondary]) {
+      if (!w) continue;
+      rows.push({ name: `${LIMIT_NAME[id] || snap.limitName || id}${w.windowDurationMins ? ` · ${windowName(w.windowDurationMins)}` : ''}`, pct: Math.round(w.usedPercent), resetsAt: w.resetsAt });
+    }
+  }
+  return rows;
+}
+
+function renderAccounts() {
+  const st = S.state;
+  const cards = st.accounts.map((a) => {
+    const active = a.id === st.activeAccountId;
+    const limits = limitBuckets(a);
+    const ident = `codex-${a.id}-${a.email || 'unknown'}-${a.planType || 'unknown'}`;
+    return `<div class="card account-card ${active ? 'active' : ''}">
+      <div class="account-top">
+        <span class="badge provider">Codex</span>
+        <div class="title" title="${esc(a.email || a.label)}">${esc(a.email || '尚未登录')}</div>
+        ${active ? '<span class="badge accent">当前使用</span>' : ''}
+        ${statusBadge(a.status)}
+      </div>
+      <div class="ident" style="display:flex;gap:8px;align-items:center">
+        <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(ident)}">${esc(ident)}</span>
+        <span class="chip" style="flex:none" title="备注名">${esc(a.label)}</span>
+      </div>
+      <div class="account-section">${requestBlock(S.stats?.accounts[a.id])}</div>
+      ${limits.length ? `<div class="limits">${limits.map((l) => `
+        <div class="limit-row">
+          <div class="top"><span>${esc(l.name)}</span><b class="num">${l.pct}%</b></div>
+          <div class="progress ${l.pct >= 90 ? 'danger' : l.pct >= 70 ? 'warn' : ''}"><i style="width:${Math.min(l.pct, 100)}%"></i></div>
+          ${l.resetsAt ? `<div class="reset">${until(l.resetsAt)}</div>` : ''}
+        </div>`).join('')}</div>` : ''}
+      ${a.error ? `<div class="account-error">${esc(a.error)}</div>` : ''}
+      <div class="account-foot">
+        <span class="when mono" title="凭据 auth.json 的大小和最近写入时间（Codex 刷新令牌时会更新）&#10;额度 ${esc(a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '尚未检查')}">${a.credentials
+          ? `${fmtBytes(a.credentials.bytes)} · ${esc(fmtTime(a.credentials.updatedAt))}`
+          : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
+        ${!active && a.status === 'ready' ? `<button class="btn sm primary" data-acc="activate" data-id="${a.id}">${icon('zap')}设为当前</button>` : ''}
+        <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}">${icon('refresh')}</button>
+        <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}">${icon('login')}</button>
+        <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
+        <button class="btn sm ghost icon danger" title="删除" data-acc="delete" data-id="${a.id}">${icon('trash')}</button>
+      </div>
+    </div>`;
+  });
+  cards.push(`<button class="add-card" data-action="add-account"><div class="inner"><div class="plus">${icon('plus')}</div>添加 ChatGPT 账号</div></button>`);
+  $('account-grid').innerHTML = cards.join('');
+  renderWindowSwitches();
+}
+
+$('account-grid').addEventListener('click', run(async (e) => {
+  const btn = e.target.closest('[data-acc]');
+  if (!btn) return;
+  const id = btn.dataset.id, a = S.state.accounts.find((x) => x.id === id);
+  const act = btn.dataset.acc;
+  if (act === 'login') return openLogin(a);
+  if (act === 'activate') { await api('POST', `/accounts/${id}/activate`); toast('已切换当前账号'); }
+  if (act === 'refresh') {
+    btn.disabled = true; btn.innerHTML = icon('refresh', 'spin');
+    try { await api('POST', `/accounts/${id}/refresh`); toast('额度已刷新'); } finally { btn.disabled = false; }
+  }
+  if (act === 'rename') {
+    const label = prompt('新的备注名', a.label);
+    if (label == null) return;
+    await api('PATCH', `/accounts/${id}`, { label });
+  }
+  if (act === 'delete') {
+    if (!confirm(`删除账号「${a.label}」？\n会在 Codex 里登出，并删除它在本机的登录凭据。`)) return;
+    await api('DELETE', `/accounts/${id}`); toast('账号已删除');
+  }
+  await refreshState();
+}));
+document.addEventListener('click', (e) => { if (e.target.closest('[data-action="add-account"]')) openLogin(null); });
+
+// ---------- 登录对话框 ----------
+let loginTarget = null, loginPoll = null;
+function openLogin(account) {
+  loginTarget = account;
+  $('login-title').textContent = account ? `登录「${account.label}」` : '添加账号';
+  $('login-label-field').hidden = !!account;
+  $('login-label').value = '';
+  $('login-step-form').hidden = false; $('login-step-wait').hidden = true;
+  $('login-submit').hidden = false; $('login-submit').disabled = false;
+  $('login-cancel').textContent = '取消';
+  $('login-dialog').showModal();
+}
+$('login-methods').addEventListener('change', () => {
+  document.querySelectorAll('#login-methods .option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked));
+});
+$('login-submit').addEventListener('click', run(async () => {
+  $('login-submit').disabled = true;
+  const method = document.querySelector('input[name=method]:checked').value;
+  try {
+    const r = loginTarget
+      ? await api('POST', `/accounts/${loginTarget.id}/login`, { method })
+      : await api('POST', '/accounts', { label: $('login-label').value, method });
+    if (!loginTarget) loginTarget = r.account;
+    showLoginWait(r.login);
+  } catch (e) { $('login-submit').disabled = false; refreshState().catch(() => {}); throw e; }
+}));
+
+function waitView(kind, title, body) {
+  const ic = { wait: icon('loader', 'spin'), ok: icon('check'), bad: icon('alert') }[kind];
+  return `<div class="waiting"><div class="ring ${kind}">${ic}</div><div><b>${title}</b><div class="small text-2" style="margin-top:4px">${body}</div></div></div>`;
+}
+function showLoginWait(login) {
+  $('login-step-form').hidden = true; $('login-step-wait').hidden = false; $('login-submit').hidden = true;
+  const box = $('login-step-wait');
+  if (login.method === 'browser') {
+    box.innerHTML = `${waitView('wait', '等待浏览器完成登录', '已在新标签页打开 ChatGPT 登录页，登录完成后这里会自动更新')}
+      <div style="text-align:center;margin-top:14px"><a class="btn" href="${esc(login.authUrl)}" target="_blank" rel="noopener">${icon('external')}重新打开登录页</a></div>`;
+    window.open(login.authUrl, '_blank', 'noopener');
+  } else {
+    box.innerHTML = `<div class="waiting">
+      <div class="small text-2">打开下面的地址，登录 ChatGPT 后输入代码</div>
+      <a href="${esc(login.verificationUrl)}" target="_blank" rel="noopener" class="mono">${esc(login.verificationUrl)}</a>
+      <div class="device-code mono">${esc(login.userCode)}</div>
+      <button class="btn sm" id="copy-device-code">${icon('copy')}复制代码</button>
+      <div class="small muted" style="display:flex;align-items:center;gap:6px">${icon('loader', 'spin')}等待授权…</div></div>`;
+    $('copy-device-code').onclick = () => copyText(login.userCode);
+  }
+  clearInterval(loginPoll);
+  loginPoll = setInterval(run(async () => {
+    S.state = await api('GET', '/state');
+    const a = S.state.accounts.find((x) => x.id === loginTarget.id);
+    const r = a?.loginResult;
+    if (!a) return stopLoginPoll();
+    if (!r || r.startedAt !== login.startedAt) return;
+    stopLoginPoll();
+    box.innerHTML = r.success
+      ? waitView('ok', '登录成功', esc(a.email || ''))
+      : waitView('bad', '登录失败', esc(r.error || ''));
+    $('login-cancel').textContent = r.success ? '完成' : '关闭';
+    refreshState().catch(() => {});
+  }), 2000);
+}
+function stopLoginPoll() { clearInterval(loginPoll); loginPoll = null; }
+const closeLogin = run(async () => {
+  const pending = loginPoll && loginTarget;
+  stopLoginPoll(); $('login-dialog').close();
+  if (pending) await api('POST', `/accounts/${loginTarget.id}/cancel-login`);
+  await refreshState();
+});
+document.querySelectorAll('[data-close-login]').forEach((b) => b.addEventListener('click', closeLogin));
+$('login-dialog').addEventListener('cancel', (e) => { e.preventDefault(); closeLogin(); });
+
+// ============ 模型 ============
+async function loadModels(force = false) {
+  const data = force ? await api('POST', '/models/refresh') : await api('GET', '/models');
+  S.models = { ...data, accountId: S.state.activeAccountId };
+  if (S.state) S.state.stats.modelsUpdatedAt = data.updatedAt;
+  if (S.page === 'models') renderModels();
+  if (S.page === 'overview') renderCode();
+  fillModelSelects();
+}
+function modelsNote() {
+  const mins = Math.round((S.state?.refreshIntervalMs || 300000) / 60000);
+  return S.models ? `${rel(S.models.updatedAt)}更新 · 每 ${mins} 分钟自动刷新` : '尚未获取';
+}
+function renderModels() {
+  $('models-updated').textContent = modelsNote();
+  if (!S.state.activeAccountId) {
+    $('model-rows').innerHTML = `<tr><td colspan="4"><div class="empty"><div class="icon-wrap">${icon('cpu')}</div><h3>还没有可用账号</h3><p>登录 ChatGPT 账号后会自动获取模型目录</p><a class="btn primary" href="#accounts">去添加账号</a></div></td></tr>`;
+    return;
+  }
+  if (!S.models) { $('model-rows').innerHTML = `<tr><td colspan="4" class="muted" style="text-align:center;padding:40px">${icon('loader', 'spin')} 正在获取…</td></tr>`; return; }
+  const modal = (m) => (m.inputModalities || ['text']).map((x) => `<span class="chip" title="${x}">${icon(x === 'image' ? 'image' : 'type')}</span>`).join('');
+  const rows = S.models.data.map((m) => `<tr>
+    <td><div class="model-name">${esc(m.displayName || m.id)} ${m.isDefault ? '<span class="badge accent">默认</span>' : ''} ${m.hidden ? '<span class="badge">隐藏</span>' : ''}</div>
+      <div class="model-id mono">${esc(m.id)}<button class="btn ghost sm icon" title="复制模型 ID" data-copy="${esc(m.id)}">${icon('copy')}</button></div></td>
+    <td><div class="model-desc">${esc(m.description || '')}</div></td>
+    <td><div class="chips">${(m.supportedReasoningEfforts || []).map((e) => `<span class="chip ${e.reasoningEffort === m.defaultReasoningEffort ? 'on' : ''}" title="${esc(e.description)}">${esc(e.reasoningEffort)}</span>`).join('')}</div></td>
+    <td><div class="chips">${modal(m)}</div></td>
+  </tr>`);
+  const plan = activeAccount()?.planType;
+  if (plan !== 'free') rows.push(`<tr>
+    <td><div class="model-name">GPT Image <span class="badge success">生图</span></div>
+      <div class="model-id mono">${esc(S.state.imageModel)}<button class="btn ghost sm icon" title="复制模型 ID" data-copy="${esc(S.state.imageModel)}">${icon('copy')}</button></div></td>
+    <td><div class="model-desc">Codex 生图工具固定请求这个模型名，实际版本由服务端决定。按 OpenAI 公告，Codex 已用上 Images 2.5（自动在 Flare / Sunburst 间选择），无法手动指定。对话中填任意 gpt-image-* 名称都会生图</div></td>
+    <td class="muted">—</td><td><div class="chips"><span class="chip">${icon('type')}</span><span class="chip">${icon('image')}</span></div></td></tr>`);
+  $('model-rows').innerHTML = rows.join('');
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-copy]'); if (b) copyText(b.dataset.copy); });
+$('refresh-models').addEventListener('click', run(async () => {
+  const b = $('refresh-models'); b.disabled = true; b.innerHTML = `${icon('refresh', 'spin')}刷新中`;
+  try { await loadModels(true); toast(`已获取 ${S.models.data.length} 个模型`); }
+  finally { b.disabled = false; b.innerHTML = `${icon('refresh')}立即刷新`; }
+}));
+function fillModelSelects() {
+  const models = S.models?.data || [];
+  const opts = models.map((m) => `<option value="${esc(m.id)}">${esc(m.displayName || m.id)}${m.isDefault ? '（默认）' : ''}</option>`).join('');
+  const setSel = (el, html, value) => {
+    if (document.activeElement === el) return;
+    el.innerHTML = html;
+    if (value && ![...el.options].some((o) => o.value === value)) el.add(new Option(value, value));
+    el.value = value;
+  };
+  const def = S.state.settings.defaultModel || '';
+  setSel($('set-model'), `<option value="">Codex 默认</option>${opts}`, def);
+  const pgVal = $('pg-model').value || def;
+  setSel($('pg-model'), `<option value="">Codex 默认</option>${opts}${activeAccount()?.planType !== 'free' ? `<option value="${S.state.imageModel}">GPT Image（生图）</option>` : ''}`, pgVal);
+}
+
+// ============ 生图 ============
+async function loadImages(reset = true) {
+  const offset = reset ? 0 : S.images.data.length;
+  const r = await api('GET', `/images?limit=40&offset=${offset}`).catch((e) => { toast(e.message, 'error'); return null; });
+  if (!r) return;
+  S.images = { total: r.total, data: reset ? r.data : S.images.data.concat(r.data) };
+  renderGallery();
+}
+function renderGallery(pending = 0, startedAt = 0) {
+  const tiles = [];
+  for (let i = 0; i < pending; i++) {
+    tiles.push(`<div class="tile loading"><div class="inner">${icon('sparkles', 'spin')}<span class="gen-timer" data-start="${startedAt}">生成中…</span></div></div>`);
+  }
+  for (const img of S.images.data) {
+    tiles.push(`<div class="tile" data-img="${img.id}"><img src="${esc(img.url)}" loading="lazy" alt="">
+      <span class="badge src" style="background:rgba(0,0,0,.55);color:#fff">${{ api: 'API', chat: '对话', playground: '调试台' }[img.source] || esc(img.source)}</span>
+      <div class="overlay"><div class="p">${esc(img.prompt || img.revisedPrompt || '')}</div></div></div>`);
+  }
+  $('gallery').innerHTML = tiles.length ? tiles.join('')
+    : `<div class="card" style="grid-column:1/-1"><div class="empty"><div class="icon-wrap">${icon('image')}</div><h3>还没有图片</h3><p>在上面输入描述开始生成，或者通过 API / 对话生成的图片也会出现在这里</p></div></div>`;
+  $('gallery-more').hidden = S.images.data.length >= S.images.total;
+}
+setInterval(() => document.querySelectorAll('.gen-timer').forEach((el) => {
+  el.textContent = `生成中 ${Math.round((Date.now() - Number(el.dataset.start)) / 1000)}s`;
+}), 1000);
+$('load-more').addEventListener('click', () => loadImages(false));
+$('gen-submit').addEventListener('click', run(async () => {
+  const prompt = $('gen-prompt').value.trim();
+  if (!prompt) { $('gen-prompt').focus(); return toast('先输入画面描述', 'error'); }
+  if (S.generating) return;
+  const n = Number($('gen-n').value);
+  S.generating = true;
+  const btn = $('gen-submit'); btn.disabled = true; btn.innerHTML = `${icon('loader', 'spin')}生成中`;
+  renderGallery(n, Date.now());
+  try {
+    await api('POST', '/playground/images', { prompt, n, size: $('gen-size').value, background: $('gen-bg').value, response_format: 'url' });
+    toast(`已生成 ${n} 张图片`);
+  } finally {
+    S.generating = false; btn.disabled = false; btn.innerHTML = `${icon('sparkles')}生成`;
+    await loadImages(); refreshState().catch(() => {});
+  }
+}));
+$('gen-prompt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('gen-submit').click(); });
+
+// ---------- 图片详情 ----------
+$('gallery').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-img]'); if (!t) return;
+  openLightbox(S.images.data.find((x) => x.id === t.dataset.img));
+});
+function openLightbox(img) {
+  S.lightbox = img;
+  $('lb-img').src = img.url;
+  $('lb-download').href = img.url; $('lb-download').download = img.file;
+  const row = (k, v) => v ? `<div><div class="label">${k}</div><div class="val">${v}</div></div>` : '';
+  $('lb-meta').innerHTML = row('提示词', esc(img.prompt)) + row('实际提示词（模型改写）', esc(img.revisedPrompt))
+    + row('来源', esc({ api: 'API', chat: '对话', playground: '调试台' }[img.source] || img.source))
+    + row('时间', esc(new Date(img.createdAt).toLocaleString())) + row('大小', `${esc(img.mime)} · ${fmtBytes(img.bytes)}`);
+  $('lightbox').showModal();
+}
+$('lb-close').addEventListener('click', () => $('lightbox').close());
+$('lightbox').addEventListener('click', (e) => { if (e.target === $('lightbox')) $('lightbox').close(); });
+$('lb-copy').addEventListener('click', () => copyText(location.origin + S.lightbox.url));
+$('lb-delete').addEventListener('click', run(async () => {
+  if (!confirm('删除这张图片？')) return;
+  await api('DELETE', `/images/${S.lightbox.id}`);
+  $('lightbox').close(); toast('已删除'); await loadImages(); refreshState().catch(() => {});
+}));
+
+// ============ 调试台 ============
+function renderPlayground() { fillModelSelects(); renderChat(); }
+
+// 轻量 Markdown：代码块、图片、链接、行内代码、粗体、段落。先转义再替换，避免注入。
+function md(text) {
+  const blocks = [];
+  let s = esc(text).replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, code) => { blocks.push(`<pre><code>${code}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  const safe = (u) => /^(https?:|data:image\/|\/)/i.test(u.replace(/&amp;/g, '&')) ? u : '#';
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, u) => `<img src="${safe(u)}" alt="${alt}" data-zoom>`)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => `<a href="${safe(u)}" target="_blank" rel="noopener">${t}</a>`)
+    .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+  s = s.split(/\n{2,}/).map((p) => p.trim() ? `<p>${p.replace(/\n/g, '<br>')}</p>` : '').join('');
+  return s.replace(/<p>\u0000(\d+)\u0000<\/p>|\u0000(\d+)\u0000/g, (_, a, b) => blocks[a ?? b]);
+}
+function renderChat() {
+  const log = $('chat-log');
+  if (!S.chat.messages.length) {
+    log.innerHTML = `<div class="empty" style="margin:auto"><div class="icon-wrap">${icon('message')}</div><h3>开始测试</h3><p>消息会通过当前账号的 Codex 发送，和外部客户端调用 /v1/chat/completions 完全一样</p></div>`;
+    return;
+  }
+  log.innerHTML = S.chat.messages.map((m, i) => `<div class="msg ${m.role}" data-i="${i}">${messageInner(m)}</div>`).join('');
+  log.scrollTop = log.scrollHeight;
+}
+function messageInner(m) {
+  if (m.role === 'user') {
+    const imgs = (m.images || []).map((u) => `<img src="${esc(u)}" alt="" data-zoom>`).join('');
+    return `<div class="bubble">${imgs}${m.text ? md(m.text) : ''}</div>`;
+  }
+  const think = m.reasoning ? `<details class="think" ${m.pending && !m.content ? 'open' : ''}><summary>思考过程</summary><div>${esc(m.reasoning)}</div></details>` : '';
+  const body = m.content ? md(m.content) : (m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : '');
+  const err = m.error ? `<div class="err">${icon('alert')} ${esc(m.error)}</div>` : '';
+  const meta = !m.pending && m.usage ? `<div class="meta">${esc(m.model || '')} · 输入 ${m.usage.prompt_tokens} / 输出 ${m.usage.completion_tokens} tokens${m.ms ? ` · ${(m.ms / 1000).toFixed(1)}s` : ''}</div>` : '';
+  return `${avatar('codex', 'C', 'sm')}<div style="min-width:0;max-width:100%"><div class="bubble">${think}${body}${err}</div>${meta}</div>`;
+}
+function updateMessage(i) {
+  const el = document.querySelector(`#chat-log [data-i="${i}"]`);
+  if (el) el.innerHTML = messageInner(S.chat.messages[i]);
+  const log = $('chat-log'); log.scrollTop = log.scrollHeight;
+}
+$('chat-log').addEventListener('click', (e) => { const img = e.target.closest('img[data-zoom]'); if (img) window.open(img.src, '_blank', 'noopener'); });
+
+function autosize() {
+  const t = $('chat-input');
+  t.style.height = 'auto';
+  t.style.height = `${Math.min(t.scrollHeight + 2, 200)}px`;
+  t.style.overflowY = t.scrollHeight > 200 ? 'auto' : 'hidden';
+}
+$('chat-input').addEventListener('input', autosize);
+$('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); } });
+$('chat-send').addEventListener('click', () => sendChat());
+$('chat-stop').addEventListener('click', () => S.chat.abort?.abort());
+$('chat-clear').addEventListener('click', () => { S.chat.abort?.abort(); S.chat.messages = []; renderChat(); });
+$('attach').addEventListener('click', () => $('attach-input').click());
+$('attach-input').addEventListener('change', async (e) => {
+  for (const f of e.target.files) {
+    const url = await new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+    S.attachments.push(url);
+  }
+  e.target.value = ''; renderAttachments();
+});
+function renderAttachments() {
+  $('attachments').innerHTML = S.attachments.map((u, i) => `<div class="att"><img src="${esc(u)}" alt=""><button data-rm="${i}">${icon('x')}</button></div>`).join('');
+}
+$('attachments').addEventListener('click', (e) => { const b = e.target.closest('[data-rm]'); if (b) { S.attachments.splice(Number(b.dataset.rm), 1); renderAttachments(); } });
+
+function toApiContent(m) {
+  if (m.role === 'assistant') return m.content;
+  if (!m.images?.length) return m.text;
+  return [{ type: 'text', text: m.text || '' }, ...m.images.map((url) => ({ type: 'image_url', image_url: { url } }))];
+}
+
+async function sendChat() {
+  if (S.chat.abort) return;
+  const text = $('chat-input').value.trim();
+  if (!text && !S.attachments.length) return;
+  S.chat.messages.push({ role: 'user', text, images: S.attachments.slice() });
+  const assistant = { role: 'assistant', content: '', reasoning: '', pending: true };
+  S.chat.messages.push(assistant);
+  const idx = S.chat.messages.length - 1;
+  $('chat-input').value = ''; autosize(); S.attachments = []; renderAttachments(); renderChat();
+
+  const system = $('pg-system').value.trim();
+  const messages = [...(system ? [{ role: 'system', content: system }] : []),
+    ...S.chat.messages.slice(0, -1).filter((m) => !m.error).map((m) => ({ role: m.role, content: toApiContent(m) }))];
+  const body = { model: $('pg-model').value || undefined, messages, stream: true, stream_options: { include_usage: true } };
+  if ($('pg-effort').value) body.reasoning_effort = $('pg-effort').value;
+
+  const ctrl = new AbortController(); S.chat.abort = ctrl;
+  $('chat-send').hidden = true; $('chat-stop').hidden = false;
+  const t0 = Date.now();
+  try {
+    const res = await fetch('/admin/api/playground/chat', {
+      method: 'POST', headers: { authorization: `Bearer ${S.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body), signal: ctrl.signal,
+    });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error?.message || `请求失败 (${res.status})`); }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf('\n\n')) >= 0) {
+        const evt = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        for (const line of evt.split('\n')) {
+          if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+          const j = JSON.parse(line.slice(6));
+          if (j.error) assistant.error = j.error.message;
+          const d = j.choices?.[0]?.delta;
+          if (d?.content) assistant.content += d.content;
+          if (d?.reasoning_content) assistant.reasoning += d.reasoning_content;
+          if (j.usage) assistant.usage = j.usage;
+          if (j.model) assistant.model = j.model;
+        }
+      }
+      updateMessage(idx);
+    }
+  } catch (e) {
+    assistant.error = e.name === 'AbortError' ? '已停止' : e.message;
+  } finally {
+    assistant.pending = false; assistant.ms = Date.now() - t0;
+    S.chat.abort = null; $('chat-send').hidden = false; $('chat-stop').hidden = true;
+    updateMessage(idx);
+    if (/!\[image\]/.test(assistant.content)) refreshState().catch(() => {});
+  }
+}
+
+// ============ 调用日志 ============
+const ENDPOINT_NAME = { 'chat.completions': '对话', 'images.generations': '生图', 'images.edits': '改图' };
+
+function renderLogsPage() {
+  $('logs-disabled').hidden = S.state.logsEnabled !== false;
+  fillLogFilters();
+  renderLogStats();
+  renderLogRows();
+  loadLogs().catch((e) => toast(e.message, 'error'));
+}
+
+function fillLogFilters() {
+  const sel = $('f-account');
+  if (document.activeElement === sel) return;
+  sel.innerHTML = `<option value="">全部账号</option>${S.state.accounts
+    .map((a) => `<option value="${esc(a.id)}">${esc(a.email || a.label)}</option>`).join('')}`;
+  sel.value = S.logs.filters.account || '';
+}
+['f-account', 'f-status', 'f-endpoint', 'f-source'].forEach((id) => $(id).addEventListener('change', () => {
+  S.logs.filters = { account: $('f-account').value, status: $('f-status').value, endpoint: $('f-endpoint').value, source: $('f-source').value };
+  S.logs.offset = 0;
+  S.logs.open = null;
+  loadLogs().catch((e) => toast(e.message, 'error'));
+}));
+
+async function loadLogs() {
+  const q = new URLSearchParams({ window: S.window, limit: String(LOG_PAGE), offset: String(S.logs.offset) });
+  for (const [k, v] of Object.entries(S.logs.filters)) if (v) q.set(k, v);
+  const r = await api('GET', `/logs?${q}`);
+  Object.assign(S.logs, { total: r.total, data: r.data, loadedAt: Date.now() });
+  if (S.page === 'logs') renderLogRows();
+}
+
+function renderLogStats() {
+  const o = S.stats?.overall;
+  const s = o?.success ?? 0, f = o?.failure ?? 0, a = o?.aborted ?? 0, r = rateInfo(s, f);
+  const cachedPct = o?.inputTokens ? Math.round((o.cachedTokens / o.inputTokens) * 100) : 0;
+  const card = (ico, label, value, foot) => `<div class="card stat">
+    <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
+    <div class="stat-value num">${value}</div><div class="stat-foot">${foot}</div></div>`;
+  $('log-stats').innerHTML = [
+    card('activity', `请求数 · ${windowLabel()}`, fmtNum(s + f + a), a ? `含中断 ${fmtNum(a)}（客户端断开，不计入成功率）` : '对话、生图、改图'),
+    card('check', '成功率', `<span class="rate ${r.cls}" style="font-size:inherit;text-align:left">${r.text}</span>`,
+      `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>`),
+    card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
+    card('zap', 'Tokens', `${fmtNum(o?.inputTokens)}<span style="font-size:14px;color:var(--muted)"> / ${fmtNum(o?.outputTokens)}</span>`,
+      `输入 / 输出 · 缓存命中 ${cachedPct}%`),
+  ].join('');
+  $('log-health').innerHTML = healthCard(o, { title: '请求健康度', link: false, switcher: false });
+  renderWindowSwitches();
+}
+
+function logStatus(row) {
+  if (row.status === 'success') return `<span class="badge success"><span class="dot"></span>成功 ${row.http_status ?? ''}</span>`;
+  if (row.status === 'aborted') return '<span class="badge"><span class="dot"></span>中断</span>';
+  return `<span class="badge danger"><span class="dot"></span>失败 ${row.http_status ?? ''}</span>`;
+}
+
+function renderLogRows() {
+  const rows = S.logs.data;
+  $('logs-updated').textContent = S.logs.loadedAt ? `更新于 ${new Date(S.logs.loadedAt).toLocaleTimeString('zh-CN', { hour12: false })} · 每 20 秒自动刷新` : '';
+  $('log-rows').innerHTML = rows.length ? rows.map((r) => {
+    const open = S.logs.open === r.id;
+    const row = `<tr class="log-row ${open ? 'open' : ''}" data-log="${esc(r.id)}">
+      <td class="mono small" title="${esc(fmtTime(r.ts))}">${esc(fmtShortTime(r.ts))}</td>
+      <td>${logStatus(r)}</td>
+      <td>${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}${r.stream ? ' <span class="chip">流式</span>' : ''}${r.images ? ` <span class="chip">${r.images} 张图</span>` : ''}</td>
+      <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
+      <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}</td>
+      <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}</td>
+      <td class="num">${esc(fmtMs(r.duration_ms))}</td>
+      <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
+      <td class="err-cell" title="${esc(r.error_message || '')}"><div>${esc(r.error_message || '')}</div></td>
+    </tr>`;
+    return open ? row + logDetail(r) : row;
+  }).join('') : `<tr><td colspan="9"><div class="empty"><div class="icon-wrap">${icon('activity')}</div>
+      <h3>${windowLabel()}没有调用记录</h3><p>通过 /v1 接口或调试台发起的对话、生图请求都会记录在这里</p></div></td></tr>`;
+  const from = S.logs.total ? S.logs.offset + 1 : 0, to = S.logs.offset + rows.length;
+  $('logs-range').textContent = `第 ${from}–${to} 条，共 ${fmtNum(S.logs.total)} 条`;
+  $('logs-prev').disabled = S.logs.offset === 0;
+  $('logs-next').disabled = to >= S.logs.total;
+}
+
+function logDetail(r) {
+  const ms = String(r.ts % 1000).padStart(3, '0');
+  const kv = [
+    ['请求 ID', `<span class="mono">${esc(r.id)}</span>`],
+    ['时间', `${esc(fmtTime(r.ts))}.${ms}`],
+    ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
+    ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
+    ['账号', esc(r.account_email || '未分配（请求在到达账号前就结束了）')],
+    ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
+    ['客户端', `<span class="mono small">${esc(r.user_agent || '—')}</span>`],
+    ['状态', `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`],
+    ['耗时', esc(fmtMs(r.duration_ms))],
+    ['Tokens', r.input_tokens == null ? '—'
+      : `输入 ${fmtNum(r.input_tokens)}（缓存 ${fmtNum(r.cached_tokens)}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
+    ...(r.images ? [['生图', `${r.images} 张`]] : []),
+    ...(r.error_message ? [['错误信息', `<pre>${esc(r.error_message)}</pre>`]] : []),
+  ];
+  return `<tr class="log-detail"><td colspan="9"><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></td></tr>`;
+}
+
+$('log-rows').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-log]');
+  if (!tr) return;
+  S.logs.open = S.logs.open === tr.dataset.log ? null : tr.dataset.log;
+  renderLogRows();
+});
+$('logs-prev').addEventListener('click', run(async () => { S.logs.offset = Math.max(0, S.logs.offset - LOG_PAGE); S.logs.open = null; await loadLogs(); }));
+$('logs-next').addEventListener('click', run(async () => { S.logs.offset += LOG_PAGE; S.logs.open = null; await loadLogs(); }));
+$('logs-refresh').addEventListener('click', run(async () => { await Promise.all([loadStats(), loadLogs()]); toast('已刷新'); }));
+$('logs-clear').addEventListener('click', run(async () => {
+  if (!confirm('清空所有调用日志？账号的请求记录和健康度也会一起清零，无法恢复。')) return;
+  await api('DELETE', '/logs');
+  S.logs.offset = 0;
+  S.logs.open = null;
+  await Promise.all([loadStats(), loadLogs()]);
+  toast('日志已清空');
+}));
+
+// ============ API Key ============
+function renderKeys() {
+  const keys = S.state.apiKeys;
+  $('key-rows').innerHTML = keys.length ? keys.map((k) => `<tr>
+    <td><b style="font-weight:600">${esc(k.name)}</b></td>
+    <td class="mono small">${esc(k.preview)}</td>
+    <td class="text-2 small">${esc(new Date(k.createdAt).toLocaleString())}</td>
+    <td class="text-2 small">${k.lastUsedAt ? esc(rel(k.lastUsedAt)) : '<span class="muted">从未使用</span>'}</td>
+    <td style="text-align:right"><button class="btn sm ghost danger" data-del-key="${k.id}">${icon('trash')}删除</button></td>
+  </tr>`).join('') : `<tr><td colspan="5"><div class="empty"><div class="icon-wrap">${icon('key')}</div><h3>还没有 API Key</h3><p>新建一个 Key，就可以在脚本或客户端里调用 /v1 接口</p></div></td></tr>`;
+}
+$('create-key').addEventListener('click', run(async () => {
+  const { key } = await api('POST', '/keys', { name: $('key-name').value.trim() });
+  $('key-name').value = ''; $('new-key-value').textContent = key; $('new-key').hidden = false;
+  await refreshState();
+}));
+$('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('create-key').click(); });
+$('key-rows').addEventListener('click', run(async (e) => {
+  const b = e.target.closest('[data-del-key]'); if (!b) return;
+  if (!confirm('删除这个 API Key？使用它的客户端会立即失效。')) return;
+  await api('DELETE', `/keys/${b.dataset.delKey}`); toast('已删除'); await refreshState();
+}));
+
+// ============ 设置 ============
+function renderSettings() {
+  const s = S.state.settings;
+  fillModelSelects();
+  $('set-chat-image').checked = s.chatImageGeneration;
+  $('set-chat-image').disabled = activeAccount()?.planType === 'free';
+  document.querySelectorAll('#set-web button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.webSearch));
+  const a = activeAccount();
+  const c = S.state.codex;
+  const state = c.upgrading ? '<span class="badge warn">升级中</span>'
+    : c.outdated ? `<span class="badge warn">可升级到 ${esc(c.latest)}</span>`
+    : c.latest ? '<span class="badge success">已是最新</span>' : '';
+  const app = S.state.app;
+  const appState = app.updating ? '<span class="badge warn">更新中</span>'
+    : app.updateAvailable ? `<span class="badge accent">可更新到 v${esc(app.latest.version)}</span>`
+    : app.latest ? '<span class="badge success">已是最新</span>'
+    : app.checkedAt && !app.checkError ? '<span class="badge">仓库暂无发布版本</span>' : '';
+  const lastFailed = app.lastResult && app.lastResult.ok === false;
+  $('runtime-info').innerHTML = [
+    ['网关', `v${esc(app.version)}（${app.source === 'downloaded' ? '后台更新的版本' : '自带版本'}） ${appState}
+      ${app.repo ? `<div class="small muted" style="margin-top:4px">更新源 <a href="https://github.com/${esc(app.repo)}" target="_blank" rel="noopener">github.com/${esc(app.repo)}</a>${app.checkedAt ? ` · ${esc(rel(app.checkedAt))}检查` : ''}</div>` : ''}
+      ${app.checkError ? `<div class="small" style="color:var(--danger);margin-top:4px">检查更新失败：${esc(app.checkError)}</div>` : ''}
+      ${lastFailed ? `<div class="small" style="color:var(--danger);margin-top:4px">${esc(app.lastResult.error)}</div>` : ''}
+      ${app.lastError ? `<div class="small" style="color:var(--danger);margin-top:4px;white-space:pre-wrap">上次更新失败：${esc(app.lastError)}</div>` : ''}
+      ${app.updateAvailable && app.latest.notes ? `<details class="notes-box" open><summary>v${esc(app.latest.version)} 更新说明</summary><div class="release-notes">${esc(app.latest.notes)}</div></details>` : ''}
+      <div class="inline-actions"><button class="btn sm" data-app-check>${icon('refresh')}检查更新</button>
+      ${app.updateAvailable ? appUpdateBtn(app, 'sm primary') : ''}</div>`],
+    ['Codex', `${esc(c.raw || '未知')}（${SOURCE_NAME[c.source]}） ${state}
+      <div class="small muted mono" style="margin-top:4px">${esc(c.path)}</div>
+      ${c.checkError ? `<div class="small" style="color:var(--danger);margin-top:4px">检查更新失败：${esc(c.checkError)}</div>` : ''}
+      ${c.lastUpgrade && !c.lastUpgrade.ok ? `<div class="small" style="color:var(--danger);margin-top:4px;white-space:pre-wrap">上次升级失败：${esc(c.lastUpgrade.error)}</div>` : ''}
+      <div class="inline-actions"><button class="btn sm" data-codex-check>${icon('refresh')}检查更新</button>
+      ${c.canUpgrade && (c.outdated || c.upgrading) ? upgradeBtn(c, 'sm primary') : ''}</div>`],
+    ['当前账号', a ? `${esc(a.email || a.label)}（${esc(planName(a.planType))}）` : '未选择'],
+    ['API 地址', `<span class="mono">${esc(location.origin)}/v1</span>`],
+    ['模型刷新', `每 ${Math.round(S.state.refreshIntervalMs / 60000)} 分钟（app-server 自身每 4.5 分钟在线同步一次）`],
+    ['数据目录', '<span class="mono">data/</span>（Docker 部署时是数据卷 /app/data），内含各账号登录凭据，不要分享'],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+const saveSettings = run(async (patch) => { await api('PUT', '/settings', patch); toast('设置已保存'); await refreshState(); });
+$('set-model').addEventListener('change', (e) => saveSettings({ defaultModel: e.target.value }));
+$('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGeneration: e.target.checked }));
+$('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
+
+// ============ 入口 ============
+hydrateIcons();
+// 终端打印的快捷登录链接：/admin#login=<口令>，读取后立刻从地址栏抹掉
+if (location.hash.startsWith('#login=')) {
+  S.token = decodeURIComponent(location.hash.slice(7)); writeToken(S.token);
+  history.replaceState(null, '', `${location.pathname}#overview`);
+}
+if (S.token) run(boot)(); else showGate();
+</script>
+</body>
+</html>

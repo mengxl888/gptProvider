@@ -1,0 +1,405 @@
+// 账号管理：每个账号一个独立的 CODEX_HOME（data/accounts/<id>/home），
+// 登录、令牌刷新、凭据保存全部由官方 codex app-server 自己完成，网关不读取也不转存 token。
+// 同一时间只有一个"当前账号"对外提供服务，由管理后台手动切换。
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { AppServerClient } from './appServer.js';
+
+// 网关只做对话和生图：关闭会让 Codex 动本机环境或调用额外服务的工具。
+// image_generation 不在这里关，而是每个线程按需通过 thread/start 的 config 覆盖开关。
+// 只关闭当前 codex 版本里真实存在的 feature。
+// shell_tool=false 会同时去掉 exec_command / unified_exec（core/src/tools/spec_plan.rs add_shell_tools）；
+// view_image 能读本机图片文件，是单独的开关。
+// 不能关 code_mode_host：gpt-6.x 等新模型通过 Code Mode 调用工具，关掉后所有工具（包括生图）都不可用。
+// Code Mode 的 JS 跑在隔离的 V8 里，只能调用这里没关掉的工具，没有文件/网络/进程能力（code-mode-runtime）。
+const CHAT_ONLY_DISABLED_FEATURES = [
+  'shell_tool',
+  'shell_snapshot',
+  'view_image',
+  'apps',
+  'plugins',
+  'remote_plugin',
+  'browser_use',
+  'browser_use_external',
+  'browser_use_full_cdp_access',
+  'browser_annotation_api',
+  'in_app_browser',
+  'in_app_local_automation',
+  'computer_use',
+  'multi_agent',
+  'multi_agent_v2',
+  'goals',
+  'hooks',
+  'memories',
+  'skill_search',
+  'skill_mcp_dependency_install',
+  'sleep_tool',
+  'tool_suggest',
+];
+
+// app-server 自己每 4.5 分钟在线刷新一次模型目录（models_refresh_worker.rs），
+// 网关按 5 分钟读取一次，同时刷新当前账号的额度。
+export const BACKGROUND_REFRESH_MS = 5 * 60_000;
+
+export class AccountManager {
+  constructor({ store, dataDir, cmd, featureNames }) {
+    this.store = store;
+    this.accountsDir = path.join(dataDir, 'accounts');
+    this.cmd = cmd;
+    this.featureNames = featureNames;
+    this.clients = new Map();
+    this.logins = new Map();
+    this.loginResults = new Map();
+    this.modelRefreshes = new Map();
+    this.loggedWarnings = new Set();
+    this.suspended = false;
+    fs.mkdirSync(this.accountsDir, { recursive: true });
+  }
+
+  // 升级 codex 期间停掉所有 app-server，并拒绝新请求。
+  async suspend() {
+    this.suspended = true;
+    const clients = [...this.clients.values()];
+    this.clients.clear();
+    await Promise.all(clients.map((c) => c.closeAndWait()));
+  }
+
+  resume(cmd, featureNames) {
+    this.cmd = cmd;
+    this.featureNames = featureNames;
+    this.suspended = false;
+    const id = this.store.data.activeAccountId;
+    if (id && this.store.getAccount(id)?.status === 'ready') {
+      this.refreshModels(id).catch(() => {});
+    }
+  }
+
+  generatedImagesDir(id) {
+    return path.join(this.paths(id).home, 'generated_images');
+  }
+
+  startBackgroundRefresh() {
+    const tick = async () => {
+      const id = this.store.data.activeAccountId;
+      if (this.suspended || !id || this.store.getAccount(id)?.status !== 'ready') return;
+      await this.refreshStatus(id).catch(() => {});
+      await this.refreshModels(id).catch(() => {});
+    };
+    setTimeout(tick, 1000).unref();
+    setInterval(tick, BACKGROUND_REFRESH_MS).unref();
+  }
+
+  paths(id) {
+    const root = path.join(this.accountsDir, id);
+    return { root, home: path.join(root, 'home'), workspace: path.join(root, 'workspace') };
+  }
+
+  list() {
+    return this.store.data.accounts.map((a) => ({
+      ...a,
+      login: this.logins.get(a.id) || null,
+      loginResult: this.loginResults.get(a.id) || null,
+      running: this.clients.has(a.id),
+      credentials: this.#credentialsInfo(a.id),
+    }));
+  }
+
+  // 只取 auth.json 的大小和修改时间（Codex 刷新令牌时会重写它），不读内容。
+  #credentialsInfo(id) {
+    try {
+      const stat = fs.statSync(path.join(this.paths(id).home, 'auth.json'));
+      return { bytes: stat.size, updatedAt: stat.mtime.toISOString() };
+    } catch {
+      return null;
+    }
+  }
+
+  // ---- app-server 进程 ----
+
+  #writeCodexConfig(home) {
+    const settings = this.store.data.settings;
+    const lines = [
+      '# 由 codex_local_gateway 生成，每次启动该账号的 app-server 时覆盖',
+      'cli_auth_credentials_store = "file"',
+      'check_for_update_on_startup = false',
+      'approval_policy = "never"',
+      'sandbox_mode = "read-only"',
+      `web_search = "${settings.webSearch === 'live' ? 'live' : settings.webSearch === 'cached' ? 'cached' : 'disabled'}"`,
+      '',
+      '[features]',
+    ];
+    for (const name of CHAT_ONLY_DISABLED_FEATURES) {
+      if (this.featureNames.size === 0 || this.featureNames.has(name)) lines.push(`${name} = false`);
+    }
+    // Codex 自带的系统技能（imagegen、openai-docs、plugin-creator 等）对网关没用，
+    // 还会让模型去读 SKILL.md、白白消耗 token。生图走 image_gen.imagegen 工具，不依赖技能。
+    lines.push('', '[skills]', 'include_instructions = false', '', '[skills.bundled]', 'enabled = false');
+    fs.writeFileSync(path.join(home, 'config.toml'), `${lines.join('\n')}\n`);
+  }
+
+  async getClient(id) {
+    if (this.suspended) throw httpError(503, 'Codex 正在升级，请稍后重试', 'codex_upgrading');
+    const existing = this.clients.get(id);
+    if (existing && !existing.exited) {
+      await existing.start();
+      return existing;
+    }
+
+    const { home, workspace } = this.paths(id);
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(workspace, { recursive: true });
+    this.#writeCodexConfig(home);
+
+    const client = new AppServerClient({ cmd: this.cmd, codexHome: home, cwd: workspace, label: id });
+    this.clients.set(id, client);
+    client.on('exit', () => {
+      if (this.clients.get(id) === client) this.clients.delete(id);
+    });
+    client.on('notification', (method, params) => this.#onNotification(id, method, params));
+    try {
+      await client.start();
+    } catch (err) {
+      this.clients.delete(id);
+      client.close();
+      throw err;
+    }
+    return client;
+  }
+
+  restartAll() {
+    for (const client of this.clients.values()) client.close();
+    this.clients.clear();
+  }
+
+  shutdown() {
+    for (const client of this.clients.values()) client.close();
+  }
+
+  #onNotification(id, method, params) {
+    if (method === 'account/login/completed') {
+      const login = this.logins.get(id);
+      if (!login || (params.loginId && params.loginId !== login.loginId)) return;
+      this.logins.delete(id);
+      const done = (success, error) =>
+        this.loginResults.set(id, { startedAt: login.startedAt, success, error });
+      if (params.success) {
+        this.refreshStatus(id).then(
+          (account) => {
+            done(account.status === 'ready', account.error);
+            this.refreshModels(id).catch(() => {});
+          },
+          (err) => done(false, err.message),
+        );
+      } else {
+        const error = params.error || '登录失败';
+        // 已登录账号重新登录失败时，原有凭据仍然有效，不改状态。
+        if (this.store.getAccount(id)?.status !== 'ready') {
+          this.store.upsertAccount({ id, status: 'failed', error });
+        }
+        done(false, error);
+      }
+    } else if (method === 'account/rateLimits/updated' && params?.rateLimits) {
+      this.#mergeRateLimits(id, params.rateLimits);
+    } else if (method === 'warning' || method === 'configWarning' || method === 'deprecationNotice') {
+      // Codex 的配置/能力问题只会以警告通知出现（比如工具不可用），打印出来方便排查，同一条只打一次。
+      const text = params?.message || [params?.summary, params?.details].filter(Boolean).join(' - ');
+      const key = `${method}:${text}`;
+      if (text && !this.loggedWarnings.has(key)) {
+        this.loggedWarnings.add(key);
+        console.warn(`[codex ${method}] ${text}`);
+      }
+    }
+  }
+
+  // 滚动更新是稀疏的：只覆盖有值的字段，null 不清掉已知值。
+  #mergeRateLimits(id, update) {
+    const account = this.store.getAccount(id);
+    if (!account) return;
+    const limitId = update.limitId || 'codex';
+    const byId = { ...(account.rateLimitsByLimitId || {}) };
+    const merged = { ...(byId[limitId] || {}) };
+    for (const [key, value] of Object.entries(update)) {
+      if (value !== null && value !== undefined) merged[key] = value;
+    }
+    byId[limitId] = merged;
+    const patch = { id, rateLimitsByLimitId: byId };
+    if (limitId === 'codex') patch.rateLimits = merged;
+    this.store.upsertAccount(patch);
+  }
+
+  // ---- 登录 ----
+
+  createAccount(label) {
+    const id = crypto.randomUUID().slice(0, 8);
+    return this.store.upsertAccount({
+      id,
+      label: label || `账号 ${this.store.data.accounts.length + 1}`,
+      status: 'pending',
+      email: null,
+      planType: null,
+      error: null,
+      rateLimits: null,
+      createdAt: new Date().toISOString(),
+      lastCheckedAt: null,
+    });
+  }
+
+  // method: 'browser' 走本机浏览器 OAuth 回调；'device' 走设备码。
+  async startLogin(id, method) {
+    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
+    await this.cancelLogin(id);
+
+    const client = await this.getClient(id);
+    const result = await client.request('account/login/start', {
+      type: method === 'device' ? 'chatgptDeviceCode' : 'chatgpt',
+    });
+    const login = {
+      loginId: result.loginId,
+      method,
+      authUrl: result.authUrl || null,
+      verificationUrl: result.verificationUrl || null,
+      userCode: result.userCode || null,
+      startedAt: new Date().toISOString(),
+    };
+    this.logins.set(id, login);
+    // 已登录的账号重新登录时保持可用，登录完成后再刷新信息。
+    if (this.store.getAccount(id).status !== 'ready') {
+      this.store.upsertAccount({ id, status: 'pending', error: null });
+    }
+    return login;
+  }
+
+  async cancelLogin(id) {
+    const login = this.logins.get(id);
+    if (!login) return;
+    this.logins.delete(id);
+    const client = this.clients.get(id);
+    if (client && !client.exited) {
+      await client.request('account/login/cancel', { loginId: login.loginId }).catch(() => {});
+    }
+    if (this.store.getAccount(id)?.status === 'pending') {
+      this.store.upsertAccount({ id, status: 'failed', error: '已取消登录' });
+    }
+  }
+
+  // ---- 状态 ----
+
+  async refreshStatus(id) {
+    const client = await this.getClient(id);
+    const { account } = await client.request('account/read', { refreshToken: false });
+    const patch = { id, lastCheckedAt: new Date().toISOString() };
+
+    if (account?.type === 'chatgpt') {
+      Object.assign(patch, { status: 'ready', email: account.email, planType: account.planType, error: null });
+      try {
+        const limits = await client.request('account/rateLimits/read', {});
+        patch.rateLimits = limits.rateLimits;
+        patch.rateLimitsByLimitId = limits.rateLimitsByLimitId || null;
+      } catch (err) {
+        patch.error = `读取额度失败：${err.message}`;
+      }
+    } else if (!this.logins.has(id)) {
+      Object.assign(patch, {
+        status: account ? 'failed' : 'expired',
+        error: account ? `不是 ChatGPT 登录（${account.type}）` : '未登录或登录已失效，请重新登录',
+      });
+    }
+
+    const saved = this.store.upsertAccount(patch);
+    if (saved.status === 'ready' && !this.store.data.activeAccountId) {
+      this.setActive(id);
+    }
+    return saved;
+  }
+
+  setActive(id) {
+    const account = this.store.getAccount(id);
+    if (!account) throw httpError(404, '账号不存在');
+    if (account.status !== 'ready') throw httpError(400, '账号还没有登录成功');
+    this.store.data.activeAccountId = id;
+    this.store.save();
+    this.refreshModels(id).catch(() => {});
+  }
+
+  async remove(id) {
+    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
+    await this.cancelLogin(id);
+    const client = this.clients.get(id);
+    if (client && !client.exited) {
+      await client.request('account/logout', {}).catch(() => {});
+      client.close();
+    }
+    this.clients.delete(id);
+    this.store.removeAccount(id);
+    // 等子进程退出后再删目录，Windows 上文件被占用时删除会失败。
+    setTimeout(() => {
+      fs.rm(this.paths(id).root, { recursive: true, force: true }, () => {});
+    }, 4000).unref();
+  }
+
+  // ---- 对外服务使用 ----
+
+  activeAccount() {
+    const id = this.store.data.activeAccountId;
+    const account = id ? this.store.getAccount(id) : null;
+    if (!account) throw httpError(503, '没有可用的当前账号，请先在管理后台添加并选择账号', 'no_active_account');
+    if (account.status !== 'ready') {
+      throw httpError(503, `当前账号状态为 ${account.status}，请在管理后台处理`, 'account_not_ready');
+    }
+    return account;
+  }
+
+  async activeClient() {
+    const account = this.activeAccount();
+    return { account, client: await this.getClient(account.id) };
+  }
+
+  // 模型目录持久化在 store.modelCatalog[accountId]，后台定时刷新，过期时按需刷新。
+  async listModels(id) {
+    const entry = this.store.data.modelCatalog[id];
+    if (entry && Date.now() - Date.parse(entry.updatedAt) < BACKGROUND_REFRESH_MS * 2) return entry.data;
+    return (await this.refreshModels(id)).data;
+  }
+
+  refreshModels(id) {
+    // 同一账号并发刷新时复用同一个请求。
+    if (this.modelRefreshes.has(id)) return this.modelRefreshes.get(id);
+    const run = (async () => {
+      const client = await this.getClient(id);
+      const models = [];
+      let cursor = null;
+      do {
+        const page = await client.request('model/list', { cursor, limit: 100 });
+        models.push(...page.data);
+        cursor = page.nextCursor;
+      } while (cursor);
+      const entry = { updatedAt: new Date().toISOString(), data: models };
+      if (this.store.getAccount(id)) {
+        this.store.data.modelCatalog[id] = entry;
+        this.store.save();
+      }
+      return entry;
+    })().finally(() => this.modelRefreshes.delete(id));
+    this.modelRefreshes.set(id, run);
+    return run;
+  }
+
+  modelCatalog(id) {
+    return this.store.data.modelCatalog[id] || null;
+  }
+
+  // 与 core/src/tools/spec_plan.rs 的 image_generation_available 一致：Free 套餐不可用。
+  supportsImageGeneration(account) {
+    return account.planType !== 'free';
+  }
+}
+
+export function httpError(status, message, code) {
+  const err = new Error(message);
+  err.status = status;
+  err.code = code;
+  return err;
+}
