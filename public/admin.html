@@ -658,6 +658,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <label class="option"><input type="radio" name="method" value="device">
             <div class="ico"><svg class="i" data-icon="phone"></svg></div><b>设备码登录</b><span>在任意设备输入代码，需在 ChatGPT 安全设置中开启</span></label>
         </div>
+        <p class="small text-2" id="login-remote-hint" style="margin:10px 0 0" hidden>你正在通过远程地址访问后台：浏览器登录完成后会跳转到你电脑上的 localhost:1455，需要先建好 1455 端口的隧道才能完成，建议直接用设备码登录。</p>
       </div>
     </div>
     <div id="login-step-wait" hidden></div>
@@ -1239,6 +1240,11 @@ function openLogin(account) {
   $('login-step-form').hidden = false; $('login-step-wait').hidden = true;
   $('login-submit').hidden = false; $('login-submit').disabled = false;
   $('login-cancel').textContent = '取消';
+  // 不是在本机访问时，浏览器登录的回调（localhost:1455）到不了服务器，默认改用设备码登录
+  const remote = !['localhost', '127.0.0.1', '::1', '[::1]'].includes(location.hostname);
+  if (remote) document.querySelector('input[name=method][value=device]').checked = true;
+  $('login-methods').dispatchEvent(new Event('change'));
+  $('login-remote-hint').hidden = !remote;
   $('login-dialog').showModal();
 }
 $('login-methods').addEventListener('change', () => {

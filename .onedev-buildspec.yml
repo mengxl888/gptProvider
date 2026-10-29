@@ -22,8 +22,10 @@ jobs:
         set -e
         IMAGE=gptprovider:latest
         NAME=gptprovider
-        # 主机端口：只绑定 127.0.0.1，通过 SSH 隧道访问。1455 在这台主机上已被其他容器占用，回调改用 11455
+        # 后台和 /v1 接口对公网开放（改成 127.0.0.1 就只能本机/SSH 隧道访问）。云服务商的安全组需要放行 TCP 8787
+        BIND_ADDR=0.0.0.0
         API_PORT=8787
+        # 浏览器登录的回调端口，只给 SSH 隧道用；这台主机的 1455 已被其他容器占用，改用 11455
         CALLBACK_PORT=11455
 
         echo "== 主机上现有容器的端口"
@@ -34,9 +36,22 @@ jobs:
 
         echo "== 替换容器（数据在 gptprovider-data 卷里，替换容器不会丢）"
         docker rm -f $NAME >/dev/null 2>&1 || true
+
+        # 开放公网访问前换掉旧的管理口令（只执行一次，之后部署不再变）
+        docker run --rm -v gptprovider-data:/app/data $IMAGE node -e "
+          const fs = require('fs'), marker = '/app/data/.admin-token-rotated', file = '/app/data/store.json';
+          if (fs.existsSync(file) && !fs.existsSync(marker)) {
+            const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+            delete s.adminToken;
+            fs.writeFileSync(file, JSON.stringify(s, null, 2));
+            fs.writeFileSync(marker, new Date().toISOString());
+            console.log('已重置管理口令');
+          }"
+
         docker run -d --name $NAME --restart unless-stopped --init \
-          -p 127.0.0.1:$API_PORT:8787 -p 127.0.0.1:$CALLBACK_PORT:1455 \
+          -p $BIND_ADDR:$API_PORT:8787 -p 127.0.0.1:$CALLBACK_PORT:1455 \
           -e TZ=Asia/Shanghai \
+          -e ALLOWED_HOSTS='*' \
           -v gptprovider-data:/app/data \
           $IMAGE
 
@@ -48,7 +63,17 @@ jobs:
         done
         docker ps --filter name=$NAME
         if [ "$ok" != 1 ]; then docker logs $NAME; exit 1; fi
-        docker logs $NAME 2>&1 | grep -E "codex:|管理口令|快捷登录" || true
+        docker logs $NAME 2>&1 | grep -E "codex:|管理口令" || true
+
+        # 打印可以直接打开的公网地址（公网 IP 由主机自己查询，不写进仓库）
+        PUBLIC_IP=$(wget -qO- -T 8 https://api.ipify.org 2>/dev/null || true)
+        TOKEN=$(docker logs $NAME 2>&1 | sed -n 's/.*管理口令: *\(adm-[A-Za-z0-9_-]*\).*/\1/p' | tail -1)
+        if [ "$BIND_ADDR" = "0.0.0.0" ] && [ -n "$PUBLIC_IP" ]; then
+          echo "== 公网访问（需要安全组放行 TCP $API_PORT）"
+          echo "  管理后台:  http://$PUBLIC_IP:$API_PORT/admin"
+          echo "  快捷登录:  http://$PUBLIC_IP:$API_PORT/admin#login=$TOKEN"
+          echo "  API 地址:  http://$PUBLIC_IP:$API_PORT/v1"
+        fi
         docker image prune -f >/dev/null 2>&1 || true
     runAs: 0:0
     useTTY: false
