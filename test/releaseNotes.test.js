@@ -17,15 +17,16 @@ test('commit messages split on ；into change points, dropping the version marke
   assert.equal(releaseMessage(['版本 1.3.8']), '- 版本号更新');
 });
 
-// GitHub 的 releases.atom：没有 Release 时 content 是标签说明（Markdown 渲染成 HTML 后再转义）
+// GitHub 的 releases.atom：没有 Release 时 content 是标签说明（Markdown 渲染成 HTML 后再转义）。
+// 标签说明有多行时，第一行进标题（"v1.3.7: 第一行"），content 只有其余行。
 const escape = (html) => html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const entry = (tag, html, updated) => `<entry><id>tag:github.com,2008:Repository/1/${tag}</id><updated>${updated}</updated>
-  <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/${tag}"/><title>${tag}</title>
+const entry = (tag, html, updated, title = tag) => `<entry><id>tag:github.com,2008:Repository/1/${tag}</id><updated>${updated}</updated>
+  <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/${tag}"/><title>${escape(title)}</title>
   <content type="html">${escape(html)}</content></entry>`;
 const ATOM = `<?xml version="1.0" encoding="UTF-8"?><feed>
-  ${entry('v1.3.8-beta.1', '<ul>\n<li>测试版</li>\n</ul>', '2026-10-31T02:00:00Z')}
-  ${entry('v1.3.7', '<ul>\n<li>更新说明列出所有版本</li>\n<li>新增发版脚本</li>\n</ul>', '2026-10-31T01:00:00Z')}
-  ${entry('v1.3.6', '<ul>\n<li>多账号调用策略</li>\n</ul>', '2026-10-30T08:44:09Z')}
+  ${entry('v1.3.8-beta.1', '<ul>\n<li>测试版</li>\n</ul>', '2026-10-31T02:00:00Z', 'v1.3.8-beta.1: v1.3.8-beta.1')}
+  ${entry('v1.3.7', '<ul>\n<li>新增发版脚本</li>\n</ul>', '2026-10-31T01:00:00Z', 'v1.3.7: - 更新说明列出所有版本')}
+  ${entry('v1.3.6', '<ul>\n<li>多账号调用策略</li>\n</ul>', '2026-10-30T08:44:09Z', 'v1.3.6: v1.3.6')}
   ${entry('v1.3.5', '<p>v1.3.5</p>', '2026-10-30T08:28:47Z')}
   ${entry('v1.3.4', '<ul>\n<li>旧版本</li>\n</ul>', '2026-10-30T07:47:45Z')}
 </feed>`;

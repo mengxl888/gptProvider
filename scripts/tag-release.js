@@ -49,7 +49,8 @@ function main() {
   const tag = `v${version}`;
   const dryRun = process.argv.includes('--dry-run');
   const { previous, messages } = commitMessages('HEAD');
-  const message = releaseMessage(messages);
+  // 第一行是标题：GitHub 把标签说明的第一行当作标题，其余行才是 releases.atom 里的说明内容。
+  const message = `${tag}\n\n${releaseMessage(messages)}`;
   console.log(`${tag}（${previous ? `${previous} 之后 ${messages.length} 个提交` : '没有更早的版本标签，只取最新提交'}）\n${message}`);
   if (dryRun) return;
   if (git(['tag', '-l', tag])) throw new Error(`标签 ${tag} 已存在，先在 package.json 里升版本号`);

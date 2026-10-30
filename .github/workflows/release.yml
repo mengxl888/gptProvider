@@ -86,7 +86,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
+          # 标签说明第一行是版本号，正文才是更新点
+          git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" > release-notes.md
           FLAGS=""
           case "$GITHUB_REF_NAME" in *-*) FLAGS="--prerelease" ;; esac
           if [ -s release-notes.md ]; then NOTES="--notes-file release-notes.md"; else NOTES="--generate-notes"; fi

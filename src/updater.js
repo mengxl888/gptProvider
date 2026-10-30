@@ -125,11 +125,17 @@ export class AppUpdater {
     const xml = await res.text();
     return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map(([, entry]) => {
       const link = /<link[^>]*href="([^"]+)"/.exec(entry)?.[1] || '';
+      const tag = decodeURIComponent(/\/releases\/tag\/([^/?#"]+)/.exec(link)?.[1] || '');
+      const title = decodeEntities(/<title>([\s\S]*?)<\/title>/.exec(entry)?.[1] || '');
+      let notes = htmlToText(decodeEntities(/<content[^>]*>([\s\S]*?)<\/content>/.exec(entry)?.[1] || ''));
+      // 只有标签时，GitHub 把标签说明的第一行放进标题（"v1.3.7: 第一行"），content 里没有它，补回去。
+      const subject = title.startsWith(`${tag}: `) ? title.slice(tag.length + 2).trim() : '';
+      if (subject && subject !== tag) notes = [subject.replace(/^[-*•]\s+/, '• '), notes].filter(Boolean).join('\n');
       return {
-        tag: decodeURIComponent(/\/releases\/tag\/([^/?#"]+)/.exec(link)?.[1] || ''),
-        title: decodeEntities(/<title>([\s\S]*?)<\/title>/.exec(entry)?.[1] || ''),
+        tag,
+        title,
         updated: /<updated>([\s\S]*?)<\/updated>/.exec(entry)?.[1] || null,
-        notes: htmlToText(decodeEntities(/<content[^>]*>([\s\S]*?)<\/content>/.exec(entry)?.[1] || '')),
+        notes,
       };
     }).filter((r) => r.tag);
   }
