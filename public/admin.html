@@ -649,6 +649,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
           <div class="setting">
+            <div class="desc"><b>失败时改用 API 上游</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，用「API 上游」里的 Key 再试一次，按 API 用量计费；内容安全拒绝、请求体错误不重试。<span id="set-fallback-hint"></span></span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="set-fallback"><span></span></label></div>
+          </div>
+          <div class="setting">
             <div class="desc"><b>联网搜索</b><span>Codex 的 web_search 工具。修改后会重启各账号的 codex app-server</span></div>
             <div class="control"><div class="segmented" id="set-web">
               <button data-v="disabled">关闭</button><button data-v="cached">缓存</button><button data-v="live">实时</button></div></div>
@@ -1839,7 +1843,7 @@ function renderLogRows() {
       <td>${logStatus(r)}</td>
       <td>${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}${r.stream ? ' <span class="chip">流式</span>' : ''}${r.images ? ` <span class="chip">${r.images} 张图</span>` : ''}</td>
       <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
-      <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}</td>
+      <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${r.fallback_error ? ' <span class="chip">已切换上游</span>' : ''}</td>
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td class="num">${esc(fmtMs(r.duration_ms))}</td>
       <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
@@ -1862,6 +1866,7 @@ function logDetail(r) {
     ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
     ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
     ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
+    ...(r.fallback_error ? [['Codex 账号错误', `<span style="color:var(--danger)">${esc(r.fallback_error)}</span><div class="small muted">Codex 账号先失败，已改用 API 上游重试；下面的状态是 API 上游的结果</div>`]] : []),
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
     ['原始 User-Agent', `<span class="mono small">${esc(r.user_agent || '未记录')}</span>`],
     ['上游 User-Agent', `<span class="mono small">${esc(r.upstream_user_agent || '未记录')}</span>`],
@@ -1986,6 +1991,9 @@ function renderSettings() {
   $('set-chat-image').checked = s.chatImageGeneration;
   $('set-chat-image').disabled = activeAccount()?.planType === 'free';
   document.querySelectorAll('#set-web button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.webSearch));
+  $('set-fallback').checked = s.upstreamFallback;
+  $('set-fallback-hint').innerHTML = s.upstreamFallback && !S.state.upstreams.some((u) => u.enabled)
+    ? ' <b style="color:var(--danger)">还没有启用的 API 上游，暂不生效，请先去 <a href="#upstreams">API 上游</a> 添加。</b>' : '';
   const a = activeAccount();
   const c = S.state.codex;
   const state = c.upgrading ? '<span class="badge warn">升级中</span>'
@@ -2024,6 +2032,7 @@ function renderSettings() {
 const saveSettings = run(async (patch) => { await api('PUT', '/settings', patch); toast('设置已保存'); await refreshState(); });
 $('set-model').addEventListener('change', (e) => saveSettings({ defaultModel: e.target.value }));
 $('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGeneration: e.target.checked }));
+$('set-fallback').addEventListener('change', (e) => saveSettings({ upstreamFallback: e.target.checked }));
 $('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
 
 // ============ 入口 ============

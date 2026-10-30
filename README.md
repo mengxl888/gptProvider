@@ -340,6 +340,16 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 - **不支持**：WebSocket（Codex CLI 自定义 provider 默认就用 HTTP，不受影响）。所有渠道的请求体默认上限为 100 MiB，可用 `MAX_REQUEST_BODY_MB` 调整。
 - **费用**：按 OpenAI API 价格计在上游 Key 所属的账户上。部分新模型需要先在 OpenAI 平台完成组织验证才能调用。
 
+### Codex 账号失败时改用 API 上游
+
+在「设置」打开「失败时改用 API 上游」后，「Codex 账号」渠道的请求（对话、Responses、生图、改图）返回 4xx / 5xx 时，网关会用「API 上游」里的 Key 把同一个请求再发一次；上游也失败，就返回上游的错误。默认关闭，没有启用的 API 上游时不生效。
+
+- **什么时候会重试**：账号过载（`server_is_overloaded`）、账号登录失效、生图额度用完、参数不被账号上游接受等 4xx / 5xx 都会重试。请求体不是合法 JSON、请求体过大、下游 Key 本月额度用完、内容被安全策略拒绝（`content_policy_violation` / `image_generation_rejected`）不重试，客户端断开也不重试。
+- **只在还没输出时重试**：原生 Responses 转发在拿到账号上游的成功响应后才开始输出，所以过载、鉴权失败等都能重试；Codex app-server 的流式对话一开始就会写出响应头，回合开始后才失败的请求没法再换上游。
+- **请求怎么转**：原始请求体原样转发，只做两处调整：没写 `model` 时补上默认模型；Responses 的 `input` 里带 `encrypted_content` 的推理项会去掉（它们是 ChatGPT 后端加密的，官方 API 解不开），对话、工具调用和工具结果都保留。
+- **日志**：重试过的请求在「账号 / 上游」列显示实际用的上游和「已切换上游」，展开能看到 Codex 账号原来的错误；状态、耗时和 Token 记的是最终结果。
+- **费用**：重试按 API 用量计在上游 Key 所属的账户上。同一个会话切到 API 上游后，后续请求如果带回了官方 API 加密的推理项，账号上游可能不认，会继续走 API 上游。
+
 ### 接入 Codex CLI
 
 1. 在「API Key」页新建 Key：自己用 ChatGPT 订阅额度时选「Codex 账号」，并先登录、选择当前账号；使用官方 API Key 计费时选「OpenAI API」，并先添加 API 上游。

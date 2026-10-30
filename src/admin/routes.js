@@ -147,7 +147,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, upstreamFallback}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -157,6 +157,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.webSearch = body.webSearch;
     }
     if ('chatImageGeneration' in body) settings.chatImageGeneration = Boolean(body.chatImageGeneration);
+    if ('upstreamFallback' in body) settings.upstreamFallback = Boolean(body.upstreamFallback);
     store.save();
     // web_search 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before) accounts.restartAll();

@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS = {
   defaultModel: null,
   webSearch: 'disabled',
   chatImageGeneration: true,
+  // Codex 账号渠道失败时改用 API 上游重试（按 API 用量计费，默认关闭）
+  upstreamFallback: false,
 };
 const MAX_IMAGE_RECORDS = 500;
 export const CHANNELS = ['codex', 'openai'];

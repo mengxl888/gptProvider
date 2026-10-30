@@ -17,6 +17,7 @@ import { openRequestLog, withLog } from './requestLog.js';
 import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
+import { fallbackBody, shouldFallback } from './upstreamFallback.js';
 import { UpstreamManager, endpointName } from './upstreams.js';
 
 // 每次启动不同，页面据此判断一键更新后服务是否已经重启。
@@ -38,22 +39,23 @@ const accountResponses = new CodexResponsesProxy({ accounts, store, codex });
 const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, restart };
 
 // Codex 账号渠道记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
+// raw 是原始请求体，失败后改用 API 上游时原样（或稍作调整）再发一次。
 const LOGGED_ENDPOINTS = {
   'POST /v1/chat/completions': {
     name: 'chat.completions',
-    handle: async (req, res) => handleChatCompletions(req, res, parseJson(await readBody(req)), ctx),
+    handle: (req, res, raw) => handleChatCompletions(req, res, parseJson(raw), ctx),
   },
   'POST /v1/responses': {
     name: 'responses',
-    handle: async (req, res) => handleResponses(req, res, parseJson(await readBody(req)), ctx),
+    handle: (req, res, raw) => handleResponses(req, res, parseJson(raw), ctx),
   },
   'POST /v1/images/generations': {
     name: 'images.generations',
-    handle: async (req, res) => handleImageGenerations(req, res, parseJson(await readBody(req)), ctx),
+    handle: (req, res, raw) => handleImageGenerations(req, res, parseJson(raw), ctx),
   },
   'POST /v1/images/edits': {
     name: 'images.edits',
-    handle: async (req, res) => handleImageEdits(req, res, await readBody(req), ctx),
+    handle: (req, res, raw) => handleImageEdits(req, res, raw, ctx),
   },
 };
 
@@ -116,14 +118,36 @@ async function route(req, res) {
         apiKey: keyRecord,
         userAgent: req.headers['user-agent'],
       });
-      return withLog(req, res, entry, () => {
+      return withLog(req, res, entry, async () => {
         checkQuota(keyRecord);
-        return endpoint.handle(req, res);
+        const raw = await readBody(req);
+        try {
+          await endpoint.handle(req, res, raw);
+        } catch (err) {
+          if (!shouldFallback(err, { res, settings: store.data.settings, upstreams: upstreams.records })) throw err;
+          await fallbackToUpstream(req, res, url, raw, endpoint.name, err);
+        }
       });
     }
   }
 
   throw httpError(404, `未找到 ${req.method} ${pathname}`, 'not_found');
+}
+
+// Codex 账号渠道失败、还没向客户端写出内容时，用「API 上游」把请求再发一次；上游也失败就返回上游的错误。
+async function fallbackToUpstream(req, res, url, raw, name, err) {
+  req.log?.fallback(err);
+  req.log?.upstreamRequest({ userAgent: req.headers['user-agent'] ?? null, userAgentRewritten: false, systemMessagesConverted: 0 });
+  // 失败的那次可能已经设置了 retry-after、x-request-id 等响应头，不能带到上游的响应里。
+  for (const header of res.getHeaderNames()) {
+    if (header !== 'access-control-allow-origin') res.removeHeader(header);
+  }
+  const body = fallbackBody(raw, {
+    contentType: req.headers['content-type'],
+    endpoint: name,
+    defaultModel: store.data.settings.defaultModel,
+  });
+  return upstreams.proxy(req, res, { subPath: url.pathname.slice('/v1'.length), search: url.search, body });
 }
 
 // OpenAI API 渠道：/v1 下所有请求原样转发给官方 API Key 上游，包括工具调用和流式输出。

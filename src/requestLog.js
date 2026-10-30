@@ -19,7 +19,7 @@ const COLUMNS = [
   'id', 'ts', 'duration_ms', 'endpoint', 'source', 'stream', 'model', 'resolved_model',
   'account_id', 'account_email', 'api_key_id', 'api_key_name', 'user_agent',
   'upstream_user_agent', 'user_agent_rewritten', 'system_messages_converted',
-  'status', 'http_status', 'error_code', 'error_message',
+  'status', 'http_status', 'error_code', 'error_message', 'fallback_error',
   'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images',
 ];
 
@@ -70,6 +70,7 @@ export function initializeRequestLogSchema(db) {
       http_status INTEGER,
       error_code TEXT,
       error_message TEXT,
+      fallback_error TEXT,
       input_tokens INTEGER,
       cached_tokens INTEGER,
       output_tokens INTEGER,
@@ -85,6 +86,7 @@ export function initializeRequestLogSchema(db) {
     ['upstream_user_agent', 'TEXT'],
     ['user_agent_rewritten', 'INTEGER'],
     ['system_messages_converted', 'INTEGER'],
+    ['fallback_error', 'TEXT'],
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
   }
@@ -301,6 +303,17 @@ class LogEntry {
 
   images(count) {
     this.row.images = count;
+  }
+
+  // Codex 账号失败、改用 API 上游重试前调用：记下原来的错误，清掉失败状态和用量，之后按上游的结果记。
+  fallback(err) {
+    const status = err?.status || 500;
+    this.row.fallback_error = `${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 2000);
+    this.row.status = 'success';
+    for (const key of ['http_status', 'error_code', 'error_message', 'resolved_model',
+      'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens']) {
+      this.row[key] = null;
+    }
   }
 
   fail(err) {
