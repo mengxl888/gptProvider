@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseMaxRequestBodyBytes } from './requestBody.js';
+
 // appDir：当前运行的代码（一键更新后是 data/app/<版本>）；rootDir：安装目录，node_modules 在这里。
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rootDir = path.resolve(process.env.GATEWAY_ROOT || appDir);
@@ -17,6 +19,7 @@ export const config = {
   repository: parseRepository(pkg.repository),
   host: process.env.HOST || '127.0.0.1',
   port: Number(process.env.PORT || 8787),
+  maxRequestBodyBytes: parseMaxRequestBodyBytes(process.env.MAX_REQUEST_BODY_MB),
   dataDir: path.resolve(process.env.DATA_DIR || path.join(rootDir, 'data')),
   publicDir: path.join(appDir, 'public'),
   // 允许访问的 Host（防 DNS rebinding）。默认只允许本机地址；* 表示不限制。

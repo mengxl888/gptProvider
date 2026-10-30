@@ -146,6 +146,8 @@ ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 2. 用 Nginx、Caddy 等反向代理到 `127.0.0.1:8787`，**必须配 HTTPS**，否则管理口令和 API Key 会明文传输。
 3. 再次提醒：Codex 账号渠道只给自己用。要给别人用，只发 OpenAI API 渠道的 Key，并设置每月 Token 上限。
 
+反向代理的请求体上限应不小于网关上限。网关默认允许 256 MiB，Nginx 可在对应的 `server` 或 `location` 中设置 `client_max_body_size 256m;`；Caddy 如果配置了请求体大小限制，也应允许至少 256 MiB。若把网关的 `MAX_REQUEST_BODY_MB` 调到 `512`，代理也要相应调到至少 512 MiB（Nginx 为 `client_max_body_size 512m;`），否则请求会先被代理返回 413。
+
 ---
 
 ## 国内网络
@@ -208,6 +210,7 @@ npm start
 | `PORT` | `8787` | 端口 |
 | `HOST` | `127.0.0.1`（Docker 里是 `0.0.0.0`） | 监听地址 |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | 允许访问的 Host（域名/IP），逗号分隔，`*` 表示不限制 |
+| `MAX_REQUEST_BODY_MB` | `256` | 请求体上限，单位 MiB；可设为 `1`–`1024` 的整数 |
 | `DATA_DIR` | `data/`（Docker 里是 `/app/data`） | 数据目录 |
 | `GITHUB_PROXY` | 空 | 一键更新访问 GitHub 时使用的代理前缀 |
 | `UPDATE_REPO` | `mengxl888/gptProvider` | 一键更新的来源仓库（fork 后可改成自己的） |
@@ -311,7 +314,8 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
-- 原生转发对 `max_output_tokens`、`temperature`、`top_p`、`conversation` 等账号上游不支持的参数返回 400。
+- 原生转发兼容接受正整数 `max_output_tokens`，但账号上游不支持该参数，转发时会忽略它，并通过响应头 `x-gptprovider-ignored-parameters: max_output_tokens` 提示；该参数无法保证输出 Token 的硬上限。非法值返回 400。
+- `temperature`、`top_p`、`conversation` 等其他不支持的参数仍返回 400。
 - 工具是否可用仍取决于当前账号、模型和账号上游的支持范围。`/v1/chat/completions` 的工具调用保持不支持。
 - 不支持 `background`、WebSocket 和 `GET /v1/responses/{id}`。普通对话转换路径也不支持 `input_file` / `file_id`。
 
@@ -330,7 +334,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 - **多个上游**：按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个；出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
 - **用量和额度**：从响应的 `usage` 里记 token，流式响应边转发边解析。流式 Chat 请求没带 `stream_options.include_usage` 时，网关会替客户端加上，再把多出来的用量块从回给客户端的流里去掉，所以 token 照样能记上。下游 Key 可以设置**每月 Token 上限**（本自然月的输入 + 输出），到了上限返回 429 `insufficient_quota`，Codex CLI 遇到这个错误会直接停止，不会反复重试。
 - **日志**：每个请求记一条，「账号 / 上游」列是实际使用的上游，`GET /v1/models` 不记。上游卡片上的健康条只统计最终落到这个上游的请求。
-- **不支持**：WebSocket（Codex CLI 自定义 provider 默认就用 HTTP，不受影响）；请求体超过 50 MB。
+- **不支持**：WebSocket（Codex CLI 自定义 provider 默认就用 HTTP，不受影响）。所有渠道的请求体默认上限为 256 MiB，可用 `MAX_REQUEST_BODY_MB` 调整。
 - **费用**：按 OpenAI API 价格计在上游 Key 所属的账户上。部分新模型需要先在 OpenAI 平台完成组织验证才能调用。
 
 ### 接入 Codex CLI
@@ -390,6 +394,7 @@ Codex 账号渠道的对话、Responses、生图、改图请求，OpenAI API 渠
 - `n` 最大 4，每张图跑一个独立的回合，并行生成。`response_format: "url"` 返回 `http://<你访问时的 Host>/images/<id>.png`。
 - 不支持 `mask`，编辑时用文字描述要改的部分。
 - 「设置 → 对话中允许生图」控制普通模型在对话里能不能自动生图。
+- 图片请求被内容政策或模型拒绝时返回 400，错误码为 `content_policy_violation` 或 `image_generation_rejected`，需要用户调整提示词或参考图后重新发起。网关不自动改写、重试或绕过拒绝。
 
 ---
 
@@ -447,6 +452,12 @@ Codex 版本旧了。去「模型」页或「设置」页升级 Codex。
 
 **Codex CLI 提示 Quota exceeded**
 下游 Key 的每月 Token 上限用完了，或者上游 OpenAI 账户余额不足。前者在「API Key」页调高上限，后者看「日志」里的错误信息。
+
+**请求返回 413 / 请求体过大**
+网关默认接受最多 256 MiB 的原始请求体，包括完整历史和 base64 图片。可通过 `MAX_REQUEST_BODY_MB` 调整到 `1`–`1024` MiB，并重启网关；Nginx、Caddy 等反向代理的上限也应不小于网关。超过上限时，网关返回结构化 413，`error.details` 包含大小和上限信息；已知 `Content-Length` 超限会提前拒绝。网关不会自动丢弃历史或图片。较大的请求在接收和 JSON 解析时会占用更多内存，并发请求的内存用量会相加。
+
+**生图被拒绝，或更新后旧日志仍显示 502**
+内容政策或模型拒绝会按 400 记录，后台显示「内容拒绝」，需要调整请求内容后重新发起。更新只影响新请求；旧日志保留当时记录的状态码、错误码和原始错误信息，不回改或删除记录。
 
 **一键更新提示无法自动重启**
 用 `npm start` 或 Docker 启动，不要直接运行 `node src/server.js`。

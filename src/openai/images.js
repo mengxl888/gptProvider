@@ -3,10 +3,11 @@
 // 所以 size、background 只能作为提示写进提示词，由模型决定构图和是否透明背景。
 
 import { httpError } from '../codex/accounts.js';
-import { finalText, runTurn } from '../codex/turn.js';
+import { runTurn } from '../codex/turn.js';
 import { sendJson } from '../http.js';
 import { publicImageUrl } from '../images.js';
 import { parseMultipart } from '../multipart.js';
+import { imageGenerationError } from './imageErrors.js';
 
 // Codex 生图工具固定请求 gpt-image-2（tool.rs IMAGE_MODEL），实际版本由 ChatGPT 后端决定，
 // 客户端无法指定。所以对话里任何 gpt-image-* 名字（如 API 的 gpt-image-2.5-flare / -sunburst）都按生图处理。
@@ -84,32 +85,54 @@ async function generateImages(req, res, ctx, { prompt, n = 1, size, background, 
     signal: abort.signal,
   };
   // n 张图就并行跑 n 个回合，每个回合生成一张。
-  const results = await Promise.all(Array.from({ length: n }, () => runTurn(client, turnArgs)));
-
-  const images = [];
+  // Keep successful images and observed usage even if another parallel turn fails.
+  const results = await Promise.all(Array.from({ length: n }, async () => {
+    const observed = { model: null, images: [], messages: [], usage: null };
+    const trackedClient = {
+      request: (...args) => client.request(...args),
+      subscribeThread: (id, handler) => client.subscribeThread(id, (method, params) => {
+        if (method === 'thread/tokenUsage/updated') observed.usage = params.tokenUsage.total;
+        handler(method, params);
+      }),
+    };
+    try {
+      return await runTurn(trackedClient, { ...turnArgs, onEvent: (event) => {
+        if (event.type === 'started') observed.model = event.model;
+        if (event.type === 'image') observed.images.push(event.image);
+        if (event.type === 'item_done' && event.kind === 'text' && event.text) {
+          observed.messages.push({ text: event.text, phase: 'final_answer' });
+        }
+      } });
+    } catch (error) {
+      return { ...observed, error };
+    }
+  }));
   const total = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
-  const codexImagesDir = ctx.accounts.generatedImagesDir(account.id);
   for (const result of results) {
     for (const key of Object.keys(total)) total[key] += result.usage?.[key] || 0;
-    for (const image of result.images) {
+  }
+  req.log?.resolvedModel(results.find((result) => result.model)?.model);
+  req.log?.usage(total);
+  const cancelled = results.find((result) => result.error?.aborted)?.error;
+  if (cancelled || abort.signal.aborted) {
+    req.log?.images(0);
+    throw cancelled || Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
+  }
+  const images = [];
+  const codexImagesDir = ctx.accounts.generatedImagesDir(account.id);
+  for (const result of results) {
+    for (const image of result.images || []) {
+      if (abort.signal.aborted) break;
       if (image.status !== 'completed') continue;
       const saved = await ctx.images.save(image, { prompt, source, accountId: account.id, codexImagesDir });
       if (saved) images.push(saved);
     }
   }
-  req.log?.resolvedModel(results[0]?.model);
-  req.log?.usage(total);
   req.log?.images(images.length);
+  if (abort.signal.aborted) throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
   const usage = { input_tokens: total.inputTokens, output_tokens: total.outputTokens, total_tokens: total.totalTokens };
   if (images.length === 0) {
-    // 生图额度用完时 Codex 会在条目里给出 failure（ImageGenerationFailure）。
-    const failure = results.flatMap((r) => r.images).find((img) => img.failure)?.failure;
-    if (failure?.type === 'usageLimitExceeded') {
-      const reset = failure.resetsAt ? `，${new Date(failure.resetsAt * 1000).toLocaleString()} 重置` : '';
-      throw httpError(429, `生图额度已用完（${failure.limitId}）${reset}`, 'image_usage_limit_exceeded');
-    }
-    const reason = results.map((r) => finalText(r.messages)).find(Boolean);
-    throw httpError(502, reason ? `没有生成图片：${reason}` : '没有生成图片', 'image_generation_failed');
+    throw imageGenerationError(results);
   }
   return { images, usage };
 }

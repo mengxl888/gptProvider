@@ -14,11 +14,11 @@ import { handleChatCompletions } from './openai/chat.js';
 import { IMAGE_MODEL_ID, handleImageEdits, handleImageGenerations } from './openai/images.js';
 import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
+import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
 import { UpstreamManager, endpointName } from './upstreams.js';
 
-const MAX_BODY_BYTES = 50 * 1024 * 1024;
 // 每次启动不同，页面据此判断一键更新后服务是否已经重启。
 const BOOT_ID = Math.random().toString(36).slice(2, 10);
 
@@ -58,6 +58,8 @@ const LOGGED_ENDPOINTS = {
 };
 
 const server = http.createServer((req, res) => {
+  const rejection = requestBodyRejection(req);
+  if (rejection) return sendError(res, rejection);
   route(req, res).catch((err) => sendError(res, err));
 });
 
@@ -127,9 +129,9 @@ async function route(req, res) {
 // OpenAI API 渠道：/v1 下所有请求原样转发给官方 API Key 上游，包括工具调用和流式输出。
 async function proxyToUpstream(req, res, url, keyRecord) {
   const subPath = url.pathname.slice('/v1'.length);
-  const options = { subPath, search: url.search, body: await readBody(req) };
+  const options = { subPath, search: url.search };
   if (req.method === 'GET' && (subPath === '/models' || subPath.startsWith('/models/'))) {
-    return upstreams.proxy(req, res, options);
+    return upstreams.proxy(req, res, { ...options, body: await readBody(req) });
   }
   const entry = requestLog.begin({
     endpoint: endpointName(subPath),
@@ -137,9 +139,9 @@ async function proxyToUpstream(req, res, url, keyRecord) {
     apiKey: keyRecord,
     userAgent: req.headers['user-agent'],
   });
-  return withLog(req, res, entry, () => {
+  return withLog(req, res, entry, async () => {
     checkQuota(keyRecord);
-    return upstreams.proxy(req, res, options);
+    return upstreams.proxy(req, res, { ...options, body: await readBody(req) });
   });
 }
 
@@ -163,20 +165,7 @@ function requireBearer(req, check, message) {
 }
 
 function readBody(req) {
-  if (req.method === 'GET' || req.method === 'DELETE') return Promise.resolve(Buffer.alloc(0));
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(httpError(413, '请求体过大'));
-        req.destroy();
-      } else chunks.push(c);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
+  return readRequestBody(req, { limitBytes: config.maxRequestBodyBytes });
 }
 
 function parseJson(buf) {
@@ -203,11 +192,16 @@ function sendCors(res) {
 }
 
 function sendError(res, err) {
+  if (res.destroyed) return;
   const status = err.status || 500;
   if (!err.status) console.error('[gateway]', err);
   if (res.headersSent) {
     res.destroy();
     return;
+  }
+  if (err.closeConnection) {
+    res.shouldKeepAlive = false;
+    res.setHeader('connection', 'close');
   }
   sendJson(res, status, {
     error: {

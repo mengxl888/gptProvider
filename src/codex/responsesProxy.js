@@ -13,7 +13,7 @@ const NATIVE_ITEMS = new Set([
   'tool_search_call', 'tool_search_output', 'compaction',
 ]);
 const UNSUPPORTED_PARAMS = [
-  'conversation', 'max_output_tokens', 'max_tool_calls', 'temperature', 'top_p',
+  'conversation', 'max_tool_calls', 'temperature', 'top_p',
   'top_logprobs', 'truncation', 'prompt', 'prompt_cache_retention', 'safety_identifier',
   'moderation', 'multi_agent', 'user',
 ];
@@ -46,8 +46,14 @@ export class CodexResponsesProxy {
   }
 
   async handle(req, res, body) {
+    // 参数校验失败也要记录请求模型，避免日志一律显示“默认”。
+    req.log?.request({ model: body.model || this.store.data.settings.defaultModel || 'gpt-6.1-sol', stream: body.stream });
     const payload = this.#payload(body);
-    req.log?.request({ model: payload.model, stream: body.stream });
+    if (body.max_output_tokens != null) {
+      // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
+      res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
+      res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
+    }
     const account = this.accounts.activeAccount();
     req.log?.account(account);
     const abort = new AbortController();
@@ -145,6 +151,10 @@ export class CodexResponsesProxy {
   }
 
   #payload(body) {
+    if (body.max_output_tokens != null
+      && (!Number.isSafeInteger(body.max_output_tokens) || body.max_output_tokens <= 0)) {
+      throw httpError(400, 'max_output_tokens 必须是正整数', 'invalid_parameter');
+    }
     if (body.background) throw httpError(400, '不支持 background 模式', 'unsupported_parameter');
     if (body.previous_response_id) {
       throw httpError(400, 'Codex 账号原生工具请求不支持 previous_response_id，请在 input 中回传完整历史、推理项和工具结果', 'unsupported_parameter');
@@ -170,6 +180,7 @@ export class CodexResponsesProxy {
     delete payload.previous_response_id;
     delete payload.background;
     delete payload.metadata;
+    delete payload.max_output_tokens;
     return payload;
   }
 

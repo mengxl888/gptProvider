@@ -1802,6 +1802,30 @@ function renderLogStats() {
 function logStatus(row) {
   if (row.status === 'success') return `<span class="badge success"><span class="dot"></span>成功 ${row.http_status ?? ''}</span>`;
   if (row.status === 'aborted') return '<span class="badge"><span class="dot"></span>中断</span>';
+  const code = String(row.error_code || '').toLowerCase();
+  const message = row.error_message || '';
+  const policyRefusal = [
+    /\b(?:safety system|safety checks?|(?:content|safety)[ -]polic(?:y|ies)|content filters?|moderation(?: system)?)\s+(?:has\s+)?(?:blocked|rejected|refused)\b/i,
+    /\b(?:blocked|rejected|refused|filtered)\b.{0,120}\b(?:safety system|safety checks?|(?:content|safety)[ -]polic(?:y|ies)|moderation)\b/i,
+    /\b(?:violat(?:e[sd]?|ion)|does not comply with|doesn['’]t comply with)\b.{0,80}\b(?:content|safety)[ -]polic(?:y|ies)\b/i,
+    /(?:内容安全|内容政策|安全策略|安全系统|审核系统).{0,30}(?:拒绝|拦截|阻止|不允许)|(?:拒绝|拦截|阻止).{0,30}(?:内容安全|内容政策|安全策略|安全系统|审核系统)/,
+  ].some((pattern) => pattern.test(message));
+  const toolRefusal = [
+    /\b(?:image(?: generation)? (?:tool|system|service)|image_gen(?:\.imagegen)?)\s+(?:has\s+)?(?:blocked|rejected|refused)\s+(?:the |this |that |your |an? )?(?:image|redraw|request|prompt|edit|generation)\b/i,
+    /\b(?:i|we)\s+(?:cannot|can['’]t|could not|couldn['’]t)\s+(?:comply with|fulfil|fulfill)\s+(?:that |this |your |the )?image (?:request|generation request)\b/i,
+    /(?:生图|图像生成|图片生成|图片工具|图像工具).{0,20}(?:明确拒绝|拒绝了|拦截了)/,
+  ].some((pattern) => pattern.test(message));
+  const technicalFailure = /\b(?:firewall|network|connection|socket|timeout|timed out|dns|HTTP\s*[45]\d\d)\b/i.test(message);
+  const legacyRefusal = code === 'image_generation_failed' && (policyRefusal || (toolRefusal && !technicalFailure));
+  let label = '';
+  if (['content_policy_violation', 'image_generation_rejected', 'content_filter', 'content_filter_error', 'image_generation_refused'].includes(code) || legacyRefusal) {
+    label = '内容拒绝';
+  } else if (row.http_status === 413 || ['request_body_too_large', 'request_too_large', 'body_too_large'].includes(code)) {
+    label = '请求过大';
+  } else if (['invalid_parameter', 'invalid_request', 'invalid_request_error', 'invalid_json', 'unsupported_parameter', 'unsupported_tool', 'unsupported_input_item', 'previous_response_not_found', 'badrequest'].includes(code)) {
+    label = '参数错误';
+  }
+  if (label) return `<span class="badge warn"><span class="dot"></span>${label} ${row.http_status ?? ''}</span>`;
   return `<span class="badge danger"><span class="dot"></span>失败 ${row.http_status ?? ''}</span>`;
 }
 

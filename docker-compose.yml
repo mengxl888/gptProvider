@@ -14,6 +14,8 @@ services:
       TZ: Asia/Shanghai
       # 允许访问的域名/IP（默认只允许 localhost、127.0.0.1）
       # ALLOWED_HOSTS: "localhost,127.0.0.1,gpt.example.com"
+      # 请求体默认上限 256 MiB，可设为 1–1024 的整数；反向代理也应设置不小于此值的上限
+      # MAX_REQUEST_BODY_MB: "512"
       # 访问不了 GitHub 时，给一键更新配一个 GitHub 代理前缀
       # GITHUB_PROXY: "https://your-github-proxy/"
       # 后台「升级 Codex」用的 npm 镜像

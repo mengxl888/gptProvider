@@ -380,9 +380,51 @@ test('downstream cancellation aborts the upstream signal and stops the request',
   assert.equal(h.fetchCalls.length, 1);
 });
 
+for (const stream of [false, true]) {
+  test(`max_output_tokens is accepted without forwarding an unsupported cap (stream=${stream})`, async () => {
+    const h = harness();
+    const req = request();
+    const res = new ResponseSink();
+    const input = [{ role: 'user', content: 'Call ping' }, { type: 'function_call_output', call_id: 'earlier', output: 'a tool result' }];
+    const body = toolBody({ stream, max_output_tokens: 8192, input });
+    await handleResponses(req, res, body, { accountResponses: h.proxy });
+    assert.equal(h.fetchCalls.length, 1);
+    const payload = JSON.parse(h.fetchCalls[0][1].body);
+    assert.equal(Object.hasOwn(payload, 'max_output_tokens'), false);
+    assert.deepEqual(payload.input, input);
+    assert.deepEqual(payload.tools, body.tools);
+    assert.equal(res.headers['x-gptprovider-ignored-parameters'], 'max_output_tokens');
+    assert.equal(res.headers['access-control-expose-headers'], 'x-gptprovider-ignored-parameters');
+    assert.equal(req.events.some((entry) => entry.name === 'fail'), false);
+    if (stream) assert.deepEqual(res.body, terminalSse());
+    else assert.equal(res.json.status, 'completed');
+  });
+}
+
+test('missing or null output token limits do not advertise an ignored parameter', async () => {
+  for (const extra of [{}, { max_output_tokens: null }]) {
+    const h = harness();
+    const res = new ResponseSink();
+    await h.proxy.handle(request(), res, toolBody(extra));
+    assert.equal(Object.hasOwn(JSON.parse(h.fetchCalls[0][1].body), 'max_output_tokens'), false);
+    assert.equal(res.headers['x-gptprovider-ignored-parameters'], undefined);
+  }
+});
+
+test('invalid output token limits fail without contacting the account and retain request metadata', async () => {
+  const h = harness();
+  for (const limit of [0, -1, 1.5, '8192', Number.MAX_SAFE_INTEGER + 1]) {
+    const req = request();
+    await assert.rejects(h.proxy.handle(req, new ResponseSink(), toolBody({ max_output_tokens: limit })), { status: 400, code: 'invalid_parameter' });
+    assert.ok(req.events.some((entry) => entry.name === 'request' && entry.value.model === 'gpt-6.1-sol'));
+  }
+  assert.equal(h.fetchCalls.length, 0);
+  assert.equal(h.authCalls.length, 0);
+});
+
 test('previous_response_id and unsupported parameters fail before obtaining credentials or fetching', async () => {
   const h = harness();
-  for (const extra of [{ previous_response_id: 'resp_synthetic' }, { temperature: 0 }, { background: true }, { max_output_tokens: 100 }]) {
+  for (const extra of [{ previous_response_id: 'resp_synthetic' }, { temperature: 0 }, { background: true }]) {
     await assert.rejects(h.proxy.handle(request(), new ResponseSink(), toolBody(extra)), { status: 400, code: 'unsupported_parameter' });
   }
   assert.equal(h.fetchCalls.length, 0);
