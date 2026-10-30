@@ -470,11 +470,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="card-head"><h2>接口</h2></div>
             <div class="endpoint"><span class="m get">GET</span><span class="p mono">/v1/models</span><span class="d">模型列表</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/chat/completions</span><span class="d">对话，支持流式</span></div>
-            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/responses</span><span class="d">Responses 接口，支持流式</span></div>
+            <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/responses</span><span class="d">支持流式和客户端工具调用</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
             <div class="card-pad small text-2 stack" style="border-top:1px solid var(--border);gap:8px">
-              <div><b>Codex 账号渠道</b>：只提供上面这些接口。在对话里选择模型 <code>gpt-image-2</code> 会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
+              <div><b>Codex 账号渠道</b>：提供上面这些接口，Responses 支持客户端工具调用，可接入 Codex CLI，仅供自己使用。在对话里选择模型 <code>gpt-image-2</code> 会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
               <div><b>OpenAI API 渠道</b>：<code>/v1</code> 下所有请求原样转发到「API 上游」里的官方 Key，工具调用、Embeddings、音频等官方接口都能用，Codex CLI 也能直接接入。</div>
             </div>
           </div>
@@ -718,9 +718,9 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="label">渠道</div>
       <div class="option-grid" id="key-channels">
         <label class="option on"><input type="radio" name="channel" value="openai" checked>
-          <div class="ico"><svg class="i" data-icon="server"></svg></div><b>OpenAI API</b><span>原样转发到「API 上游」的官方 Key，支持工具调用，Codex CLI 用这个</span></label>
+          <div class="ico"><svg class="i" data-icon="server"></svg></div><b>OpenAI API</b><span>原样转发到「API 上游」的官方 Key，支持工具调用，按 API 用量计费</span></label>
         <label class="option"><input type="radio" name="channel" value="codex">
-          <div class="ico"><svg class="i" data-icon="users"></svg></div><b>Codex 账号</b><span>走当前 ChatGPT 账号，只有对话、生图和内置工具，仅供自己使用</span></label>
+          <div class="ico"><svg class="i" data-icon="users"></svg></div><b>Codex 账号</b><span>走当前 ChatGPT 账号，支持对话、生图和 Responses 工具调用，可用于 Codex CLI，仅供自己使用</span></label>
       </div>
     </div>
     <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
@@ -1211,13 +1211,16 @@ function codeSample(tab) {
     python: `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nstream = client.chat.completions.create(\n    model="${model}",\n    messages=[{"role": "user", "content": "你好"}],\n    stream=True,\n)\nfor chunk in stream:\n    print(chunk.choices[0].delta.content or "", end="")`,
     node: `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}", apiKey: "sk-local-..." });\n\nconst res = await client.chat.completions.create({\n  model: "${model}",\n  messages: [{ role: "user", content: "你好" }],\n});\nconsole.log(res.choices[0].message.content);`,
     image: `from openai import OpenAI\nimport base64\n\nclient = OpenAI(base_url="${base}", api_key="sk-local-...")\n\nimg = client.images.generate(\n    model="gpt-image-2",\n    prompt="一只戴着宇航员头盔的橘猫，扁平插画风格",\n    size="1024x1024",\n)\nopen("cat.png", "wb").write(base64.b64decode(img.data[0].b64_json))`,
-    codex: `# ~/.codex/config.toml\n# Key 用「OpenAI API」渠道的，工具调用由官方 API 处理\nmodel ="${upstreamModel()}"  # 换成「API 上游」页测试出来的可用模型\nmodel_provider = "gptprovider"\n\n[model_providers.gptprovider]\nname = "gptProvider"\nbase_url = "${base}"\nenv_key = "GPTPROVIDER_API_KEY"\nwire_api = "responses"\n\n# 然后设置环境变量再启动 codex：\n#   macOS / Linux:  export GPTPROVIDER_API_KEY=sk-local-...\n#   Windows:        setx GPTPROVIDER_API_KEY sk-local-...（重新打开终端生效）`,
+    codex: `# ~/.codex/config.toml\n# 自己用订阅额度：Key 选「Codex 账号」；API 计费：选「OpenAI API」\nmodel = "${cliModel()}"  # 换成所选渠道中可用的模型\nmodel_provider = "gptprovider"\n\n[model_providers.gptprovider]\nname = "gptProvider"\nbase_url = "${base}"\nenv_key = "GPTPROVIDER_API_KEY"\nwire_api = "responses"\n\n# 然后设置环境变量再启动 codex：\n#   macOS / Linux:  export GPTPROVIDER_API_KEY=sk-local-...\n#   Windows:        setx GPTPROVIDER_API_KEY sk-local-...（重新打开终端生效）`,
   }[tab];
 }
-// 示例里用的模型：优先挑上游测试出来的常用模型
-function upstreamModel() {
-  const ids = new Set((S.state?.upstreams || []).flatMap((u) => u.models || []));
-  return ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5'].find((m) => ids.has(m)) || 'gpt-5.5';
+// CLI 示例优先显示已知可用的常用模型，用户按所选渠道确认。
+function cliModel() {
+  const ids = new Set([
+    ...(S.models?.data || []).map((m) => m.id),
+    ...(S.state?.upstreams || []).flatMap((u) => u.models || []),
+  ]);
+  return ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5'].find((m) => ids.has(m)) || 'gpt-6.1-sol';
 }
 function renderCode() {
   document.querySelectorAll('#code-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.codeTab));
@@ -1931,7 +1934,7 @@ $('key-submit').addEventListener('click', run(async () => {
     $('new-key-value').textContent = key;
     $('new-key-hint').innerHTML = body.channel === 'openai'
       ? `渠道：OpenAI API${S.state.upstreams.length ? '' : '（还没有添加上游，请先去 <a href="#upstreams">API 上游</a> 添加官方 Key）'} · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>`
-      : '渠道：Codex 账号 · 请求走当前 ChatGPT 账号';
+      : '渠道：Codex 账号 · 请求走当前 ChatGPT 账号，仅供自己使用 · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>';
     $('new-key').hidden = false;
   }
   $('key-dialog').close();

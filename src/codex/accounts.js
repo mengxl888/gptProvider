@@ -1,5 +1,6 @@
 // 账号管理：每个账号一个独立的 CODEX_HOME（data/accounts/<id>/home），
-// 登录、令牌刷新、凭据保存全部由官方 codex app-server 自己完成，网关不读取也不转存 token。
+// 登录、令牌刷新、凭据保存由官方 codex app-server 完成。
+// 原生 Responses 转发通过 getAuthStatus 临时取得 access token，不读取 auth.json、不另存 token。
 // 同一时间只有一个"当前账号"对外提供服务，由管理后台手动切换。
 
 import crypto from 'node:crypto';
@@ -55,6 +56,7 @@ export class AccountManager {
     this.loginResults = new Map();
     this.modelRefreshes = new Map();
     this.loggedWarnings = new Set();
+    this.responsesAuthRefreshes = new Map();
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });
   }
@@ -355,6 +357,44 @@ export class AccountManager {
   async activeClient() {
     const account = this.activeAccount();
     return { account, client: await this.getClient(account.id) };
+  }
+
+  // 只向调用方返回本次请求需要的短期令牌；刷新仍由 Codex 的 AuthManager 处理。
+  async responsesAuth(id, { rejectedToken } = {}) {
+    const read = async (refreshToken) => {
+      const client = await this.getClient(id);
+      let result;
+      try {
+        result = await client.request('getAuthStatus', { includeToken: true, refreshToken });
+      } catch {
+        throw httpError(503, '无法取得 Codex 账号的 Responses 凭据，请升级 Codex 并重新登录', 'responses_auth_unavailable');
+      }
+      if (result?.authMethod !== 'chatgpt' || !result.authToken) {
+        throw httpError(503, '当前 Codex 账号登录已失效或不能导出 Responses 凭据，请重新登录', 'responses_auth_unavailable');
+      }
+      let claims;
+      try {
+        claims = JSON.parse(Buffer.from(result.authToken.split('.')[1], 'base64url').toString('utf8'));
+      } catch {
+        throw httpError(503, 'Codex 返回的 Responses 凭据格式不受支持，请升级 Codex 并重新登录', 'responses_auth_unavailable');
+      }
+      const auth = claims?.['https://api.openai.com/auth'];
+      if (auth?.chatgpt_account_is_fedramp) {
+        throw httpError(400, '原生 Responses 转发暂不支持政府工作区', 'unsupported_account');
+      }
+      if (typeof auth?.chatgpt_account_id !== 'string' || !auth.chatgpt_account_id) {
+        throw httpError(503, 'Codex 登录凭据缺少工作区标识，请重新登录', 'responses_auth_unavailable');
+      }
+      return { accessToken: result.authToken, accountId: auth.chatgpt_account_id };
+    };
+    const current = await read(false);
+    // 并发请求可能已经刷新成功；此时复用新令牌，避免重复使用单次刷新的 refresh token。
+    if (!rejectedToken || current.accessToken !== rejectedToken) return current;
+    if (!this.responsesAuthRefreshes.has(id)) {
+      const pending = read(true).finally(() => this.responsesAuthRefreshes.delete(id));
+      this.responsesAuthRefreshes.set(id, pending);
+    }
+    return this.responsesAuthRefreshes.get(id);
   }
 
   // 模型目录持久化在 store.modelCatalog[accountId]，后台定时刷新，过期时按需刷新。

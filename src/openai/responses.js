@@ -1,8 +1,7 @@
 // OpenAI Responses API（POST /v1/responses）↔ Codex app-server 回合。
 // 支持：文本/图片输入、instructions、多轮（input 数组或 previous_response_id）、流式事件、推理摘要、
 // text.format（json_schema / json_object），以及服务端内置工具 image_generation、web_search。
-// 不支持客户端自定义工具（function / custom / mcp 等）：Codex 在网关里只做对话和生图，
-// 工具调用没法交回客户端执行，遇到直接返回 400。
+// 客户端自定义工具及其历史项走原生 Responses 转发；其余请求在这里做对话/生图转换。
 
 import crypto from 'node:crypto';
 
@@ -11,6 +10,7 @@ import { finalText, runTurn } from '../codex/turn.js';
 import { sendJson } from '../http.js';
 import { IMAGE_CHAT_INSTRUCTIONS, NO_IMAGE_INSTRUCTIONS, buildPrompt } from './chat.js';
 import { IMAGE_MODEL_ID, isImageModel } from './images.js';
+import { needsNativeResponses } from '../codex/responsesProxy.js';
 
 const HOSTED_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
 // 历史里已经产生过的输出项，转成对话记录时跳过即可
@@ -24,6 +24,7 @@ const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const history = new Map();
 
 export async function handleResponses(req, res, body, ctx) {
+  if (needsNativeResponses(body)) return ctx.accountResponses.handle(req, res, body);
   const { accounts, store, images } = ctx;
   req.log?.request({ model: body.model, stream: body.stream });
   if (body.background) throw httpError(400, '不支持 background 模式', 'unsupported_parameter');

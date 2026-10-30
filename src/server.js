@@ -5,6 +5,7 @@ import path from 'node:path';
 import { handleAdmin } from './admin/routes.js';
 import { AccountManager, httpError } from './codex/accounts.js';
 import { CodexRuntime } from './codex/runtime.js';
+import { CodexResponsesProxy } from './codex/responsesProxy.js';
 import { config, exposedBeyondLoopback, isAllowedHostHeader } from './config.js';
 import { sendJson } from './http.js';
 import { ImageLibrary } from './images.js';
@@ -33,7 +34,8 @@ const upstreams = new UpstreamManager({ store });
 const images = new ImageLibrary({ store, dataDir: config.dataDir });
 const requestLog = await openRequestLog(config.dataDir);
 const updater = new AppUpdater({ config });
-const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, restart };
+const accountResponses = new CodexResponsesProxy({ accounts, store, codex });
+const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, restart };
 
 // Codex 账号渠道记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
 const LOGGED_ENDPOINTS = {

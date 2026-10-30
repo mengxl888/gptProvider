@@ -1,0 +1,487 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
+import test from 'node:test';
+
+import { AccountManager } from '../src/codex/accounts.js';
+import { CodexResponsesProxy, needsNativeResponses } from '../src/codex/responsesProxy.js';
+import { handleResponses } from '../src/openai/responses.js';
+
+// All credentials and upstream streams in this suite are synthetic. No CODEX_HOME,
+// persisted gateway data, Codex process, or network endpoint is used.
+class ResponseSink extends Writable {
+  constructor() {
+    super({ autoDestroy: false });
+    this.chunks = [];
+    this.headers = {};
+    this.headersSent = false;
+    this.statusCode = null;
+  }
+
+  _write(chunk, encoding, done) {
+    this.chunks.push(Buffer.from(chunk));
+    done();
+  }
+
+  setHeader(name, value) {
+    this.headers[name.toLowerCase()] = value;
+  }
+
+  writeHead(status, headers = {}) {
+    this.statusCode = status;
+    this.headersSent = true;
+    for (const [name, value] of Object.entries(headers)) this.setHeader(name, value);
+  }
+
+  get body() { return Buffer.concat(this.chunks); }
+  get json() { return JSON.parse(this.body.toString('utf8')); }
+}
+
+function request() {
+  const req = new EventEmitter();
+  req.headers = { authorization: 'Bearer synthetic-downstream-key' };
+  req.events = [];
+  req.log = Object.fromEntries(['request', 'account', 'resolvedModel', 'usage', 'fail'].map((name) => [
+    name, (value) => req.events.push({ name, value }),
+  ]));
+  return req;
+}
+
+function response(status = 'completed', overrides = {}) {
+  return {
+    id: 'resp_synthetic', object: 'response', model: 'gpt-6.1-sol', status,
+    output: [{ id: 'msg_synthetic', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '你好 🌏' }] }],
+    usage: { input_tokens: 12, output_tokens: 5, input_tokens_details: { cached_tokens: 3 }, output_tokens_details: { reasoning_tokens: 2 } },
+    ...overrides,
+  };
+}
+
+function event(type, data, newline = '\n') {
+  return `event: ${type}${newline}data: ${JSON.stringify({ type, ...data })}${newline}${newline}`;
+}
+
+function terminalSse(result = response()) {
+  const type = `response.${result.status}`;
+  return Buffer.from(event(type, { response: result }));
+}
+
+function upstream(bytes = terminalSse(), { chunks, headers = {} } = {}) {
+  const pieces = chunks || [bytes];
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const piece of pieces) controller.enqueue(piece);
+      controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream', ...headers } });
+}
+
+function harness(fetchImpl = async () => upstream()) {
+  const account = { id: 'synthetic-account', label: 'Synthetic', status: 'ready' };
+  const authCalls = [];
+  const fetchCalls = [];
+  const accounts = {
+    activeAccount: () => account,
+    responsesAuth: async (id, options) => {
+      authCalls.push({ id, options });
+      return { accessToken: options?.rejectedToken ? 'synthetic-refreshed' : 'synthetic-initial', accountId: 'synthetic-workspace' };
+    },
+  };
+  const proxy = new CodexResponsesProxy({
+    accounts, store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } }, codex: { version: '0.165.0' },
+    fetchImpl: async (...args) => { fetchCalls.push(args); return fetchImpl(...args); },
+  });
+  return { proxy, accounts, account, authCalls, fetchCalls };
+}
+
+const toolBody = (extra = {}) => ({ model: 'gpt-6.1-sol', input: 'Run the tool', tools: [{ type: 'function', name: 'ping', parameters: { type: 'object', properties: {} } }], ...extra });
+
+test('native routing recognizes tools and typed history while hosted tools retain their path', () => {
+  for (const type of ['function', 'custom', 'namespace']) assert.equal(needsNativeResponses(toolBody({ tools: [{ type }] })), true);
+  for (const type of ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'tool_search_call', 'tool_search_output', 'compaction']) {
+    assert.equal(needsNativeResponses({ input: [{ type }] }), true, type);
+  }
+  assert.equal(needsNativeResponses({ input: [{ type: 'reasoning', encrypted_content: 'synthetic-ciphertext' }] }), true);
+  assert.equal(needsNativeResponses({ include: ['reasoning.encrypted_content'] }), true);
+  assert.equal(needsNativeResponses({ input: 'Hello' }), false);
+  assert.equal(needsNativeResponses({ input: [{ type: 'reasoning', summary: [] }], tools: [] }), false);
+  assert.equal(needsNativeResponses({ tools: [{ type: 'image_generation' }, { type: 'web_search' }, { type: 'web_search_preview' }] }), false);
+});
+
+test('actual handleResponses routes native tools without losing grammar, namespaces, typed results or reasoning', async () => {
+  const h = harness();
+  const body = toolBody({
+    stream: true, store: true,
+    tools: [
+      { type: 'function', name: 'ping', strict: true, parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
+      { type: 'custom', name: 'apply_patch', format: { type: 'grammar', syntax: 'lark', definition: 'start: "patch"' } },
+      { type: 'namespace', name: 'functions', tools: [{ type: 'function', name: 'run', parameters: { type: 'object', properties: {} } }] },
+    ],
+    input: [
+      { role: 'developer', content: [{ type: 'input_text', text: '保留工具协议' }] },
+      { type: 'reasoning', id: 'rs_synthetic', encrypted_content: 'synthetic-ciphertext', summary: [] },
+      { type: 'function_call', id: 'fc_synthetic', call_id: 'call_synthetic', name: 'ping', arguments: '{"text":"你好"}' },
+      { type: 'function_call_output', call_id: 'call_synthetic', output: [{ type: 'input_text', text: '工具结果' }, { type: 'input_image', image_url: 'data:image/png;base64,c3ludGhldGlj' }] },
+      { type: 'custom_tool_call', id: 'ct_synthetic', call_id: 'custom_synthetic', name: 'apply_patch', input: 'patch' },
+      { type: 'custom_tool_call_output', call_id: 'custom_synthetic', output: 'done' },
+    ],
+    include: ['reasoning.encrypted_content'], reasoning: { effort: 'high', summary: 'auto' },
+  });
+  const req = request();
+  const res = new ResponseSink();
+  await handleResponses(req, res, body, { accountResponses: h.proxy });
+  assert.equal(h.fetchCalls.length, 1);
+  const [url, options] = h.fetchCalls[0];
+  assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+  assert.equal(options.method, 'POST');
+  assert.equal(options.redirect, 'error');
+  assert.deepEqual(JSON.parse(options.body), { ...body, store: false, tool_choice: 'auto', parallel_tool_calls: true });
+  assert.equal(options.headers.authorization, 'Bearer synthetic-initial');
+  assert.equal(options.headers['chatgpt-account-id'], 'synthetic-workspace');
+  assert.ok(!Object.values(options.headers).includes('Bearer synthetic-downstream-key'));
+  assert.deepEqual(res.body, terminalSse());
+});
+
+test('explicit tool choice and parallel-tool settings remain intact', async () => {
+  const h = harness();
+  const body = toolBody({ tool_choice: { type: 'function', name: 'ping' }, parallel_tool_calls: false });
+  await h.proxy.handle(request(), new ResponseSink(), body);
+  const sent = JSON.parse(h.fetchCalls[0][1].body);
+  assert.deepEqual(sent.tool_choice, body.tool_choice);
+  assert.equal(sent.parallel_tool_calls, false);
+});
+
+test('tool call SSE, custom input, and encrypted reasoning output pass through intact', async () => {
+  const items = [
+    { type: 'reasoning', id: 'rs_output', encrypted_content: 'synthetic-encrypted-output', summary: [] },
+    { type: 'function_call', id: 'fc_output', call_id: 'call_output', name: 'ping', arguments: '{"text":"你好"}', status: 'completed' },
+    { type: 'custom_tool_call', id: 'ct_output', call_id: 'custom_output', name: 'apply_patch', input: 'patch', status: 'completed' },
+  ];
+  const result = response('completed', { output: items });
+  const bytes = Buffer.from([
+    event('response.output_item.added', { output_index: 1, item: { ...items[1], status: 'in_progress', arguments: '' } }),
+    event('response.function_call_arguments.delta', { output_index: 1, item_id: 'fc_output', delta: '{"text":"你好"}' }),
+    event('response.function_call_arguments.done', { output_index: 1, item_id: 'fc_output', arguments: items[1].arguments }),
+    event('response.output_item.done', { output_index: 1, item: items[1] }),
+    event('response.custom_tool_call_input.delta', { output_index: 2, item_id: 'ct_output', delta: 'patch' }),
+    event('response.output_item.done', { output_index: 2, item: items[2] }),
+    event('response.completed', { response: result }),
+  ].join(''));
+  const h = harness(async () => upstream(bytes));
+  const streaming = new ResponseSink();
+  await h.proxy.handle(request(), streaming, toolBody({ stream: true }));
+  assert.deepEqual(streaming.body, bytes);
+  const nonstreaming = new ResponseSink();
+  await h.proxy.handle(request(), nonstreaming, toolBody());
+  assert.deepEqual(nonstreaming.json.output, items);
+});
+
+test('minimal terminal Responses metadata is merged with response.created and completed output items', async () => {
+  const created = {
+    id: 'resp_minimal', object: 'response', created_at: 1234567890,
+    model: 'gpt-6.1-sol', status: 'in_progress', output: [],
+    instructions: 'Synthetic instruction', tools: [{ type: 'custom', name: 'apply_patch' }],
+    reasoning: { effort: 'high', summary: 'auto' },
+  };
+  const items = [
+    { type: 'reasoning', id: 'rs_minimal', encrypted_content: 'synthetic-opaque-reasoning', summary: [] },
+    { type: 'function_call', id: 'fc_minimal', call_id: 'call_minimal', name: 'ping', arguments: '{"value":1}', status: 'completed' },
+  ];
+  const usage = { input_tokens: 7, output_tokens: 4 };
+  const bytes = Buffer.from([
+    event('response.created', { response: created }),
+    ...items.map((item, output_index) => event('response.output_item.done', { output_index, item })),
+    event('response.completed', { response: { id: created.id, usage } }),
+  ].join(''));
+  const h = harness(async () => upstream(bytes));
+  const req = request();
+  const res = new ResponseSink();
+  await h.proxy.handle(req, res, toolBody());
+  assert.deepEqual(res.json, { ...created, status: 'completed', output: items, usage });
+  assert.equal(req.events.find((e) => e.name === 'resolvedModel')?.value, 'gpt-6.1-sol');
+  assert.deepEqual(req.events.find((e) => e.name === 'usage')?.value, { inputTokens: 7, cachedInputTokens: 0, outputTokens: 4, reasoningOutputTokens: 0 });
+});
+
+for (const stream of [false, true]) {
+  test(`a terminal event completes and cancels an upstream that keeps the connection open (stream=${stream})`, async () => {
+    const bytes = terminalSse();
+    let cancelled = false;
+    let controller;
+    const h = harness(async () => new Response(new ReadableStream({
+      start(value) { controller = value; controller.enqueue(bytes); },
+      cancel() { cancelled = true; },
+    }), { headers: { 'content-type': 'text/event-stream' } }));
+    const res = new ResponseSink();
+    let timeout;
+    try {
+      await Promise.race([
+        h.proxy.handle(request(), res, toolBody({ stream })),
+        new Promise((resolve, reject) => { timeout = setTimeout(() => reject(new Error('Proxy did not stop reading after the terminal event')), 1500); }),
+      ]);
+      assert.equal(cancelled, true);
+      if (stream) assert.deepEqual(res.body, bytes);
+      else assert.equal(res.json.status, 'completed');
+    } finally {
+      clearTimeout(timeout);
+      if (!cancelled) controller.close();
+    }
+  });
+}
+
+test('stream preserves every byte across CRLF, multi-data JSON, and split UTF-8 codepoints', async () => {
+  const result = response();
+  const json = JSON.stringify({ type: 'response.completed', response: result }, null, 2);
+  const multiData = json.split('\n').map((line) => `data: ${line}`).join('\r\n');
+  const bytes = Buffer.from(`: 心跳\r\n\r\nevent: response.output_text.delta\r\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: '你好 🌏' })}\r\n\r\nevent: response.completed\r\n${multiData}\r\n\r\n`);
+  const h = harness(async () => upstream(bytes, { chunks: Array.from(bytes, (byte) => Uint8Array.of(byte)) }));
+  const req = request();
+  const res = new ResponseSink();
+  await h.proxy.handle(req, res, toolBody({ stream: true }));
+  assert.deepEqual(res.body, bytes);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(req.events.find((e) => e.name === 'usage')?.value, { inputTokens: 12, cachedInputTokens: 3, outputTokens: 5, reasoningOutputTokens: 2 });
+  assert.equal(req.events.filter((e) => e.name === 'fail').length, 0);
+});
+
+for (const status of ['completed', 'failed', 'incomplete']) {
+  test(`nonstream ${status} aggregates the terminal response with its usage and status`, async () => {
+    const result = response(status, status === 'failed' ? { error: { code: 'synthetic_failure', message: 'Synthetic failure' } } : status === 'incomplete' ? { incomplete_details: { reason: 'max_output_tokens' } } : {});
+    const h = harness(async () => upstream(terminalSse(result)));
+    const req = request();
+    const res = new ResponseSink();
+    await h.proxy.handle(req, res, toolBody());
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json, result);
+    assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
+    const failures = req.events.filter((e) => e.name === 'fail');
+    assert.equal(failures.length, status === 'failed' ? 1 : 0);
+    if (failures.length) assert.equal(failures[0].value.code, 'synthetic_failure');
+  });
+}
+
+for (const stream of [false, true]) {
+  test(`a valid SSE response without Content-Type is accepted (stream=${stream})`, async () => {
+    const bytes = terminalSse();
+    const h = harness(async () => {
+      const value = new Response(new ReadableStream({
+        start(controller) { controller.enqueue(bytes); controller.close(); },
+      }));
+      assert.equal(value.headers.get('content-type'), null);
+      return value;
+    });
+    const req = request();
+    const res = new ResponseSink();
+    await h.proxy.handle(req, res, toolBody({ stream }));
+    assert.equal(res.statusCode, 200);
+    if (stream) {
+      assert.deepEqual(res.body, bytes);
+      assert.match(res.headers['content-type'], /text\/event-stream/);
+    } else {
+      assert.deepEqual(res.json, response());
+      assert.match(res.headers['content-type'], /application\/json/);
+    }
+    assert.equal(req.events.filter((entry) => entry.name === 'fail').length, 0);
+    assert.equal(h.fetchCalls.length, 1);
+  });
+
+  test(`explicit HTML Content-Type is rejected before downstream output (stream=${stream})`, async () => {
+    let cancelled = false;
+    const h = harness(async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(Buffer.from('<html>Synthetic login page</html>')); },
+      cancel() { cancelled = true; },
+    }), { headers: { 'content-type': 'text/html; charset=utf-8' } }));
+    const res = new ResponseSink();
+    await assert.rejects(h.proxy.handle(request(), res, toolBody({ stream })), { status: 502, code: 'invalid_upstream_response' });
+    assert.equal(cancelled, true);
+    assert.equal(res.headersSent, false);
+    assert.equal(res.body.length, 0);
+    assert.equal(h.fetchCalls.length, 1);
+  });
+
+  test(`safe upstream response headers are preserved and credentials excluded (stream=${stream})`, async () => {
+    const h = harness(async () => upstream(terminalSse(), { headers: { 'x-request-id': 'req_synthetic', 'x-codex-turn-state': 'synthetic-turn-state', 'set-cookie': 'secret=synthetic', 'openai-organization': 'synthetic-private-org' } }));
+    const res = new ResponseSink();
+    await h.proxy.handle(request(), res, toolBody({ stream }));
+    assert.equal(res.headers['x-request-id'], 'req_synthetic');
+    assert.equal(res.headers['x-codex-turn-state'], 'synthetic-turn-state');
+    assert.equal(res.headers['set-cookie'], undefined);
+    assert.equal(res.headers['openai-organization'], undefined);
+  });
+}
+
+test('truncated nonstream fails instead of reporting a successful completion', async () => {
+  const h = harness(async () => upstream(Buffer.from(event('response.created', { response: response('in_progress') }))));
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(request(), res, toolBody()), { status: 502, code: 'upstream_disconnected' });
+  assert.equal(res.headersSent, false);
+});
+
+test('truncated stream logs the failure and terminates with an explicit error event', async () => {
+  const original = Buffer.from(event('response.created', { response: response('in_progress') }));
+  const h = harness(async () => upstream(original));
+  const req = request();
+  const res = new ResponseSink();
+  await h.proxy.handle(req, res, toolBody({ stream: true }));
+  assert.deepEqual(res.body.subarray(0, original.length), original);
+  assert.match(res.body.toString('utf8'), /event: error/);
+  assert.match(res.body.toString('utf8'), /upstream_disconnected/);
+  assert.equal(req.events.find((e) => e.name === 'fail')?.value.code, 'upstream_disconnected');
+  assert.equal(h.fetchCalls.length, 1);
+});
+
+test('401 refreshes once before output and retries the originally selected account', async () => {
+  let attempts = 0;
+  const h = harness(async () => ++attempts === 1 ? new Response('{"error":{"message":"Expired synthetic token"}}', { status: 401 }) : upstream());
+  let selections = 0;
+  h.accounts.activeAccount = () => { selections++; return selections === 1 ? h.account : { id: 'other-account' }; };
+  const res = new ResponseSink();
+  await h.proxy.handle(request(), res, toolBody({ stream: true }));
+  assert.equal(selections, 1);
+  assert.deepEqual(h.authCalls, [{ id: 'synthetic-account', options: undefined }, { id: 'synthetic-account', options: { rejectedToken: 'synthetic-initial' } }]);
+  assert.equal(h.fetchCalls.length, 2);
+  assert.equal(h.fetchCalls[1][1].headers.authorization, 'Bearer synthetic-refreshed');
+  assert.deepEqual(res.body, terminalSse());
+});
+
+test('a second 401 stops after one refresh and returns an account error', async () => {
+  const h = harness(async () => new Response('{"error":{"message":"Still unauthorized"}}', { status: 401 }));
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(request(), res, toolBody({ stream: true })), { status: 503, code: 'account_auth_failed' });
+  assert.equal(h.fetchCalls.length, 2);
+  assert.equal(h.authCalls.length, 2);
+  assert.equal(res.headersSent, false);
+});
+
+test('non-401 upstream failures do not retry and retain retry-after', async () => {
+  const h = harness(async () => new Response('{"error":{"message":"Synthetic rate limit","code":"rate_limit_exceeded"}}', { status: 429, headers: { 'retry-after': '17' } }));
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(request(), res, toolBody()), { status: 429, code: 'rate_limit_exceeded' });
+  assert.equal(h.fetchCalls.length, 1);
+  assert.equal(h.authCalls.length, 1);
+  assert.equal(res.headers['retry-after'], '17');
+});
+
+test('downstream cancellation aborts the upstream signal and stops the request', async () => {
+  let sent;
+  const started = new Promise((resolve) => { sent = resolve; });
+  let observedSignal;
+  const h = harness(async (url, { signal }) => {
+    observedSignal = signal;
+    sent();
+    return new Response(new ReadableStream({
+      start(controller) { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const res = new ResponseSink();
+  const pending = h.proxy.handle(request(), res, toolBody({ stream: true }));
+  await started;
+  res.destroy();
+  await assert.rejects(pending, { aborted: true, status: 499 });
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(h.fetchCalls.length, 1);
+});
+
+test('previous_response_id and unsupported parameters fail before obtaining credentials or fetching', async () => {
+  const h = harness();
+  for (const extra of [{ previous_response_id: 'resp_synthetic' }, { temperature: 0 }, { background: true }, { max_output_tokens: 100 }]) {
+    await assert.rejects(h.proxy.handle(request(), new ResponseSink(), toolBody(extra)), { status: 400, code: 'unsupported_parameter' });
+  }
+  assert.equal(h.fetchCalls.length, 0);
+  assert.equal(h.authCalls.length, 0);
+});
+
+test('ordinary hosted tools keep the app-server runTurn route', async () => {
+  let threadHandler;
+  const calls = [];
+  const client = {
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'thread_synthetic' }, model: 'gpt-6.1-sol' };
+      if (method === 'turn/start') {
+        queueMicrotask(() => {
+          threadHandler('item/started', { item: { id: 'msg_synthetic', type: 'agentMessage', phase: 'final_answer' } });
+          threadHandler('item/agentMessage/delta', { itemId: 'msg_synthetic', delta: 'Hosted hello' });
+          threadHandler('item/completed', { item: { id: 'msg_synthetic', type: 'agentMessage', phase: 'final_answer', text: 'Hosted hello' } });
+          threadHandler('turn/completed', { turn: { status: 'completed' } });
+        });
+        return { turn: { id: 'turn_synthetic' } };
+      }
+      return {};
+    },
+    subscribeThread(id, callback) { threadHandler = callback; return () => {}; },
+  };
+  const ctx = {
+    accountResponses: { handle() { assert.fail('Hosted requests must not use native tool proxy'); } },
+    accounts: { activeClient: async () => ({ account: { id: 'synthetic-account' }, client }), supportsImageGeneration: () => true, generatedImagesDir: () => '/synthetic' },
+    store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } }, images: { save() { assert.fail('No generated image was supplied'); } },
+  };
+  const res = new ResponseSink();
+  await handleResponses(request(), res, { input: 'Hello', store: false, tools: [{ type: 'image_generation' }, { type: 'web_search' }] }, ctx);
+  assert.equal(res.json.status, 'completed');
+  assert.equal(res.json.output[0].content[0].text, 'Hosted hello');
+  const started = calls.find((call) => call.method === 'thread/start');
+  assert.equal(started.params.config['features.image_generation'], true);
+  assert.equal(started.params.config.web_search, 'live');
+});
+
+function jwt(auth = { chatgpt_account_id: 'synthetic-workspace' }, suffix = '') {
+  return `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': auth, synthetic: suffix })).toString('base64url')}.synthetic-signature`;
+}
+
+function authManager(onRequest) {
+  const manager = Object.create(AccountManager.prototype);
+  manager.responsesAuthRefreshes = new Map();
+  manager.getClient = async (id) => ({ request: async (method, params) => onRequest({ id, method, params }) });
+  return manager;
+}
+
+test('responsesAuth obtains short-lived credentials from getAuthStatus without reading files', async () => {
+  const token = jwt();
+  const calls = [];
+  const manager = authManager((call) => { calls.push(call); return { authMethod: 'chatgpt', authToken: token }; });
+  assert.deepEqual(await manager.responsesAuth('synthetic-account'), { accessToken: token, accountId: 'synthetic-workspace' });
+  assert.deepEqual(calls, [{ id: 'synthetic-account', method: 'getAuthStatus', params: { includeToken: true, refreshToken: false } }]);
+});
+
+test('responsesAuth merges concurrent refreshes and clears the per-account in-flight entry', async () => {
+  const oldToken = jwt(undefined, 'old');
+  const newToken = jwt(undefined, 'new');
+  let release;
+  let refreshing;
+  const entered = new Promise((resolve) => { refreshing = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  let refreshCount = 0;
+  const manager = authManager(async ({ params }) => {
+    if (params.refreshToken) { refreshCount++; refreshing(); await gate; return { authMethod: 'chatgpt', authToken: newToken }; }
+    return { authMethod: 'chatgpt', authToken: oldToken };
+  });
+  const pending = Array.from({ length: 3 }, () => manager.responsesAuth('synthetic-account', { rejectedToken: oldToken }));
+  await entered;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refreshCount, 1);
+  release();
+  const results = await Promise.all(pending);
+  assert.ok(results.every((result) => result.accessToken === newToken));
+  assert.equal(manager.responsesAuthRefreshes.size, 0);
+});
+
+test('responsesAuth reuses an already rotated credential without refreshing again', async () => {
+  const current = jwt(undefined, 'new');
+  const manager = authManager(({ params }) => {
+    assert.equal(params.refreshToken, false);
+    return { authMethod: 'chatgpt', authToken: current };
+  });
+  assert.equal((await manager.responsesAuth('synthetic-account', { rejectedToken: jwt(undefined, 'old') })).accessToken, current);
+});
+
+for (const [label, result, code] of [
+  ['non-chatgpt auth', { authMethod: 'apikey', authToken: jwt() }, 'responses_auth_unavailable'],
+  ['missing token', { authMethod: 'chatgpt', authToken: null }, 'responses_auth_unavailable'],
+  ['malformed token', { authMethod: 'chatgpt', authToken: 'synthetic-malformed' }, 'responses_auth_unavailable'],
+  ['missing account', { authMethod: 'chatgpt', authToken: jwt({}) }, 'responses_auth_unavailable'],
+  ['government workspace', { authMethod: 'chatgpt', authToken: jwt({ chatgpt_account_id: 'synthetic-workspace', chatgpt_account_is_fedramp: true }) }, 'unsupported_account'],
+]) {
+  test(`responsesAuth rejects ${label}`, async () => {
+    const manager = authManager(() => result);
+    await assert.rejects(manager.responsesAuth('synthetic-account'), { code });
+  });
+}
