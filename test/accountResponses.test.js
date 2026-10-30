@@ -154,6 +154,7 @@ for (const [label, payload, expected] of [
   ['error object', { error: { message: 'Unsupported reasoning effort', code: 'unsupported_parameter', type: 'invalid_request_error', param: 'reasoning.effort' } }, { message: 'Unsupported reasoning effort', code: 'unsupported_parameter', type: 'invalid_request_error', param: 'reasoning.effort' }],
   ['error string', { error: 'Instructions are required', code: 'missing_instructions', param: 'instructions' }, { message: 'Instructions are required', code: 'missing_instructions', param: 'instructions' }],
   ['detail string', { detail: 'Missing required field: instructions' }, { message: 'Missing required field: instructions', code: 'upstream_error' }],
+  ['diagnostic prose after input', { detail: 'Invalid input: reasoning.effort ultra is unsupported' }, { message: 'Invalid input: reasoning.effort ultra is unsupported', code: 'upstream_error' }],
   ['detail object', { detail: { message: 'Expected an array', code: 'invalid_input', type: 'invalid_request_error', param: 'input' } }, { message: 'Expected an array', code: 'invalid_input', type: 'invalid_request_error', param: 'input' }],
   ['nested detail error', { detail: { error: { message: 'Unknown tool name', code: 'invalid_tool', param: 'tools[0].name' } } }, { message: 'Unknown tool name', code: 'invalid_tool', param: 'tools[0].name' }],
   ['top-level message', { message: 'This model requires a developer message', code: 'missing_message' }, { message: 'This model requires a developer message', code: 'missing_message' }],
@@ -225,12 +226,13 @@ test('HTML, empty, malformed JSON and unknown object bodies use an accurate gene
 
 test('diagnostics redact upstream/downstream credentials, arbitrary Bearer/JWT tokens, and echoed input/headers', async () => {
   const foreignJwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from('{"sub":"synthetic"}').toString('base64url')}.synthetic-signature`;
-  const reason = `Invalid tool schema; upstream=synthetic-initial; downstream=synthetic-downstream-key; another=Bearer foreign-secret-value; jwt=${foreignJwt}; input={"text":"PRIVATE_INPUT","nested":[{"x":1}]}; headers={"cookie":"PRIVATE_HEADERS"}; expected a name`;
+  const unusualJwt = `${Buffer.from('{\n "alg": "HS256"\n}').toString('base64url')}.${Buffer.from('{"sub":"synthetic"}').toString('base64url')}.synthetic-signature`;
+  const reason = `Invalid tool schema; upstream=synthetic-initial; downstream=synthetic-downstream-key; another=Bearer foreign-secret-value; jwt=${foreignJwt}; unusualJwt=${unusualJwt}; authToken=PRIVATE_OPAQUE_CAMEL; auth_token="PRIVATE_OPAQUE_SNAKE"; input={"text":"PRIVATE_INPUT","nested":[{"x":1}]}; headers={"cookie":"PRIVATE_HEADERS"}; expected a name`;
   const { error, req, res } = await capturedError(async () => new Response(JSON.stringify({ error: { message: reason, code: 'bad_tool_schema', type: 'invalid_request_error', param: 'tools[0]' } }), { status: 400 }));
   const exposed = JSON.stringify({ message: error.message, details: error.details, headers: res.headers, logs: req.events });
   assert.match(error.message, /Invalid tool schema/);
   assert.match(error.message, /expected a name/);
-  for (const privateValue of ['synthetic-initial', 'synthetic-downstream-key', 'foreign-secret-value', foreignJwt, 'PRIVATE_INPUT', 'PRIVATE_HEADERS']) assert.ok(!exposed.includes(privateValue), privateValue);
+  for (const privateValue of ['synthetic-initial', 'synthetic-downstream-key', 'foreign-secret-value', foreignJwt, unusualJwt, 'PRIVATE_OPAQUE_CAMEL', 'PRIVATE_OPAQUE_SNAKE', 'PRIVATE_INPUT', 'PRIVATE_HEADERS']) assert.ok(!exposed.includes(privateValue), privateValue);
   assert.match(error.message, /REDACTED/);
 });
 

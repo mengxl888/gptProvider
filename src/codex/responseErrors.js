@@ -139,6 +139,12 @@ function sanitize(value, secrets, max) {
   for (const secret of secrets) text = text.replaceAll(secret, '[REDACTED]');
   text = text.replace(/\bBearer\s+[^\s,;"'<>]+/gi, 'Bearer [REDACTED]');
   text = text.replace(/\b(?:eyJ|e30)[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]');
+  text = text.replace(/\b[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\b/g, (candidate) => {
+    try {
+      const header = JSON.parse(Buffer.from(candidate.split('.')[0], 'base64url').toString('utf8'));
+      return header && typeof header === 'object' ? '[REDACTED]' : candidate;
+    } catch { return candidate; }
+  });
   text = text.replace(/\bsk-(?:proj-|local-)?[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]');
   text = redactPayloadFields(text);
   return text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
@@ -149,11 +155,15 @@ function looksLikeHtml(text) {
 }
 
 function redactPayloadFields(text) {
-  const fields = /(["']?)(input(?:_value)?|headers|authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key)\1\s*[:=]\s*/gi;
+  const fields = /(["']?)(input(?:_value)?|headers|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key)\1\s*[:=]\s*/gi;
   let match;
   while ((match = fields.exec(text))) {
     if (match.index > 0 && /[\w]/.test(text[match.index - 1])) continue;
     const start = fields.lastIndex;
+    // "Invalid input: <diagnostic reason>" 是正常错误说明，不是请求体回显。
+    // input 只在结构化值、带引号的键或显式赋值时隐藏；input_value 仍总是隐藏。
+    if (match[2].toLowerCase() === 'input' && !match[1] && !match[0].includes('=')
+      && !['{', '[', '"', "'"].includes(text[start])) continue;
     const end = fieldEnd(text, start);
     text = `${text.slice(0, start)}[REDACTED]${text.slice(end)}`;
     fields.lastIndex = start + '[REDACTED]'.length;
