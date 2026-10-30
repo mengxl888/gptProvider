@@ -1,5 +1,5 @@
 const MIB = 1024 * 1024;
-export const DEFAULT_MAX_REQUEST_BODY_BYTES = 256 * MIB;
+export const DEFAULT_MAX_REQUEST_BODY_BYTES = 100 * MIB;
 const METADATA_PREFIX_BYTES = 8 * 1024;
 const rejectedConnections = new WeakMap();
 

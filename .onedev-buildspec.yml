@@ -51,6 +51,7 @@ jobs:
         docker run -d --name $NAME --restart unless-stopped --init \
           -p $BIND_ADDR:$API_PORT:8787 -p 127.0.0.1:$CALLBACK_PORT:1455 \
           -e TZ=Asia/Shanghai \
+          -e MAX_REQUEST_BODY_MB=100 \
           -e ALLOWED_HOSTS='*' \
           -v gptprovider-data:/app/data \
           $IMAGE

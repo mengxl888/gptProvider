@@ -97,9 +97,10 @@ function rawRequest(port, payload) {
   });
 }
 
-test('request body configuration defaults to 256 MiB and accepts only 1–1024 integer MiB', () => {
-  assert.equal(DEFAULT_MAX_REQUEST_BODY_BYTES, 256 * MIB);
-  for (const value of [undefined, null, '', '   ']) assert.equal(parseMaxRequestBodyBytes(value), 256 * MIB);
+test('request body configuration defaults to 100 MiB and accepts only 1–1024 integer MiB', () => {
+  assert.equal(DEFAULT_MAX_REQUEST_BODY_BYTES, 100 * MIB);
+  for (const value of [undefined, null, '', '   ']) assert.equal(parseMaxRequestBodyBytes(value), 100 * MIB);
+  assert.equal(parseMaxRequestBodyBytes('100'), 100 * MIB);
   assert.equal(parseMaxRequestBodyBytes('1'), MIB);
   assert.equal(parseMaxRequestBodyBytes(' 384 '), 384 * MIB);
   assert.equal(parseMaxRequestBodyBytes('1024'), 1024 * MIB);
@@ -120,6 +121,16 @@ test('config reads MAX_REQUEST_BODY_MB and reports an invalid environment value 
     if (previous === undefined) delete process.env.MAX_REQUEST_BODY_MB;
     else process.env.MAX_REQUEST_BODY_MB = previous;
   }
+});
+
+test('the default limit rejects a request above 100 MiB before uploading it', async (t) => {
+  const f = await fixture(t);
+  const declaredBytes = 100 * MIB + 1;
+  const result = await call(f.port, { headers: { 'content-length': String(declaredBytes) }, early: true });
+  assert.equal(result.status, 413);
+  assert.equal(result.json.error.code, 'request_body_too_large');
+  assert.deepEqual(result.json.error.details, { limitBytes: 100 * MIB, receivedBytes: 0, declaredBytes });
+  assert.equal(result.headers.connection, 'close');
 });
 
 test('oversized Content-Length is rejected before body upload with a structured 413', async (t) => {
