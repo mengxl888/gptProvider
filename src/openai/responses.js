@@ -24,7 +24,7 @@ const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const history = new Map();
 
 export async function handleResponses(req, res, body, ctx) {
-  if (needsNativeResponses(body)) return ctx.accountResponses.handle(req, res, body);
+  if (needsNativeResponses(body, req.headers)) return ctx.accountResponses.handle(req, res, body);
   const { accounts, store, images } = ctx;
   req.log?.request({ model: body.model, stream: body.stream });
   if (body.background) throw httpError(400, '不支持 background 模式', 'unsupported_parameter');

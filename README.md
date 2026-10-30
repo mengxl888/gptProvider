@@ -312,6 +312,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 
 **客户端工具调用**：请求带有 `function`、`custom`、`namespace` 等客户端工具，或 `function_call` / `function_call_output`、`custom_tool_call` / `custom_tool_call_output` 等历史项时，自动使用当前账号的原生 Responses 转发。工具定义、调用 ID、工具结果和加密推理项保留原始结构，工具在客户端执行；Codex CLI 可直接使用「Codex 账号」渠道的 Key。
 
+- `input` 含 `additional_tools` 项，或客户端明确发送 `x-openai-internal-codex-responses-lite: true` 时，也走原生转发。客户端提供的 Lite 头会原样透传，缺失时不会自动添加。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
 - 原生转发兼容接受正整数 `max_output_tokens`，但账号上游不支持该参数，转发时会忽略它，并通过响应头 `x-gptprovider-ignored-parameters: max_output_tokens` 提示；该参数无法保证输出 Token 的硬上限。非法值返回 400。
@@ -449,6 +450,13 @@ Codex 版本旧了。去「模型」页或「设置」页升级 Codex。
 
 **Codex CLI 报 `gpt-… requires Responses for tool calls` 或工具调用失败**
 先更新网关到支持 Codex 账号原生 Responses 转发的版本，再按[接入 Codex CLI](#接入-codex-cli) 配置 `wire_api = "responses"`，直接指向本网关。Codex 账号渠道需要已登录且可用的当前账号；工具请求应保留完整 `tools` 和 `input`，不用改成 OpenAI API 渠道。如果前面还经过聚合服务，确认它会完整转发 Responses 工具请求；仅支持 Chat Completions 的链路无法处理该模型的工具调用。
+
+**调试台的 `gpt-5.6-sol` 成功，但客户端 Responses 返回 400**
+调试台通过 app-server 智能体执行对话；客户端的工具、Lite 或 `additional_tools` 请求走原生 Responses。两条路径的请求参数不同，调试台成功不代表客户端参数也兼容。先查看具体错误，再另开新对话验证；续接原对话时仍需完整回传工具历史。仅凭日志表格里的 400，无法断定是 Token、上下文或模型不可用。
+
+新版保留上游 `detail` 中的诊断信息，以及错误码、`error.param` 和请求 ID。可按返回的字段错误调整请求；`error.details` 仅保留脱敏后的 `upstreamStatus`、`requestId`、`validation` 等诊断字段，不回显认证信息或完整请求。
+
+本机验证中，`gpt-5.6-sol` 使用默认推理强度或 `low` 的函数调用成功；字面值 `ultra` 被上游以 400、`invalid_value`、`param: reasoning.effort` 拒绝，上游列出的可用强度最高为 `max`。这是已验证的错误示例，不代表你的 400 一定由 `ultra` 引起；网关不会自动改推理强度或删除历史。
 
 **Codex CLI 提示 Quota exceeded**
 下游 Key 的每月 Token 上限用完了，或者上游 OpenAI 账户余额不足。前者在「API Key」页调高上限，后者看「日志」里的错误信息。

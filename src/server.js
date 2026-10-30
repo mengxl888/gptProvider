@@ -208,6 +208,7 @@ function sendError(res, err) {
       message: err.message,
       type: err.type || (status >= 500 ? 'server_error' : 'invalid_request_error'),
       code: err.code || null,
+      ...(err.param ? { param: err.param } : {}),
       ...(err.details ? { details: err.details } : {}),
     },
   });

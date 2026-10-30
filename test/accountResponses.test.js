@@ -5,7 +5,9 @@ import test from 'node:test';
 
 import { AccountManager } from '../src/codex/accounts.js';
 import { CodexResponsesProxy, needsNativeResponses } from '../src/codex/responsesProxy.js';
+import { MAX_ERROR_BODY_BYTES } from '../src/codex/responseErrors.js';
 import { handleResponses } from '../src/openai/responses.js';
+import { withLog } from '../src/requestLog.js';
 
 // All credentials and upstream streams in this suite are synthetic. No CODEX_HOME,
 // persisted gateway data, Codex process, or network endpoint is used.
@@ -105,6 +107,145 @@ test('native routing recognizes tools and typed history while hosted tools retai
   assert.equal(needsNativeResponses({ input: 'Hello' }), false);
   assert.equal(needsNativeResponses({ input: [{ type: 'reasoning', summary: [] }], tools: [] }), false);
   assert.equal(needsNativeResponses({ tools: [{ type: 'image_generation' }, { type: 'web_search' }, { type: 'web_search_preview' }] }), false);
+});
+
+test('explicit Lite header and additional_tools select native routing without inferring from model', async () => {
+  const lite = 'x-openai-internal-codex-responses-lite';
+  assert.equal(needsNativeResponses({ model: 'gpt-5.6-sol', input: 'Hello' }), false);
+  assert.equal(needsNativeResponses({ input: 'Hello' }, { [lite]: 'false' }), false);
+  assert.equal(needsNativeResponses({ input: 'Hello' }, { [lite]: 'true' }), true);
+  assert.equal(needsNativeResponses({ input: [{ type: 'additional_tools', tools: [{ type: 'function', name: 'ping' }] }] }), true);
+  const h = harness();
+  const req = request();
+  req.headers[lite] = 'true';
+  const body = { model: 'gpt-5.6-sol', input: [{ role: 'user', content: 'Hello' }], stream: true };
+  const res = new ResponseSink();
+  await handleResponses(req, res, body, { accountResponses: h.proxy });
+  assert.equal(h.fetchCalls.length, 1);
+  assert.equal(h.fetchCalls[0][1].headers[lite], 'true');
+  assert.deepEqual(JSON.parse(h.fetchCalls[0][1].body).input, body.input);
+  assert.equal(JSON.parse(h.fetchCalls[0][1].body).model, 'gpt-5.6-sol');
+});
+
+test('Lite request header is passed through verbatim only when present', async () => {
+  const lite = 'x-openai-internal-codex-responses-lite';
+  for (const value of [undefined, 'true', 'false']) {
+    const h = harness();
+    const req = request();
+    if (value !== undefined) req.headers[lite] = value;
+    await h.proxy.handle(req, new ResponseSink(), toolBody());
+    assert.equal(h.fetchCalls[0][1].headers[lite], value);
+    assert.equal(Object.hasOwn(h.fetchCalls[0][1].headers, lite), value !== undefined);
+  }
+});
+
+async function capturedError(fetchImpl, { body = toolBody(), req = request() } = {}) {
+  const h = harness(fetchImpl);
+  const res = new ResponseSink();
+  let error;
+  await assert.rejects(withLog(req, res, { ...req.log, end() {} }, () => h.proxy.handle(req, res, body)), (err) => {
+    error = err;
+    return true;
+  });
+  return { ...h, req, res, error };
+}
+
+for (const [label, payload, expected] of [
+  ['error object', { error: { message: 'Unsupported reasoning effort', code: 'unsupported_parameter', type: 'invalid_request_error', param: 'reasoning.effort' } }, { message: 'Unsupported reasoning effort', code: 'unsupported_parameter', type: 'invalid_request_error', param: 'reasoning.effort' }],
+  ['error string', { error: 'Instructions are required', code: 'missing_instructions', param: 'instructions' }, { message: 'Instructions are required', code: 'missing_instructions', param: 'instructions' }],
+  ['detail string', { detail: 'Missing required field: instructions' }, { message: 'Missing required field: instructions', code: 'upstream_error' }],
+  ['detail object', { detail: { message: 'Expected an array', code: 'invalid_input', type: 'invalid_request_error', param: 'input' } }, { message: 'Expected an array', code: 'invalid_input', type: 'invalid_request_error', param: 'input' }],
+  ['nested detail error', { detail: { error: { message: 'Unknown tool name', code: 'invalid_tool', param: 'tools[0].name' } } }, { message: 'Unknown tool name', code: 'invalid_tool', param: 'tools[0].name' }],
+  ['top-level message', { message: 'This model requires a developer message', code: 'missing_message' }, { message: 'This model requires a developer message', code: 'missing_message' }],
+  ['JSON string', 'Unsupported field: service_tier', { message: 'Unsupported field: service_tier', code: 'upstream_error' }],
+]) {
+  test(`HTTP error diagnostics retain ${label}, safe request id, and the exact field cause in logs`, async () => {
+    const { error, req, res, fetchCalls } = await capturedError(async () => new Response(JSON.stringify(payload), { status: 400, headers: { 'content-type': 'application/json', 'x-request-id': 'req_synthetic_error', 'set-cookie': 'PRIVATE_COOKIE', 'openai-organization': 'PRIVATE_ORG' } }));
+    assert.equal(error.status, 400);
+    assert.ok(error.message.includes(expected.message));
+    assert.equal(error.code, expected.code);
+    assert.equal(error.type, expected.type);
+    assert.equal(error.param, expected.param);
+    if (expected.param) assert.ok(error.message.includes(expected.param));
+    assert.equal(error.details.upstreamStatus, 400);
+    assert.equal(error.details.requestId, 'req_synthetic_error');
+    assert.match(error.message, /req_synthetic_error/);
+    assert.equal(res.headers['x-request-id'], 'req_synthetic_error');
+    assert.equal(res.headers['set-cookie'], undefined);
+    assert.equal(res.headers['openai-organization'], undefined);
+    assert.equal(req.events.find((entry) => entry.name === 'fail').value, error);
+    assert.equal(fetchCalls.length, 1);
+  });
+}
+
+test('FastAPI validation errors retain bounded field paths/messages/types and omit echoed input and context', async () => {
+  const detail = Array.from({ length: 12 }, (_, index) => ({
+    type: 'missing', loc: ['body', 'input', index, 'call_id'], msg: 'Field required',
+    input: { content: 'PRIVATE_VALIDATION_INPUT', headers: { authorization: 'PRIVATE_VALIDATION_HEADER' } },
+    ctx: { value: 'PRIVATE_VALIDATION_CONTEXT' },
+  }));
+  const { error } = await capturedError(async () => new Response(JSON.stringify({ detail }), { status: 400 }));
+  assert.match(error.message, /input\[0\]\.call_id: Field required/);
+  assert.equal(error.details.validation.length, 8);
+  assert.deepEqual(error.details.validation[0], { param: 'input[0].call_id', message: 'Field required', type: 'missing' });
+  assert.doesNotMatch(JSON.stringify({ message: error.message, details: error.details }), /PRIVATE_VALIDATION/);
+});
+
+test('a validation error for the top-level input field retains its actual reason', async () => {
+  const { error } = await capturedError(async () => new Response(JSON.stringify({ detail: [{ type: 'missing', loc: ['body', 'input'], msg: 'Field required', input: { secret: 'PRIVATE_VALIDATION_INPUT' } }] }), { status: 400 }));
+  assert.equal(error.param, 'input');
+  assert.equal(error.message, 'input: Field required');
+});
+
+test('plain-text and SSE HTTP error bodies retain their explicit cause', async () => {
+  for (const [content, type, expectedCode, expectedMessage] of [
+    ['Unsupported field: instructions', 'text/plain', 'upstream_error', 'Unsupported field: instructions'],
+    [event('error', { error: { message: 'Invalid namespace definition', code: 'bad_namespace', param: 'tools[0]' } }), 'text/event-stream', 'bad_namespace', 'Invalid namespace definition'],
+  ]) {
+    const { error } = await capturedError(async () => new Response(content, { status: 400, headers: { 'content-type': type } }));
+    assert.ok(error.message.includes(expectedMessage));
+    assert.equal(error.code, expectedCode);
+  }
+});
+
+test('HTML, empty, malformed JSON and unknown object bodies use an accurate generic fallback', async () => {
+  for (const [content, type] of [
+    ['<html><body>PRIVATE_LOGIN_PAGE</body></html>', 'text/html'],
+    ['<html><body>PRIVATE_LOGIN_PAGE</body></html>', 'text/plain'],
+    ['', 'application/json'],
+    ['{"input":"PRIVATE_BROKEN_JSON', 'application/json'],
+    [JSON.stringify({ input: 'PRIVATE_UNKNOWN_OBJECT', headers: { authorization: 'PRIVATE_UNKNOWN_HEADER' } }), 'application/json'],
+  ]) {
+    const { error } = await capturedError(async () => new Response(content, { status: 400, headers: { 'content-type': type } }));
+    assert.equal(error.message, 'Codex Responses 上游返回 HTTP 400');
+    assert.equal(error.code, 'upstream_error');
+    assert.doesNotMatch(JSON.stringify({ message: error.message, details: error.details }), /PRIVATE_/);
+  }
+});
+
+test('diagnostics redact upstream/downstream credentials, arbitrary Bearer/JWT tokens, and echoed input/headers', async () => {
+  const foreignJwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from('{"sub":"synthetic"}').toString('base64url')}.synthetic-signature`;
+  const reason = `Invalid tool schema; upstream=synthetic-initial; downstream=synthetic-downstream-key; another=Bearer foreign-secret-value; jwt=${foreignJwt}; input={"text":"PRIVATE_INPUT","nested":[{"x":1}]}; headers={"cookie":"PRIVATE_HEADERS"}; expected a name`;
+  const { error, req, res } = await capturedError(async () => new Response(JSON.stringify({ error: { message: reason, code: 'bad_tool_schema', type: 'invalid_request_error', param: 'tools[0]' } }), { status: 400 }));
+  const exposed = JSON.stringify({ message: error.message, details: error.details, headers: res.headers, logs: req.events });
+  assert.match(error.message, /Invalid tool schema/);
+  assert.match(error.message, /expected a name/);
+  for (const privateValue of ['synthetic-initial', 'synthetic-downstream-key', 'foreign-secret-value', foreignJwt, 'PRIVATE_INPUT', 'PRIVATE_HEADERS']) assert.ok(!exposed.includes(privateValue), privateValue);
+  assert.match(error.message, /REDACTED/);
+});
+
+test('error body reads are capped and cancel the remaining upstream stream', async () => {
+  let cancelled = false;
+  let pulls = 0;
+  const { error, fetchCalls } = await capturedError(async () => new Response(new ReadableStream({
+    pull(controller) { pulls++; controller.enqueue(Buffer.from(`{"detail":"${'x'.repeat(MAX_ERROR_BODY_BYTES + 1024)}`)); },
+    cancel() { cancelled = true; },
+  }), { status: 400, headers: { 'content-type': 'application/json' } }));
+  assert.equal(error.message, 'Codex Responses 上游返回 HTTP 400');
+  assert.equal(error.details.bodyTruncated, true);
+  assert.equal(cancelled, true);
+  assert.ok(pulls <= 2);
+  assert.equal(fetchCalls.length, 1);
 });
 
 test('actual handleResponses routes native tools without losing grammar, namespaces, typed results or reasoning', async () => {

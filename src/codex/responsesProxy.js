@@ -4,13 +4,14 @@ import { once } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './accounts.js';
+import { readResponseError } from './responseErrors.js';
 import { sendJson } from '../http.js';
 
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const LOCAL_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
 const NATIVE_ITEMS = new Set([
   'function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output',
-  'tool_search_call', 'tool_search_output', 'compaction',
+  'tool_search_call', 'tool_search_output', 'compaction', 'additional_tools',
 ]);
 const UNSUPPORTED_PARAMS = [
   'conversation', 'max_tool_calls', 'temperature', 'top_p',
@@ -20,6 +21,7 @@ const UNSUPPORTED_PARAMS = [
 const REQUEST_HEADERS = [
   'openai-beta', 'idempotency-key', 'session_id', 'conversation_id', 'x-client-request-id',
   'session-id', 'thread-id', 'x-codex-turn-state', 'x-codex-beta-features',
+  'x-openai-internal-codex-responses-lite',
 ];
 // 只回传协议需要的头，避免把登录账户、cookie 或其他认证信息交给下游。
 const RESPONSE_HEADERS = [
@@ -30,8 +32,9 @@ const RESPONSE_HEADERS = [
 const IDLE_TIMEOUT_MS = 10 * 60_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
 
-export function needsNativeResponses(body) {
-  return (Array.isArray(body.tools) && body.tools.some((t) => !LOCAL_TOOLS.has(t?.type)))
+export function needsNativeResponses(body, headers = {}) {
+  return String(headers['x-openai-internal-codex-responses-lite'] || '').trim().toLowerCase() === 'true'
+    || (Array.isArray(body.tools) && body.tools.some((t) => !LOCAL_TOOLS.has(t?.type)))
     || (Array.isArray(body.input) && body.input.some((item) => NATIVE_ITEMS.has(item?.type)
       || (item?.type === 'reasoning' && item.encrypted_content)))
     || (Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content'));
@@ -71,6 +74,8 @@ export class CodexResponsesProxy {
     resetIdle();
     try {
       let auth = await this.accounts.responsesAuth(account.id);
+      const secrets = [auth.accessToken, req.headers.authorization, req.headers.authorization?.replace(/^Bearer\s+/i, '')];
+      if (typeof body.input === 'string' && body.input.length >= 8 && body.input.length <= 64 * 1024) secrets.push(body.input);
       let upstream;
       for (let attempt = 0; attempt < 2; attempt++) {
         upstream = await this.fetch(RESPONSES_URL, {
@@ -83,16 +88,17 @@ export class CodexResponsesProxy {
         if (upstream.status !== 401 || attempt === 1) break;
         await upstream.body?.cancel();
         auth = await this.accounts.responsesAuth(account.id, { rejectedToken: auth.accessToken });
+        secrets.push(auth.accessToken);
       }
       if (!upstream.ok) {
-        const text = await upstream.text();
-        let error;
-        try { error = JSON.parse(text).error; } catch {}
-        // 不回传上游 HTML 登录页或其他非协议内容。
+        const error = await readResponseError(upstream, { secrets });
         const err = httpError(upstream.status === 401 ? 503 : upstream.status,
-          error?.message || `Codex Responses 上游返回 HTTP ${upstream.status}`,
-          error?.code || (upstream.status === 401 ? 'account_auth_failed' : 'upstream_error'));
-        if (upstream.headers.has('retry-after')) res.setHeader('retry-after', upstream.headers.get('retry-after'));
+          error.message,
+          error.code || (upstream.status === 401 ? 'account_auth_failed' : 'upstream_error'));
+        if (error.type) err.type = error.type;
+        if (error.param !== undefined) err.param = error.param;
+        err.details = error.details;
+        for (const [name, value] of Object.entries(error.headers)) res.setHeader(name, value);
         throw err;
       }
       // Codex 原生后端有时不发送 Content-Type；此时由 SSE 解析及终态校验确认协议。
