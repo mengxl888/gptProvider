@@ -485,10 +485,17 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <!-- ---------- 账号 ---------- -->
     <section data-view="accounts" hidden>
       <div class="page-head">
-        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，所有 API 请求走「当前使用」的账号</p></div>
+        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，按下面的调用策略分配 API 请求</p></div>
         <div class="actions">
           <div class="segmented window-switch"></div>
           <button class="btn primary" data-action="add-account"><svg class="i" data-icon="plus"></svg>添加账号</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="setting">
+          <div class="desc"><b>调用策略</b><span id="strategy-desc"></span></div>
+          <div class="control"><div class="segmented" id="set-strategy">
+            <button data-v="active">当前账号</button><button data-v="even">平均轮询</button><button data-v="weighted">按权重</button></div></div>
         </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
@@ -966,7 +973,7 @@ function renderShell() {
   $('count-images').textContent = st.stats.images || '';
   $('count-keys').textContent = st.apiKeys.length || '';
   $('mini-account').innerHTML = a
-    ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · 当前使用</div></div>`
+    ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · ${(S.state.settings.accountStrategy || 'active') === 'active' ? '当前使用' : '默认 · 多账号轮询中'}</div></div>`
     : `<div class="avatar sm" style="background:var(--surface-3);color:var(--muted)">${icon('users')}</div><div class="who"><div class="email">未选择账号</div><div class="meta"><a href="#accounts">去添加</a></div></div>`;
 }
 
@@ -1247,22 +1254,49 @@ function limitBuckets(a) {
   return rows;
 }
 
+const STRATEGY_DESC = {
+  active: '所有请求都走「当前使用」的账号，切换账号要手动「设为当前」。',
+  even: '可用的账号轮流分摊请求；权重为 0 的账号不参与。同一个会话（Codex CLI 等带会话标识的客户端）固定用同一个账号，保住提示词缓存。',
+  weighted: '按权重分配：权重越高分到的请求越多，比例等于权重之比，点账号上的「权重」修改；权重为 0 不参与。同一个会话固定用同一个账号。',
+};
+// 与服务端 accountPicker.js 一致：没写权重按 1；轮询只在已登录、权重大于 0 的账号之间分配
+const accountWeight = (a) => (Number.isInteger(a.weight) ? a.weight : 1);
+function accountShares(st) {
+  const strategy = st.settings.accountStrategy || 'active';
+  if (strategy === 'active') return null;
+  const pool = st.accounts.filter((a) => a.status === 'ready' && accountWeight(a) > 0);
+  const total = pool.reduce((sum, a) => sum + (strategy === 'weighted' ? accountWeight(a) : 1), 0);
+  return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
+}
+
 function renderAccounts() {
   const st = S.state;
+  const strategy = st.settings.accountStrategy || 'active';
+  const rotating = strategy !== 'active';
+  document.querySelectorAll('#set-strategy button').forEach((b) => b.classList.toggle('on', b.dataset.v === strategy));
+  $('strategy-desc').textContent = `${STRATEGY_DESC[strategy]}${rotating ? '已登录但额度用满的账号会暂时跳过；没有可轮询的账号时用「默认」账号。' : ''}`;
+  const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
     const active = a.id === st.activeAccountId;
     const limits = limitBuckets(a);
     const ident = `codex-${a.id}-${a.email || 'unknown'}-${a.planType || 'unknown'}`;
+    const weight = accountWeight(a);
+    const share = shares?.[a.id];
+    const weightChip = rotating
+      ? `<button class="chip ${share ? 'on' : ''}" style="flex:none;cursor:pointer" data-acc="weight" data-id="${a.id}" title="点击修改调用权重">${
+        weight === 0 ? '不参与轮询' : `${strategy === 'weighted' ? `权重 ${weight}` : '参与轮询'}${share ? ` · ${Math.round(share * 100)}%` : ''}`}</button>`
+      : '';
     return `<div class="card account-card ${active ? 'active' : ''}">
       <div class="account-top">
         <span class="badge provider">Codex</span>
         <div class="title" title="${esc(a.email || a.label)}">${esc(a.email || '尚未登录')}</div>
-        ${active ? '<span class="badge accent">当前使用</span>' : ''}
+        ${active ? `<span class="badge accent" title="${rotating ? '模型列表用这个账号；没有可轮询的账号时也用它' : ''}">${rotating ? '默认' : '当前使用'}</span>` : ''}
         ${statusBadge(a.status)}
       </div>
       <div class="ident" style="display:flex;gap:8px;align-items:center">
         <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(ident)}">${esc(ident)}</span>
         <span class="chip" style="flex:none" title="备注名">${esc(a.label)}</span>
+        ${weightChip}
       </div>
       <div class="account-section">${requestBlock(S.stats?.accounts[a.id])}</div>
       ${limits.length ? `<div class="limits">${limits.map((l) => `
@@ -1276,7 +1310,7 @@ function renderAccounts() {
         <span class="when mono" title="凭据 auth.json 的大小和最近写入时间（Codex 刷新令牌时会更新）&#10;额度 ${esc(a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '尚未检查')}">${a.credentials
           ? `${fmtBytes(a.credentials.bytes)} · ${esc(fmtTime(a.credentials.updatedAt))}`
           : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
-        ${!active && a.status === 'ready' ? `<button class="btn sm primary" data-acc="activate" data-id="${a.id}">${icon('zap')}设为当前</button>` : ''}
+        ${!active && a.status === 'ready' ? `<button class="btn sm ${rotating ? '' : 'primary'}" data-acc="activate" data-id="${a.id}">${icon('zap')}${rotating ? '设为默认' : '设为当前'}</button>` : ''}
         <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}">${icon('refresh')}</button>
         <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}">${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
@@ -1295,7 +1329,13 @@ $('account-grid').addEventListener('click', run(async (e) => {
   const id = btn.dataset.id, a = S.state.accounts.find((x) => x.id === id);
   const act = btn.dataset.acc;
   if (act === 'login') return openLogin(a);
-  if (act === 'activate') { await api('POST', `/accounts/${id}/activate`); toast('已切换当前账号'); }
+  if (act === 'activate') { await api('POST', `/accounts/${id}/activate`); toast(S.state.settings.accountStrategy === 'active' ? '已切换当前账号' : '已设为默认账号'); }
+  if (act === 'weight') {
+    const input = prompt(`「${a.email || a.label}」的调用权重（0–100 的整数，0 表示不参与轮询）`, accountWeight(a));
+    if (input == null) return;
+    await api('PATCH', `/accounts/${id}`, { weight: Number(input.trim()) });
+    toast('权重已保存');
+  }
   if (act === 'refresh') {
     btn.disabled = true; btn.innerHTML = icon('refresh', 'spin');
     try { await api('POST', `/accounts/${id}/refresh`); toast('额度已刷新'); } finally { btn.disabled = false; }
@@ -1312,6 +1352,13 @@ $('account-grid').addEventListener('click', run(async (e) => {
   await refreshState();
 }));
 document.addEventListener('click', (e) => { if (e.target.closest('[data-action="add-account"]')) openLogin(null); });
+$('set-strategy').addEventListener('click', run(async (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.classList.contains('on')) return;
+  await api('PUT', '/settings', { accountStrategy: b.dataset.v });
+  toast('调用策略已保存');
+  await refreshState();
+}));
 
 // ============ API 上游 ============
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';

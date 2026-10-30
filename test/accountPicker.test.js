@@ -1,0 +1,109 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { AccountPicker, accountWeight, affinityKey, limitExhausted } from '../src/codex/accountPicker.js';
+import { AccountManager } from '../src/codex/accounts.js';
+
+const acct = (id, extra = {}) => ({ id, status: 'ready', planType: 'pro', ...extra });
+const count = (picks) => picks.reduce((m, a) => ({ ...m, [a.id]: (m[a.id] || 0) + 1 }), {});
+const pickMany = (picker, accounts, opts, n) => Array.from({ length: n }, () => picker.pick(accounts, opts));
+
+test('weight defaults to 1 and only accepts integers 0–100', () => {
+  assert.equal(accountWeight({}), 1);
+  assert.equal(accountWeight({ weight: 0 }), 0);
+  assert.equal(accountWeight({ weight: 7 }), 7);
+  for (const weight of [-1, 101, 1.5, '3', null]) assert.equal(accountWeight({ weight }), 1);
+});
+
+test('even strategy rotates through every ready account in turn', () => {
+  const accounts = [acct('a'), acct('b', { weight: 9 }), acct('c')];
+  const picks = pickMany(new AccountPicker(), accounts, { strategy: 'even' }, 6).map((a) => a.id);
+  assert.deepEqual(picks, ['a', 'b', 'c', 'a', 'b', 'c']);
+});
+
+test('weighted strategy hands out requests exactly in proportion to weight, interleaved', () => {
+  const accounts = [acct('a', { weight: 3 }), acct('b', { weight: 1 }), acct('c', { weight: 2 })];
+  const picker = new AccountPicker();
+  assert.deepEqual(count(pickMany(picker, accounts, { strategy: 'weighted' }, 600)), { a: 300, b: 100, c: 200 });
+  // 平滑加权：一轮 6 次里 a 不会连续出现 3 次
+  const round = pickMany(new AccountPicker(), accounts, { strategy: 'weighted' }, 6).map((a) => a.id).join('');
+  assert.doesNotMatch(round, /aaa/);
+});
+
+test('weight 0, not-ready and filtered-out accounts are skipped; empty pool returns null', () => {
+  const accounts = [acct('off', { weight: 0 }), acct('expired', { status: 'expired' }), acct('free', { planType: 'free' }), acct('ok')];
+  const picks = pickMany(new AccountPicker(), accounts, { strategy: 'even', filter: (a) => a.planType !== 'free' }, 4);
+  assert.deepEqual(new Set(picks.map((a) => a.id)), new Set(['ok']));
+  assert.equal(new AccountPicker().pick([acct('off', { weight: 0 })], { strategy: 'weighted' }), null);
+});
+
+test('accounts whose Codex limit is used up are skipped while another account has quota', () => {
+  const now = Date.UTC(2026, 9, 30);
+  const future = now / 1000 + 3600;
+  const full = acct('full', { rateLimits: { primary: { usedPercent: 100, resetsAt: future } } });
+  const fine = acct('fine', { rateLimits: { primary: { usedPercent: 40, resetsAt: future } } });
+  assert.equal(limitExhausted(full, now), true);
+  assert.equal(limitExhausted(acct('reset', { rateLimits: { primary: { usedPercent: 100, resetsAt: now / 1000 - 1 } } }), now), false);
+  assert.equal(limitExhausted(acct('img', { rateLimitsByLimitId: { codex: { primary: { usedPercent: 10 } }, image_gen: { primary: { usedPercent: 100 } } } }), now), false);
+  const picker = new AccountPicker();
+  assert.deepEqual(new Set(pickMany(picker, [full, fine], { strategy: 'even', now }, 4).map((a) => a.id)), new Set(['fine']));
+  // 全部用满时仍然分配，让上游返回真实的额度错误
+  assert.ok(picker.pick([full], { strategy: 'even', now }));
+});
+
+test('the same session key always lands on the same account; sessions spread by weight', () => {
+  const accounts = [acct('a', { weight: 3 }), acct('b', { weight: 1 })];
+  const picker = new AccountPicker();
+  const first = picker.pick(accounts, { strategy: 'weighted', affinityKey: 'session-123' });
+  for (let i = 0; i < 20; i++) assert.equal(picker.pick(accounts, { strategy: 'weighted', affinityKey: 'session-123' }).id, first.id);
+  const spread = count(Array.from({ length: 4000 }, (_, i) => picker.pick(accounts, { strategy: 'weighted', affinityKey: `s-${i}` })));
+  assert.ok(Math.abs(spread.a / 4000 - 0.75) < 0.03, JSON.stringify(spread));
+  // 去掉一个账号时，原本在留下账号上的会话不动
+  const three = [...accounts, acct('c', { weight: 2 })];
+  for (let i = 0; i < 200; i++) {
+    const before = picker.pick(three, { strategy: 'weighted', affinityKey: `k-${i}` });
+    if (before.id !== 'c') assert.equal(picker.pick(accounts, { strategy: 'weighted', affinityKey: `k-${i}` }).id, before.id);
+  }
+});
+
+test('session key comes from prompt_cache_key or Codex session headers', () => {
+  assert.equal(affinityKey({ prompt_cache_key: 'pck' }, { session_id: 'sid' }), 'pck');
+  assert.equal(affinityKey({}, { session_id: 'sid' }), 'sid');
+  assert.equal(affinityKey({}, { 'session-id': 'sid2' }), 'sid2');
+  assert.equal(affinityKey({}, { conversation_id: 'cid' }), 'cid');
+  assert.equal(affinityKey({}, { 'thread-id': 'tid' }), 'tid');
+  assert.equal(affinityKey({ prompt_cache_key: '  ' }, {}), null);
+  assert.equal(affinityKey(undefined, {}), null);
+});
+
+function manager(t, data) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = { data, getAccount: (id) => data.accounts.find((a) => a.id === id) || null, save() {} };
+  return new AccountManager({ store, dataDir: dir, cmd: null, featureNames: [] });
+}
+
+test('AccountManager uses the current account by default and rotates when a strategy is set', (t) => {
+  const data = { activeAccountId: 'a', settings: {}, accounts: [acct('a'), acct('b')] };
+  const m = manager(t, data);
+  assert.deepEqual([m.pickAccount(), m.pickAccount()].map((a) => a.id), ['a', 'a']);
+  data.settings.accountStrategy = 'even';
+  assert.deepEqual(new Set([m.pickAccount(), m.pickAccount()].map((a) => a.id)), new Set(['a', 'b']));
+});
+
+test('AccountManager falls back to the current account when no account can rotate, and still errors without one', (t) => {
+  const data = { activeAccountId: 'a', settings: { accountStrategy: 'weighted' }, accounts: [acct('a', { weight: 0 }), acct('b', { weight: 0 })] };
+  const m = manager(t, data);
+  assert.equal(m.pickAccount().id, 'a');
+  // 生图请求只在能生图的账号里选；都不能时退回当前账号，由处理函数报 Free 套餐不能生图
+  data.accounts = [acct('a', { planType: 'free' }), acct('b', { planType: 'free' })];
+  assert.equal(m.pickAccount({ needsImage: true }).id, 'a');
+  data.accounts = [acct('a', { planType: 'free' }), acct('b')];
+  assert.equal(m.pickAccount({ needsImage: true }).id, 'b');
+  data.activeAccountId = null;
+  data.accounts = [];
+  assert.throws(() => m.pickAccount(), { status: 503, code: 'no_active_account' });
+});

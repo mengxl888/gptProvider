@@ -3,6 +3,7 @@
 import { once } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 
+import { affinityKey } from './accountPicker.js';
 import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
 import { normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
@@ -61,7 +62,7 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = this.accounts.activeAccount();
+    const account = this.accounts.pickAccount({ affinityKey: affinityKey(body, req.headers) });
     req.log?.account(account);
     const abort = new AbortController();
     const onClose = () => {

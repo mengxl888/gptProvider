@@ -76,7 +76,7 @@ function harness(scenarios) {
   const saved = [];
   const ctx = {
     accounts: {
-      activeClient: async () => ({ account: { id: 'synthetic-account' }, client }),
+      pickClient: async () => ({ account: { id: 'synthetic-account' }, client }),
       supportsImageGeneration: () => true,
       generatedImagesDir: () => '/synthetic/unused',
     },

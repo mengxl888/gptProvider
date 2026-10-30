@@ -1,12 +1,14 @@
 // 账号管理：每个账号一个独立的 CODEX_HOME（data/accounts/<id>/home），
 // 登录、令牌刷新、凭据保存由官方 codex app-server 完成。
 // 原生 Responses 转发通过 getAuthStatus 临时取得 access token，不读取 auth.json、不另存 token。
-// 同一时间只有一个"当前账号"对外提供服务，由管理后台手动切换。
+// 每个请求用哪个账号由调用策略决定（accountPicker.js）：默认只用"当前账号"，也可以多账号轮询。
+// "当前账号"同时用于模型列表，并在没有可轮询的账号时兜底。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { AccountPicker, accountWeight } from './accountPicker.js';
 import { AppServerClient } from './appServer.js';
 
 // 网关只做对话和生图：关闭会让 Codex 动本机环境或调用额外服务的工具。
@@ -57,6 +59,7 @@ export class AccountManager {
     this.modelRefreshes = new Map();
     this.loggedWarnings = new Set();
     this.responsesAuthRefreshes = new Map();
+    this.picker = new AccountPicker();
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });
   }
@@ -85,8 +88,14 @@ export class AccountManager {
 
   startBackgroundRefresh() {
     const tick = async () => {
+      if (this.suspended) return;
       const id = this.store.data.activeAccountId;
-      if (this.suspended || !id || this.store.getAccount(id)?.status !== 'ready') return;
+      const ready = (a) => a?.status === 'ready';
+      // 轮询时参与轮询的账号也要刷新状态和额度，才能跳过失效或额度用满的账号。
+      const rotating = this.store.data.settings.accountStrategy && this.store.data.settings.accountStrategy !== 'active'
+        ? this.store.data.accounts.filter((a) => a.id !== id && ready(a) && accountWeight(a) > 0) : [];
+      for (const a of rotating) await this.refreshStatus(a.id).catch(() => {});
+      if (!id || !ready(this.store.getAccount(id))) return;
       await this.refreshStatus(id).catch(() => {});
       await this.refreshModels(id).catch(() => {});
     };
@@ -354,8 +363,21 @@ export class AccountManager {
     return account;
   }
 
-  async activeClient() {
-    const account = this.activeAccount();
+  // 按调用策略给这次请求选账号。needsImage 只在能生图的账号里选；affinityKey 让同一会话固定在同一个账号。
+  // 没有可参与轮询的账号时退回当前账号（它也不可用就照常报错）。
+  pickAccount({ needsImage = false, affinityKey = null } = {}) {
+    const strategy = this.store.data.settings.accountStrategy;
+    if (!strategy || strategy === 'active') return this.activeAccount();
+    const account = this.picker.pick(this.store.data.accounts, {
+      strategy,
+      affinityKey,
+      filter: needsImage ? (a) => this.supportsImageGeneration(a) : undefined,
+    });
+    return account || this.activeAccount();
+  }
+
+  async pickClient(options) {
+    const account = this.pickAccount(options);
     return { account, client: await this.getClient(account.id) };
   }
 

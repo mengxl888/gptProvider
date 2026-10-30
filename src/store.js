@@ -10,6 +10,8 @@ const DEFAULT_SETTINGS = {
   chatImageGeneration: true,
   // Codex 账号渠道失败时改用 API 上游重试（按 API 用量计费，默认关闭）
   upstreamFallback: false,
+  // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
+  accountStrategy: 'active',
 };
 const MAX_IMAGE_RECORDS = 500;
 export const CHANNELS = ['codex', 'openai'];

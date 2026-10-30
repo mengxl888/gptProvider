@@ -1,5 +1,6 @@
 // 管理后台 API：/admin/api/*，需要 Authorization: Bearer <adminToken>。
 
+import { MAX_WEIGHT, STRATEGIES } from '../codex/accountPicker.js';
 import { BACKGROUND_REFRESH_MS, httpError } from '../codex/accounts.js';
 import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
@@ -90,9 +91,19 @@ export async function handleAdmin(req, res, url, body, ctx) {
       accounts.setActive(id);
       return ok();
     }
+    // PATCH /admin/api/accounts/:id {label?, weight?}  只改传了的字段
     if (method === 'PATCH' && !action) {
       if (!store.getAccount(id)) throw httpError(404, '账号不存在');
-      return ok({ account: store.upsertAccount({ id, label: String(body.label || '').trim() || '未命名' }) });
+      const patch = { id };
+      if ('label' in body) patch.label = String(body.label || '').trim() || '未命名';
+      if ('weight' in body) {
+        const weight = Number(body.weight);
+        if (!Number.isInteger(weight) || weight < 0 || weight > MAX_WEIGHT) {
+          throw httpError(400, `权重必须是 0–${MAX_WEIGHT} 的整数`, 'invalid_parameter');
+        }
+        patch.weight = weight;
+      }
+      return ok({ account: store.upsertAccount(patch) });
     }
     if (method === 'DELETE' && !action) {
       await accounts.remove(id);
@@ -147,7 +158,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, upstreamFallback}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, upstreamFallback, accountStrategy}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -158,6 +169,10 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
     if ('chatImageGeneration' in body) settings.chatImageGeneration = Boolean(body.chatImageGeneration);
     if ('upstreamFallback' in body) settings.upstreamFallback = Boolean(body.upstreamFallback);
+    if ('accountStrategy' in body) {
+      if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');
+      settings.accountStrategy = body.accountStrategy;
+    }
     store.save();
     // web_search 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before) accounts.restartAll();

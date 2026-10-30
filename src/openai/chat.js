@@ -2,6 +2,7 @@
 
 import crypto from 'node:crypto';
 
+import { affinityKey } from '../codex/accountPicker.js';
 import { httpError } from '../codex/accounts.js';
 import { finalText, runTurn } from '../codex/turn.js';
 import { sendJson } from '../http.js';
@@ -24,7 +25,10 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
   const { accounts, store, images } = ctx;
   req.log?.request({ model: body.model, stream: body.stream });
   validate(body);
-  const { account, client } = await accounts.activeClient();
+  const { account, client } = await accounts.pickClient({
+    needsImage: isImageModel(body.model),
+    affinityKey: affinityKey(body, req.headers),
+  });
   req.log?.account(account);
   const { developerInstructions, input } = buildPrompt(body);
   // 登录失效时顺手刷新账号状态，后台会显示"已失效"。

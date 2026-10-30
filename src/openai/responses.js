@@ -5,6 +5,7 @@
 
 import crypto from 'node:crypto';
 
+import { affinityKey } from '../codex/accountPicker.js';
 import { httpError } from '../codex/accounts.js';
 import { finalText, runTurn } from '../codex/turn.js';
 import { sendJson } from '../http.js';
@@ -32,11 +33,13 @@ export async function handleResponses(req, res, body, ctx) {
   const previous = body.previous_response_id ? loadHistory(body.previous_response_id) : [];
   const messages = [...previous, ...inputToMessages(body.input)];
 
-  const { account, client } = await accounts.activeClient();
-  req.log?.account(account);
-
   const imageMode = isImageModel(body.model);
   const imageGeneration = imageMode || tools.imageGeneration;
+  const { account, client } = await accounts.pickClient({
+    needsImage: imageGeneration,
+    affinityKey: affinityKey(body, req.headers),
+  });
+  req.log?.account(account);
   if (imageGeneration && !accounts.supportsImageGeneration(account)) {
     throw httpError(403, 'Free 套餐的账号不能使用 Codex 生图', 'image_generation_unavailable');
   }

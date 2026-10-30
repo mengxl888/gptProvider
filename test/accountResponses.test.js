@@ -83,7 +83,7 @@ function harness(fetchImpl = async () => upstream()) {
   const authCalls = [];
   const fetchCalls = [];
   const accounts = {
-    activeAccount: () => account,
+    pickAccount: () => account,
     responsesAuth: async (id, options) => {
       authCalls.push({ id, options });
       return { accessToken: options?.rejectedToken ? 'synthetic-refreshed' : 'synthetic-initial', accountId: 'synthetic-workspace' };
@@ -579,7 +579,7 @@ test('401 refreshes once before output and retries the originally selected accou
   let attempts = 0;
   const h = harness(async () => ++attempts === 1 ? new Response('{"error":{"message":"Expired synthetic token"}}', { status: 401 }) : upstream());
   let selections = 0;
-  h.accounts.activeAccount = () => { selections++; return selections === 1 ? h.account : { id: 'other-account' }; };
+  h.accounts.pickAccount = () => { selections++; return selections === 1 ? h.account : { id: 'other-account' }; };
   const res = new ResponseSink();
   await h.proxy.handle(request(), res, toolBody({ stream: true }));
   assert.equal(selections, 1);
@@ -700,7 +700,7 @@ test('ordinary hosted tools keep the app-server runTurn route', async () => {
   };
   const ctx = {
     accountResponses: { handle() { assert.fail('Hosted requests must not use native tool proxy'); } },
-    accounts: { activeClient: async () => ({ account: { id: 'synthetic-account' }, client }), supportsImageGeneration: () => true, generatedImagesDir: () => '/synthetic' },
+    accounts: { pickClient: async () => ({ account: { id: 'synthetic-account' }, client }), supportsImageGeneration: () => true, generatedImagesDir: () => '/synthetic' },
     store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } }, images: { save() { assert.fail('No generated image was supplied'); } },
   };
   const res = new ResponseSink();

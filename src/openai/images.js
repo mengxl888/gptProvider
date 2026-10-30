@@ -59,7 +59,7 @@ export async function handleImageEdits(req, res, raw, ctx) {
 async function generateImages(req, res, ctx, { prompt, n = 1, size, background, inputImages, source }) {
   n = Number(n) || 1;
   if (n < 1 || n > MAX_N) throw httpError(400, `n 取值范围 1-${MAX_N}`, 'invalid_request');
-  const { account, client } = await ctx.accounts.activeClient();
+  const { account, client } = await ctx.accounts.pickClient({ needsImage: true });
   req.log?.account(account);
   if (!ctx.accounts.supportsImageGeneration(account)) {
     throw httpError(403, 'Free 套餐的账号不能使用 Codex 生图', 'image_generation_unavailable');
