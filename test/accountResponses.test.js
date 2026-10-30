@@ -6,6 +6,7 @@ import test from 'node:test';
 import { AccountManager } from '../src/codex/accounts.js';
 import { CodexResponsesProxy, needsNativeResponses } from '../src/codex/responsesProxy.js';
 import { MAX_ERROR_BODY_BYTES } from '../src/codex/responseErrors.js';
+import { CODEX_DESKTOP_USER_AGENT, normalizeSystemMessages, responsesUserAgent } from '../src/codex/clientCompatibility.js';
 import { handleResponses } from '../src/openai/responses.js';
 import { withLog } from '../src/requestLog.js';
 
@@ -43,7 +44,7 @@ function request() {
   const req = new EventEmitter();
   req.headers = { authorization: 'Bearer synthetic-downstream-key' };
   req.events = [];
-  req.log = Object.fromEntries(['request', 'account', 'resolvedModel', 'usage', 'fail'].map((name) => [
+  req.log = Object.fromEntries(['request', 'account', 'resolvedModel', 'usage', 'fail', 'upstreamRequest'].map((name) => [
     name, (value) => req.events.push({ name, value }),
   ]));
   return req;
@@ -96,6 +97,109 @@ function harness(fetchImpl = async () => upstream()) {
 }
 
 const toolBody = (extra = {}) => ({ model: 'gpt-6.1-sol', input: 'Run the tool', tools: [{ type: 'function', name: 'ping', parameters: { type: 'object', properties: {} } }], ...extra });
+
+test('non-Codex clients use the exact requested Desktop User-Agent and retain their incoming headers', async () => {
+  const expected = 'Codex Desktop/0.165.0-alpha.1.2 (Windows 10.0.22631; x86_64) unknown (Codex Desktop; 26.1023.51421)';
+  assert.equal(CODEX_DESKTOP_USER_AGENT, expected);
+  for (const original of [undefined, '', 'OpenAI/Python 2.0.0', 'OpenAI/JS 6.0.0', 'python-requests/2.32.0', 'CustomCodexClient/1.0', 'my_codex_cli_rs/1.0', 'OpenAI/Python 2.0 codex-compatible']) {
+    const req = request();
+    if (original !== undefined) req.headers['user-agent'] = original;
+    const originalHeaders = structuredClone(req.headers);
+    const h = harness();
+    await h.proxy.handle(req, new ResponseSink(), toolBody());
+    assert.equal(h.fetchCalls[0][1].headers['user-agent'], expected, String(original));
+    assert.deepEqual(req.headers, originalHeaders);
+    assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
+      userAgent: expected, userAgentRewritten: true, systemMessagesConverted: 0,
+    });
+  }
+});
+
+test('Codex product User-Agents retain their original complete values case-insensitively', async () => {
+  for (const original of [
+    CODEX_DESKTOP_USER_AGENT,
+    'codex_cli_rs/0.165.0 (Windows 10.0.22631; x86_64) unknown',
+    'codex_vscode/0.165.0 (Linux; x86_64)',
+    'codex_local_gateway/0.165.0',
+    'CODEX_CLI_RS/0.165.0 (Windows; x86_64)',
+    'cOdEx DeSkToP/0.165.0-alpha.1.2 custom-build',
+    'Codex/0.165.0', 'codex-tui/0.165.0', 'codex_atlas/0.165.0',
+  ]) {
+    const req = request();
+    req.headers['user-agent'] = original;
+    const h = harness();
+    await h.proxy.handle(req, new ResponseSink(), toolBody());
+    assert.equal(h.fetchCalls[0][1].headers['user-agent'], original);
+    assert.equal(req.headers['user-agent'], original);
+    assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
+      userAgent: original, userAgentRewritten: false, systemMessagesConverted: 0,
+    });
+    assert.deepEqual(responsesUserAgent(original), { userAgent: original, userAgentRewritten: false });
+  }
+});
+
+test('native system messages become developer messages without mutating content, tools, typed history or ordering', async () => {
+  const req = request();
+  req.headers['user-agent'] = 'OpenAI/Python 2.0.0';
+  const body = toolBody({
+    stream: true,
+    instructions: 'Existing top-level instructions',
+    reasoning: { effort: 'high' },
+    input: [
+      { role: 'system', content: 'System one' },
+      { role: 'developer', content: [{ type: 'input_text', text: 'Existing developer' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'Question' }] },
+      { type: 'reasoning', id: 'rs_system_test', encrypted_content: 'synthetic-encrypted-reasoning', summary: [] },
+      { type: 'function_call', id: 'fc_system_test', call_id: 'call_system_test', name: 'ping', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_system_test', output: 'done' },
+      { type: 'message', role: 'system', content: [{ type: 'input_text', text: 'System two' }] },
+      { type: 'custom_tool_call', id: 'ct_system_test', call_id: 'custom_system_test', name: 'apply_patch', input: 'patch' },
+      { type: 'custom_tool_call_output', call_id: 'custom_system_test', output: 'applied' },
+      { type: 'additional_tools', tools: [{ type: 'function', name: 'second_tool', parameters: { type: 'object', properties: {} } }] },
+    ],
+  });
+  const before = structuredClone(body);
+  const freeze = (value) => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+  freeze(body);
+  const h = harness(async (url, options) => {
+    assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
+      userAgent: options.headers['user-agent'], userAgentRewritten: true, systemMessagesConverted: 2,
+    });
+    return upstream();
+  });
+  await h.proxy.handle(req, new ResponseSink(), body);
+  const sent = JSON.parse(h.fetchCalls[0][1].body);
+  const expectedInput = before.input.map((item, index) => [0, 6].includes(index) ? { ...item, role: 'developer' } : item);
+  assert.deepEqual(sent.input, expectedInput);
+  assert.deepEqual(sent.tools, before.tools);
+  assert.deepEqual(sent.reasoning, before.reasoning);
+  assert.equal(sent.instructions, before.instructions);
+  assert.equal(sent.input.length, before.input.length);
+  assert.equal(sent.input.filter((item) => item.role === 'system').length, 0);
+  assert.deepEqual(body, before);
+  for (const field of ['userAgent', 'userAgentRewritten', 'systemMessagesConverted']) assert.equal(Object.hasOwn(sent, field), false);
+  assert.equal(req.events.filter((entry) => entry.name === 'upstreamRequest').length, 1);
+});
+
+test('developer-only input is not duplicated and typed tool items with role-like metadata remain unchanged', async () => {
+  const input = [
+    { type: 'message', role: 'developer', content: 'Keep this instruction' },
+    { role: 'user', content: 'Question' },
+    { type: 'function_call_output', role: 'system', call_id: 'synthetic_call', output: 'synthetic role-like metadata' },
+  ];
+  const normalized = normalizeSystemMessages(input);
+  assert.equal(normalized.input, input);
+  assert.equal(normalized.systemMessagesConverted, 0);
+  const req = request();
+  req.headers['user-agent'] = 'codex_vscode/0.165.0';
+  const h = harness();
+  await h.proxy.handle(req, new ResponseSink(), toolBody({ input }));
+  assert.deepEqual(JSON.parse(h.fetchCalls[0][1].body).input, input);
+  assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
+    userAgent: 'codex_vscode/0.165.0', userAgentRewritten: false, systemMessagesConverted: 0,
+  });
+  assert.equal(needsNativeResponses({ input: [{ role: 'system', content: 'Plain conversation' }, { role: 'user', content: 'Hello' }] }), false);
+});
 
 test('native routing recognizes tools and typed history while hosted tools retain their path', () => {
   for (const type of ['function', 'custom', 'namespace']) assert.equal(needsNativeResponses(toolBody({ tools: [{ type }] })), true);

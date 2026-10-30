@@ -5,6 +5,8 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
+import { normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
+import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
 import { sendJson } from '../http.js';
 
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -51,7 +53,9 @@ export class CodexResponsesProxy {
   async handle(req, res, body) {
     // 参数校验失败也要记录请求模型，避免日志一律显示“默认”。
     req.log?.request({ model: body.model || this.store.data.settings.defaultModel || 'gpt-6.1-sol', stream: body.stream });
-    const payload = this.#payload(body);
+    const { input, systemMessagesConverted } = normalizeSystemMessages(body.input);
+    const payload = this.#payload(systemMessagesConverted ? { ...body, input } : body);
+    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent']);
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
@@ -77,22 +81,37 @@ export class CodexResponsesProxy {
       const secrets = [auth.accessToken, req.headers.authorization, req.headers.authorization?.replace(/^Bearer\s+/i, '')];
       if (typeof body.input === 'string' && body.input.length >= 8 && body.input.length <= 64 * 1024) secrets.push(body.input);
       let upstream;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      let upstreamError;
+      let refreshedAuth = false;
+      let retriedOverload = false;
+      for (;;) {
+        req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted });
         upstream = await this.fetch(RESPONSES_URL, {
           method: 'POST',
           redirect: 'error',
           signal: abort.signal,
-          headers: this.#headers(req, auth),
+          headers: this.#headers(req, auth, userAgent),
           body: JSON.stringify(payload),
         });
-        if (upstream.status !== 401 || attempt === 1) break;
-        await upstream.body?.cancel();
-        auth = await this.accounts.responsesAuth(account.id, { rejectedToken: auth.accessToken });
-        secrets.push(auth.accessToken);
+        if (upstream.status === 401 && !refreshedAuth) {
+          refreshedAuth = true;
+          await upstream.body?.cancel();
+          auth = await this.accounts.responsesAuth(account.id, { rejectedToken: auth.accessToken });
+          secrets.push(auth.accessToken);
+          continue;
+        }
+        if (!upstream.ok) {
+          upstreamError = await readResponseError(upstream, { secrets });
+          if (isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
+            retriedOverload = true;
+            if (await waitForOverloadRetry(upstream.headers, abort.signal)) continue;
+          }
+        }
+        break;
       }
       if (!upstream.ok) {
-        const error = await readResponseError(upstream, { secrets });
-        const err = httpError(upstream.status === 401 ? 503 : upstream.status,
+        const error = upstreamError;
+        const err = httpError(responseErrorStatus(error, upstream.status === 401 ? 503 : upstream.status),
           error.message,
           error.code || (upstream.status === 401 ? 'account_auth_failed' : 'upstream_error'));
         if (error.type) err.type = error.type;
@@ -132,7 +151,7 @@ export class CodexResponsesProxy {
       req.log?.resolvedModel(response.model);
       if (response.usage) req.log?.usage(toUsage(response.usage));
       if (response.status === 'failed') {
-        req.log?.fail(httpError(502, response.error?.message || 'Codex Responses 请求失败', response.error?.code || 'upstream_error'));
+        req.log?.fail(httpError(responseErrorStatus(response.error), response.error?.message || 'Codex Responses 请求失败', response.error?.code || 'upstream_error'));
       }
       if (body.stream) res.end();
       else {
@@ -190,14 +209,14 @@ export class CodexResponsesProxy {
     return payload;
   }
 
-  #headers(req, auth) {
+  #headers(req, auth, userAgent) {
     const headers = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
       authorization: `Bearer ${auth.accessToken}`,
       'chatgpt-account-id': auth.accountId,
       originator: 'codex_local_gateway',
-      'user-agent': `codex_local_gateway/${this.codex.version || 'unknown'}`,
+      'user-agent': userAgent,
     };
     if (this.codex.version) headers.version = this.codex.version;
     for (const name of REQUEST_HEADERS) {
@@ -244,7 +263,7 @@ class ResponsesTracker {
     }
     if (event.type === 'error' || event.error) {
       const error = event.error || event;
-      this.error ||= httpError(502, error.message || 'Codex Responses 上游错误', error.code || 'upstream_error');
+      this.error ||= httpError(responseErrorStatus(error), error.message || 'Codex Responses 上游错误', error.code || 'upstream_error');
     }
     if (event.type === 'response.created' || event.type === 'response.in_progress') {
       if (event.response && typeof event.response === 'object') this.initial = { ...this.initial, ...event.response };

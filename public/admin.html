@@ -1840,7 +1840,7 @@ function renderLogRows() {
       <td>${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}${r.stream ? ' <span class="chip">流式</span>' : ''}${r.images ? ` <span class="chip">${r.images} 张图</span>` : ''}</td>
       <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
       <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}</td>
-      <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}</td>
+      <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td class="num">${esc(fmtMs(r.duration_ms))}</td>
       <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
       <td class="err-cell" title="${esc(r.error_message || '')}"><div>${esc(r.error_message || '')}</div></td>
@@ -1863,7 +1863,13 @@ function logDetail(r) {
     ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
     ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
-    ['客户端', `<span class="mono small">${esc(r.user_agent || '—')}</span>`],
+    ['原始 User-Agent', `<span class="mono small">${esc(r.user_agent || '未记录')}</span>`],
+    ['上游 User-Agent', `<span class="mono small">${esc(r.upstream_user_agent || '未记录')}</span>`],
+    ['UA 改写', esc(r.user_agent_rewritten === 1 ? '是' : r.user_agent_rewritten === 0 ? '否' : '未记录')],
+    ['系统消息转换', r.system_messages_converted == null ? '未记录'
+      : Number.isInteger(r.system_messages_converted) && r.system_messages_converted > 0
+        ? `已转换 ${esc(r.system_messages_converted)} 条 system→developer`
+        : `${esc(r.system_messages_converted)} 条`],
     ['状态', `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`],
     ['耗时', esc(fmtMs(r.duration_ms))],
     ['Tokens', r.input_tokens == null ? '—'

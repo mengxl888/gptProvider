@@ -18,6 +18,7 @@ export const WINDOWS = {
 const COLUMNS = [
   'id', 'ts', 'duration_ms', 'endpoint', 'source', 'stream', 'model', 'resolved_model',
   'account_id', 'account_email', 'api_key_id', 'api_key_name', 'user_agent',
+  'upstream_user_agent', 'user_agent_rewritten', 'system_messages_converted',
   'status', 'http_status', 'error_code', 'error_message',
   'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images',
 ];
@@ -40,6 +41,12 @@ export async function openRequestLog(dataDir) {
   }
 
   const db = new DatabaseSync(path.join(dataDir, 'requests.db'));
+  return new RequestLog(db);
+}
+
+// New fields deliberately default to NULL: old rows cannot tell whether a
+// request was rewritten. Never turn that missing historical information into 0.
+export function initializeRequestLogSchema(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS requests (
@@ -56,6 +63,9 @@ export async function openRequestLog(dataDir) {
       api_key_id TEXT,
       api_key_name TEXT,
       user_agent TEXT,
+      upstream_user_agent TEXT,
+      user_agent_rewritten INTEGER,
+      system_messages_converted INTEGER,
       status TEXT NOT NULL,
       http_status INTEGER,
       error_code TEXT,
@@ -70,13 +80,21 @@ export async function openRequestLog(dataDir) {
     CREATE INDEX IF NOT EXISTS requests_account_ts ON requests (account_id, ts);
     CREATE INDEX IF NOT EXISTS requests_key_ts ON requests (api_key_id, ts);
   `);
-  return new RequestLog(db);
+  const columns = new Set(db.prepare('PRAGMA table_info(requests)').all().map((column) => column.name.toLowerCase()));
+  for (const [name, type] of [
+    ['upstream_user_agent', 'TEXT'],
+    ['user_agent_rewritten', 'INTEGER'],
+    ['system_messages_converted', 'INTEGER'],
+  ]) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
+  }
 }
 
 export class RequestLog {
   constructor(db) {
     this.db = db;
     if (!db) return;
+    initializeRequestLogSchema(db);
     this.insert = db.prepare(
       `INSERT INTO requests (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
     );
@@ -246,6 +264,21 @@ class LogEntry {
   request({ model, stream }) {
     this.row.model = model || null;
     this.row.stream = stream ? 1 : 0;
+  }
+
+  // Called immediately before each upstream attempt; the row describes the
+  // most recent actual request while user_agent remains the original client UA.
+  upstreamRequest({ userAgent, userAgentRewritten, systemMessagesConverted } = {}) {
+    if (userAgent !== undefined) {
+      this.row.upstream_user_agent = userAgent == null ? null : String(userAgent).slice(0, 1024);
+    }
+    if (userAgentRewritten !== undefined) {
+      this.row.user_agent_rewritten = typeof userAgentRewritten === 'boolean' ? Number(userAgentRewritten) : null;
+    }
+    if (systemMessagesConverted !== undefined) {
+      this.row.system_messages_converted = Number.isSafeInteger(systemMessagesConverted) && systemMessagesConverted >= 0
+        ? systemMessagesConverted : null;
+    }
   }
 
   account(account) {
