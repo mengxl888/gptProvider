@@ -8,7 +8,8 @@ import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
 import { normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
 import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
-import { sendJson } from '../http.js';
+import { applyServiceTierPolicy } from './serviceTier.js';
+import { DeferredStream, sendJson } from '../http.js';
 
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const LOCAL_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
@@ -34,6 +35,8 @@ const RESPONSE_HEADERS = [
 ];
 const IDLE_TIMEOUT_MS = 10 * 60_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
+// 回合开头不含内容的事件：流式时先攒着，等第一段输出再一起发（见 DeferredStream）
+export const PREAMBLE_EVENTS = new Set(['response.created', 'response.in_progress']);
 
 export function needsNativeResponses(body, headers = {}) {
   return String(headers['x-openai-internal-codex-responses-lite'] || '').trim().toLowerCase() === 'true'
@@ -55,7 +58,10 @@ export class CodexResponsesProxy {
     // 参数校验失败也要记录请求模型，避免日志一律显示“默认”。
     req.log?.request({ model: body.model || this.store.data.settings.defaultModel || 'gpt-6.1-sol', stream: body.stream });
     const { input, systemMessagesConverted } = normalizeSystemMessages(body.input);
-    const payload = this.#payload(systemMessagesConverted ? { ...body, input } : body);
+    const payload = applyServiceTierPolicy(
+      this.#payload(systemMessagesConverted ? { ...body, input } : body),
+      this.store.data.settings.serviceTierMode,
+    );
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent']);
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
@@ -77,6 +83,7 @@ export class CodexResponsesProxy {
       idleTimer.unref();
     };
     resetIdle();
+    let stream = null;
     try {
       let auth = await this.accounts.responsesAuth(account.id);
       const secrets = [auth.accessToken, req.headers.authorization, req.headers.authorization?.replace(/^Bearer\s+/i, '')];
@@ -128,8 +135,9 @@ export class CodexResponsesProxy {
         throw httpError(502, 'Codex Responses 上游未返回事件流', 'invalid_upstream_response');
       }
       const tracker = new ResponsesTracker();
+      // 响应头等到第一段输出再发：在这之前失败，还能换账号或改用 API 上游重试。
       if (body.stream) {
-        res.writeHead(200, {
+        stream = new DeferredStream(res, {
           ...responseHeaders(upstream.headers),
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache',
@@ -141,7 +149,9 @@ export class CodexResponsesProxy {
         tracker.feed(chunk);
         if (body.stream) {
           if (res.destroyed) throw abortedError();
-          if (!res.write(chunk)) await once(res, 'drain', { signal: abort.signal });
+          // 客户端还什么都没收到就失败了，按普通错误抛出
+          if (!stream.committed && tracker.failure) throw tracker.failure;
+          if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) await once(res, 'drain', { signal: abort.signal });
         }
         // Codex 后端在终态事件后可以继续保持 HTTP 连接；无需等待 EOF。
         if (tracker.response) break;
@@ -152,10 +162,15 @@ export class CodexResponsesProxy {
       req.log?.resolvedModel(response.model);
       if (response.usage) req.log?.usage(toUsage(response.usage));
       if (response.status === 'failed') {
-        req.log?.fail(httpError(responseErrorStatus(response.error), response.error?.message || 'Codex Responses 请求失败', response.error?.code || 'upstream_error'));
+        const failure = failedError(response.error);
+        // 非流式还没写出任何内容，按普通错误抛出，交给 failover.js 换账号或改用 API 上游
+        if (!body.stream) throw failure;
+        req.log?.fail(failure);
       }
-      if (body.stream) res.end();
-      else {
+      if (body.stream) {
+        stream.commit();
+        res.end();
+      } else {
         for (const [name, value] of Object.entries(responseHeaders(upstream.headers))) res.setHeader(name, value);
         sendJson(res, 200, response);
       }
@@ -171,6 +186,7 @@ export class CodexResponsesProxy {
       res.end(`event: error\ndata: ${JSON.stringify({ type: 'error', code: failure.code, message: failure.message })}\n\n`);
     } finally {
       clearTimeout(idleTimer);
+      stream?.close();
       res.off('close', onClose);
       abort.abort();
     }
@@ -234,8 +250,16 @@ class ResponsesTracker {
     this.buffer = '';
     this.response = null;
     this.error = null;
+    // 收到过开头事件以外、不是失败的事件，即客户端会看到的输出
+    this.output = false;
     this.initial = {};
     this.items = new Map();
+  }
+
+  // 目前为止收到的失败：error 事件或 response.failed
+  get failure() {
+    if (this.error) return this.error;
+    return this.response?.status === 'failed' ? failedError(this.response.error) : null;
   }
 
   feed(chunk) {
@@ -265,6 +289,8 @@ class ResponsesTracker {
     if (event.type === 'error' || event.error) {
       const error = event.error || event;
       this.error ||= httpError(responseErrorStatus(error), error.message || 'Codex Responses 上游错误', error.code || 'upstream_error');
+    } else if (event.type !== 'response.failed' && !PREAMBLE_EVENTS.has(event.type)) {
+      this.output = true;
     }
     if (event.type === 'response.created' || event.type === 'response.in_progress') {
       if (event.response && typeof event.response === 'object') this.initial = { ...this.initial, ...event.response };
@@ -297,6 +323,10 @@ class ResponsesTracker {
     }
     if (this.error && this.response.status !== 'failed') throw this.error;
   }
+}
+
+function failedError(error) {
+  return httpError(responseErrorStatus(error), error?.message || 'Codex Responses 请求失败', error?.code || 'upstream_error');
 }
 
 function responseHeaders(headers) {

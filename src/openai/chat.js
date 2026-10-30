@@ -5,9 +5,10 @@ import crypto from 'node:crypto';
 import { affinityKey } from '../codex/accountPicker.js';
 import { httpError } from '../codex/accounts.js';
 import { finalText, runTurn } from '../codex/turn.js';
-import { sendJson } from '../http.js';
+import { DeferredStream, sendJson } from '../http.js';
 import { publicImageUrl } from '../images.js';
 import { IMAGE_MODEL_ID, isImageModel } from './images.js';
+import { turnServiceTier } from '../codex/serviceTier.js';
 
 const HISTORY_PREAMBLE =
   'Below is the conversation so far. Reply as the assistant to the final user message. ' +
@@ -51,6 +52,8 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
   if (body.response_format?.type === 'json_schema' && body.response_format.json_schema?.schema) {
     turnOptions.outputSchema = body.response_format.json_schema.schema;
   }
+  const serviceTier = turnServiceTier(body, settings.serviceTierMode);
+  if (serviceTier) turnOptions.serviceTierForTurn = serviceTier;
 
   const id = `chatcmpl-${crypto.randomBytes(12).toString('hex')}`;
   const created = Math.floor(Date.now() / 1000);
@@ -115,14 +118,16 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
 }
 
 async function streamCompletion(res, client, turnArgs, { id, created, model, body, onTurnError, saveImage, log }) {
-  res.writeHead(200, {
+  // 响应头等到第一段输出再发：在这之前失败，还能换账号或改用 API 上游重试。
+  const stream = new DeferredStream(res, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
   });
+  const data = (payload) => `data: ${JSON.stringify(payload)}\n\n`;
   const send = (payload) => {
-    if (!res.destroyed) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    if (!res.destroyed) stream.write(data(payload));
   };
   let responseModel = model;
   const chunk = (delta, finishReason = null) => ({
@@ -142,7 +147,7 @@ async function streamCompletion(res, client, turnArgs, { id, created, model, bod
   let wroteText = false;
   let imageCount = 0;
   const keepAlive = setInterval(() => {
-    if (!res.destroyed) res.write(': keep-alive\n\n');
+    if (!res.destroyed) stream.write(': keep-alive\n\n');
   }, 15_000);
 
   try {
@@ -152,7 +157,7 @@ async function streamCompletion(res, client, turnArgs, { id, created, model, bod
         if (event.type === 'started') {
           log?.resolvedModel(event.model);
           if (model !== IMAGE_MODEL_ID) responseModel = event.model || model;
-          enqueue(() => send(chunk({ role: 'assistant', content: '' })));
+          enqueue(() => stream.hold(data(chunk({ role: 'assistant', content: '' }))));
         } else if (event.type === 'text') {
           // 多条助手消息之间补一个空行，和非流式拼接结果保持一致。
           const prefix = lastTextItem && lastTextItem !== event.itemId ? '\n\n' : '';
@@ -180,14 +185,20 @@ async function streamCompletion(res, client, turnArgs, { id, created, model, bod
       send({ ...chunk({}), choices: [], usage: toOpenAIUsage(result.usage) });
     }
   } catch (err) {
-    // 流式响应的状态码已经是 200，失败要单独记到日志里。
-    log?.fail(err);
-    if (err.aborted) return;
+    if (err.aborted) {
+      log?.fail(err);
+      return;
+    }
     await queue;
     onTurnError(err);
+    // 还没输出任何内容：按普通错误抛出，交给 failover.js 换账号或改用 API 上游。
+    if (!stream.committed) throw err;
+    // 流式响应的状态码已经是 200，失败要单独记到日志里。
+    log?.fail(err);
     send({ error: { message: err.message, type: 'codex_error', code: err.code || null } });
   } finally {
     clearInterval(keepAlive);
+    stream.close();
   }
   res.end('data: [DONE]\n\n');
 }

@@ -8,10 +8,11 @@ import crypto from 'node:crypto';
 import { affinityKey } from '../codex/accountPicker.js';
 import { httpError } from '../codex/accounts.js';
 import { finalText, runTurn } from '../codex/turn.js';
-import { sendJson } from '../http.js';
+import { DeferredStream, sendJson } from '../http.js';
 import { IMAGE_CHAT_INSTRUCTIONS, NO_IMAGE_INSTRUCTIONS, buildPrompt } from './chat.js';
 import { IMAGE_MODEL_ID, isImageModel } from './images.js';
-import { needsNativeResponses } from '../codex/responsesProxy.js';
+import { PREAMBLE_EVENTS, needsNativeResponses } from '../codex/responsesProxy.js';
+import { turnServiceTier } from '../codex/serviceTier.js';
 
 const HOSTED_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
 // 历史里已经产生过的输出项，转成对话记录时跳过即可
@@ -56,6 +57,8 @@ export async function handleResponses(req, res, body, ctx) {
   if (body.reasoning?.effort) turnOptions.effort = body.reasoning.effort;
   if (REASONING_SUMMARIES.has(body.reasoning?.summary)) turnOptions.summary = body.reasoning.summary;
   if (format?.type === 'json_schema' && format.schema) turnOptions.outputSchema = format.schema;
+  const serviceTier = turnServiceTier(body, settings.serviceTierMode);
+  if (serviceTier) turnOptions.serviceTierForTurn = serviceTier;
 
   const abort = new AbortController();
   res.on('close', () => {
@@ -109,7 +112,8 @@ export async function handleResponses(req, res, body, ctx) {
     return;
   }
 
-  res.writeHead(200, {
+  // 响应头等到第一段输出再发：在这之前失败，还能换账号或改用 API 上游重试
+  const stream = new DeferredStream(res, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
@@ -117,10 +121,13 @@ export async function handleResponses(req, res, body, ctx) {
   });
   let sequence = 0;
   builder.emit = (type, data) => {
-    if (!res.destroyed) res.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);
+    if (res.destroyed) return;
+    const text = `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`;
+    if (PREAMBLE_EVENTS.has(type)) stream.hold(text);
+    else stream.write(text);
   };
   const keepAlive = setInterval(() => {
-    if (!res.destroyed) res.write(': keep-alive\n\n');
+    if (!res.destroyed) stream.write(': keep-alive\n\n');
   }, 15_000);
   builder.start();
   try {
@@ -130,13 +137,19 @@ export async function handleResponses(req, res, body, ctx) {
     logResult(result);
     remember(result);
   } catch (err) {
+    if (err.aborted) {
+      req.log?.fail(err);
+      return;
+    }
+    await queue;
+    // 还没输出任何内容：按普通错误抛出，交给 failover.js 换账号或改用 API 上游
+    if (!stream.committed) throw err;
     // 流式响应的状态码已经是 200，失败要单独记到日志里
     req.log?.fail(err);
-    if (err.aborted) return;
-    await queue;
     builder.fail(err);
   } finally {
     clearInterval(keepAlive);
+    stream.close();
   }
   res.end();
 }

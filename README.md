@@ -303,6 +303,7 @@ open("cat-pink.png", "wb").write(base64.b64decode(img.data[0].b64_json))
 | `image_url`（URL 或 data URL） | Codex 图片输入 |
 | `model` | 不填时用后台设置的默认模型，再不填用 Codex 默认模型；填任意 `gpt-image-*` 时这一轮固定生图 |
 | `reasoning_effort` | 回合 `effort` |
+| `service_tier` | 按「Codex 速度档位」设置处理；Fast 使用 `priority`，标准速度使用 `default` |
 | `response_format: json_schema` | 回合 `outputSchema` |
 | `response_format: json_object` | 追加一条"只输出 JSON"的指令 |
 | 推理摘要、模型的中间说明 | 放在 `reasoning_content` 字段（流式和非流式都有） |
@@ -336,6 +337,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
 - 原生转发兼容接受正整数 `max_output_tokens`，但账号上游不支持该参数，转发时会忽略它，并通过响应头 `x-gptprovider-ignored-parameters: max_output_tokens` 提示；该参数无法保证输出 Token 的硬上限。非法值返回 400。
 - `temperature`、`top_p`、`conversation` 等其他不支持的参数仍返回 400。
+- 「设置 → Codex 速度档位」有三种选择：**按客户端决定**（默认，保留请求里的速度选择）、**Fast（加速）**（强制使用 Fast，按模型规则消耗更多额度）、**关闭 Fast**（强制标准速度并清除请求里的 Fast 选择）。切换后会重启账号 app-server，使普通对话和 Responses 请求立即使用新策略。
 - 工具是否可用仍取决于当前账号、模型和账号上游的支持范围。`/v1/chat/completions` 的工具调用保持不支持。
 - 不支持 `background`、WebSocket 和 `GET /v1/responses/{id}`。普通对话转换路径也不支持 `input_file` / `file_id`。
 
@@ -366,7 +368,8 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 3. 都失败就返回最后一次的错误。
 
 - **什么时候会重试**：账号过载（`server_is_overloaded`）、账号登录失效、额度用完、Free 账号不能生图、参数不被账号上游接受等 4xx / 5xx 都会重试。请求体不是合法 JSON、请求体过大、下游 Key 本月额度用完、内容被安全策略拒绝（`content_policy_violation` / `image_generation_rejected`，同样的内容反复提交会连累账号）不重试，客户端断开也不重试。请求在选账号之前就失败（参数校验不通过等）说明和账号无关，不换账号。
-- **只在还没输出时重试**：原生 Responses 转发在拿到账号上游的成功响应后才开始输出，所以过载、鉴权失败等都能重试；Codex app-server 的流式对话一开始就会写出响应头，回合开始后才失败的请求没法再重试。
+- **只在还没输出时重试，流式请求也一样**：流式响应的响应头和开头不含内容的事件（role 块、`response.created` / `response.in_progress`）会先攒着，等第一段正文、推理或工具调用出来才一起发出，所以回合开始后、出字之前的失败（额度用完、过载、`response.failed` 等）都能换账号、再交给 API 上游，客户端只会看到最后成功的那一次。已经输出了一部分再失败的，不再重试，以错误事件结束这次流式响应。等了 15 秒还没有任何输出时会先发出响应头和保活，避免客户端或反向代理按超时断开，这之后的失败也不再重试。
+- **原生 Responses 非流式请求**：账号上游返回 `status: failed` 时按错误返回（HTTP 状态和错误码取自上游），以便换账号或交给 API 上游。
 - **会话**：换账号只影响这一次请求，同一会话的下一个请求仍然先用它固定的账号。
 - **转给 API 上游时请求怎么改**：原始请求体原样转发，只做两处调整：没写 `model` 时补上默认模型；Responses 的 `input` 里带 `encrypted_content` 的推理项会去掉（它们是 ChatGPT 后端加密的，官方 API 解不开），对话、工具调用和工具结果都保留。
 - **日志**：重试过的请求在「账号 / 上游」列显示最后用的账号或上游，并标「已换账号」或「已切换上游」；展开能看到每一次失败的尝试（哪个账号、什么错误）。状态、耗时和 Token 记的是最终结果，所以账号卡片上的健康条只统计最终落到这个账号的请求，被别的账号救回来的失败要在日志里看。

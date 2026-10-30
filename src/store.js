@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { DEFAULT_SERVICE_TIER_MODE } from './codex/serviceTier.js';
+
 const DEFAULT_SETTINGS = {
   defaultModel: null,
   webSearch: 'disabled',
@@ -13,6 +15,8 @@ const DEFAULT_SETTINGS = {
   upstreamFallback: false,
   // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
   accountStrategy: 'active',
+  // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
+  serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
 };
 const MAX_IMAGE_RECORDS = 500;
 export const CHANNELS = ['codex', 'openai'];
@@ -34,6 +38,9 @@ export class Store {
     data.accounts ||= [];
     data.activeAccountId ??= null;
     data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+    if (!['client', 'fast', 'standard'].includes(data.settings.serviceTierMode)) {
+      data.settings.serviceTierMode = DEFAULT_SERVICE_TIER_MODE;
+    }
     data.modelCatalog ||= {};
     data.images ||= [];
     data.upstreams ||= [];

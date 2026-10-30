@@ -489,9 +489,9 @@ test('stream preserves every byte across CRLF, multi-data JSON, and split UTF-8 
   assert.equal(req.events.filter((e) => e.name === 'fail').length, 0);
 });
 
-for (const status of ['completed', 'failed', 'incomplete']) {
+for (const status of ['completed', 'incomplete']) {
   test(`nonstream ${status} aggregates the terminal response with its usage and status`, async () => {
-    const result = response(status, status === 'failed' ? { error: { code: 'synthetic_failure', message: 'Synthetic failure' } } : status === 'incomplete' ? { incomplete_details: { reason: 'max_output_tokens' } } : {});
+    const result = response(status, status === 'incomplete' ? { incomplete_details: { reason: 'max_output_tokens' } } : {});
     const h = harness(async () => upstream(terminalSse(result)));
     const req = request();
     const res = new ResponseSink();
@@ -499,11 +499,19 @@ for (const status of ['completed', 'failed', 'incomplete']) {
     assert.equal(res.statusCode, 200);
     assert.deepEqual(res.json, result);
     assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
-    const failures = req.events.filter((e) => e.name === 'fail');
-    assert.equal(failures.length, status === 'failed' ? 1 : 0);
-    if (failures.length) assert.equal(failures[0].value.code, 'synthetic_failure');
+    assert.equal(req.events.filter((e) => e.name === 'fail').length, 0);
   });
 }
+
+test('nonstream failed is thrown as an error, keeping its usage, so failover can retry it', async () => {
+  const result = response('failed', { error: { code: 'synthetic_failure', message: 'Synthetic failure' } });
+  const h = harness(async () => upstream(terminalSse(result)));
+  const req = request();
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(req, res, toolBody()), { status: 502, code: 'synthetic_failure', message: 'Synthetic failure' });
+  assert.equal(res.headersSent, false);
+  assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
+});
 
 for (const stream of [false, true]) {
   test(`a valid SSE response without Content-Type is accepted (stream=${stream})`, async () => {
@@ -562,8 +570,17 @@ test('truncated nonstream fails instead of reporting a successful completion', a
   assert.equal(res.headersSent, false);
 });
 
-test('truncated stream logs the failure and terminates with an explicit error event', async () => {
-  const original = Buffer.from(event('response.created', { response: response('in_progress') }));
+test('a stream cut off before any output fails without writing anything, so failover can retry it', async () => {
+  const h = harness(async () => upstream(Buffer.from(event('response.created', { response: response('in_progress') }))));
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(request(), res, toolBody({ stream: true })), { status: 502, code: 'upstream_disconnected' });
+  assert.equal(res.headersSent, false);
+  assert.equal(res.body.length, 0);
+});
+
+test('a stream cut off after output logs the failure and terminates with an explicit error event', async () => {
+  const original = Buffer.from(event('response.created', { response: response('in_progress') })
+    + event('response.output_text.delta', { delta: '你好' }));
   const h = harness(async () => upstream(original));
   const req = request();
   const res = new ResponseSink();
@@ -701,7 +718,7 @@ test('ordinary hosted tools keep the app-server runTurn route', async () => {
   const ctx = {
     accountResponses: { handle() { assert.fail('Hosted requests must not use native tool proxy'); } },
     accounts: { pickClient: async () => ({ account: { id: 'synthetic-account' }, client }), supportsImageGeneration: () => true, generatedImagesDir: () => '/synthetic' },
-    store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } }, images: { save() { assert.fail('No generated image was supplied'); } },
+    store: { data: { settings: { defaultModel: 'gpt-6.1-sol', serviceTierMode: 'fast' } } }, images: { save() { assert.fail('No generated image was supplied'); } },
   };
   const res = new ResponseSink();
   await handleResponses(request(), res, { input: 'Hello', store: false, tools: [{ type: 'image_generation' }, { type: 'web_search' }] }, ctx);
@@ -710,6 +727,8 @@ test('ordinary hosted tools keep the app-server runTurn route', async () => {
   const started = calls.find((call) => call.method === 'thread/start');
   assert.equal(started.params.config['features.image_generation'], true);
   assert.equal(started.params.config.web_search, 'live');
+  const turn = calls.find((call) => call.method === 'turn/start');
+  assert.equal(turn.params.serviceTierForTurn, 'priority');
 });
 
 function jwt(auth = { chatgpt_account_id: 'synthetic-workspace' }, suffix = '') {

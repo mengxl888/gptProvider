@@ -135,14 +135,33 @@ test('auth recovery and overload recovery each occur at most once on the same ac
   assert.ok(h.calls.every((call) => call.options.body === h.calls[0].options.body));
 });
 
-test('a streamed overload is preserved and logged as 503 without replaying emitted events', async () => {
-  const bytes = Buffer.concat([
-    encode('response.created', { response: { id: 'resp_busy' } }),
-    encode('response.failed', { response: { id: 'resp_busy', status: 'failed', output: [], error: {
-      code: 'server_is_overloaded', message: 'Our servers are currently overloaded.',
-    } } }),
-  ]);
+const streamedOverload = encode('response.failed', { response: { id: 'resp_busy', status: 'failed', output: [], error: {
+  code: 'server_is_overloaded', message: 'Our servers are currently overloaded.',
+} } });
+
+test('a streamed overload before any output is thrown as 503 without writing, so failover can retry it', async () => {
+  const bytes = Buffer.concat([encode('response.created', { response: { id: 'resp_busy' } }), streamedOverload]);
   const h = fixture(() => new Response(bytes, { headers: { 'content-type': 'text/event-stream' } }));
+  await assert.rejects(h.proxy.handle(h.req, h.res, h.body), { status: 503, code: 'server_is_overloaded' });
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.res.headersSent, false);
+  assert.equal(h.res.body.length, 0);
+});
+
+test('a streamed overload after output is preserved and logged as 503 without replaying emitted events', async () => {
+  const pieces = [
+    encode('response.created', { response: { id: 'resp_busy' } }),
+    encode('response.output_text.delta', { delta: 'partial' }),
+    streamedOverload,
+  ];
+  const bytes = Buffer.concat(pieces);
+  // 分开到达：失败之前，前面的输出已经写给了客户端
+  const h = fixture(() => new Response(new ReadableStream({
+    start(controller) {
+      for (const piece of pieces) controller.enqueue(piece);
+      controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } }));
   await h.proxy.handle(h.req, h.res, h.body);
   assert.equal(h.calls.length, 1);
   assert.deepEqual(h.res.body, bytes);

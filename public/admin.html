@@ -653,6 +653,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><select id="set-model" class="select" style="width:240px"></select></div>
           </div>
           <div class="setting">
+            <div class="desc"><b>Codex 速度档位</b><span>Fast（加速）会按模型规则消耗更多额度；按客户端决定时保留客户端的选择。</span></div>
+            <div class="control"><div class="segmented" id="set-service-tier">
+              <button data-v="client">按客户端决定</button><button data-v="fast">Fast（加速）</button><button data-v="standard">关闭 Fast</button></div></div>
+          </div>
+          <div class="setting">
             <div class="desc"><b>对话中允许生图</b><span>开启后，普通对话里用户要求画图时 Codex 会调用生图工具，图片以 Markdown 链接返回</span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
@@ -2059,6 +2064,7 @@ function renderSettings() {
   fillModelSelects();
   $('set-chat-image').checked = s.chatImageGeneration;
   $('set-chat-image').disabled = activeAccount()?.planType === 'free';
+  document.querySelectorAll('#set-service-tier button').forEach((b) => b.classList.toggle('on', b.dataset.v === (s.serviceTierMode || 'client')));
   document.querySelectorAll('#set-web button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.webSearch));
   $('set-account-retry').checked = s.accountRetry;
   $('set-fallback').checked = s.upstreamFallback;
@@ -2106,6 +2112,7 @@ $('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGe
 $('set-account-retry').addEventListener('change', (e) => saveSettings({ accountRetry: e.target.checked }));
 $('set-fallback').addEventListener('change', (e) => saveSettings({ upstreamFallback: e.target.checked }));
 $('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
+$('set-service-tier').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ serviceTierMode: b.dataset.v }); });
 
 // ============ 入口 ============
 hydrateIcons();

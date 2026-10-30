@@ -10,6 +10,7 @@ import path from 'node:path';
 
 import { AccountPicker, accountWeight } from './accountPicker.js';
 import { AppServerClient } from './appServer.js';
+import { configServiceTier } from './serviceTier.js';
 
 // 网关只做对话和生图：关闭会让 Codex 动本机环境或调用额外服务的工具。
 // image_generation 不在这里关，而是每个线程按需通过 thread/start 的 config 覆盖开关。
@@ -139,9 +140,12 @@ export class AccountManager {
       'approval_policy = "never"',
       'sandbox_mode = "read-only"',
       `web_search = "${settings.webSearch === 'live' ? 'live' : settings.webSearch === 'cached' ? 'cached' : 'disabled'}"`,
+      ...(configServiceTier(settings.serviceTierMode) ? [`service_tier = "${configServiceTier(settings.serviceTierMode)}"`] : []),
       '',
       '[features]',
     ];
+    if (settings.serviceTierMode === 'fast') lines.push('fast_mode = true');
+    if (settings.serviceTierMode === 'standard') lines.push('fast_mode = false');
     for (const name of CHAT_ONLY_DISABLED_FEATURES) {
       if (this.featureNames.size === 0 || this.featureNames.has(name)) lines.push(`${name} = false`);
     }

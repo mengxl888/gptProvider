@@ -6,6 +6,7 @@ import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
 import { IMAGE_MODEL_ID, handleImageGenerations } from '../openai/images.js';
 import { WINDOWS, withLog } from '../requestLog.js';
+import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
   const { accounts, upstreams, store, codex, images, requestLog, updater } = ctx;
@@ -158,10 +159,11 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy, serviceTierMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
+    const beforeServiceTier = settings.serviceTierMode;
     if ('defaultModel' in body) settings.defaultModel = body.defaultModel || null;
     if ('webSearch' in body) {
       if (!['disabled', 'cached', 'live'].includes(body.webSearch)) throw httpError(400, 'webSearch 取值无效');
@@ -174,9 +176,13 @@ export async function handleAdmin(req, res, url, body, ctx) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');
       settings.accountStrategy = body.accountStrategy;
     }
+    if ('serviceTierMode' in body) {
+      if (!SERVICE_TIER_MODES.includes(body.serviceTierMode)) throw httpError(400, 'serviceTierMode 取值无效');
+      settings.serviceTierMode = body.serviceTierMode;
+    }
     store.save();
-    // web_search 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
-    if (settings.webSearch !== before) accounts.restartAll();
+    // web_search 和 service_tier 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
+    if (settings.webSearch !== before || settings.serviceTierMode !== beforeServiceTier) accounts.restartAll();
     return ok({ settings });
   }
 
