@@ -365,7 +365,14 @@ export class AccountManager {
 
   // 按调用策略给这次请求选账号。needsImage 只在能生图的账号里选；affinityKey 让同一会话固定在同一个账号。
   // 没有可参与轮询的账号时退回当前账号（它也不可用就照常报错）。
-  pickAccount({ needsImage = false, affinityKey = null } = {}) {
+  // retry 是这个请求的换账号记录 {tried, current, needsImage}：已经失败过的账号不会再选，见 server.js。
+  pickAccount({ needsImage = false, affinityKey = null, retry = null } = {}) {
+    const account = retry?.tried.size ? this.#pickRetry(retry, needsImage) : this.#pick(needsImage, affinityKey);
+    if (retry) Object.assign(retry, { current: account.id, needsImage });
+    return account;
+  }
+
+  #pick(needsImage, affinityKey) {
     const strategy = this.store.data.settings.accountStrategy;
     if (!strategy || strategy === 'active') return this.activeAccount();
     const account = this.picker.pick(this.store.data.accounts, {
@@ -374,6 +381,22 @@ export class AccountManager {
       filter: needsImage ? (a) => this.supportsImageGeneration(a) : undefined,
     });
     return account || this.activeAccount();
+  }
+
+  // 换账号重试：在没试过的账号里按权重选（平均轮询时轮流选），不再回到已经失败的账号。
+  #pickRetry(retry, needsImage) {
+    const account = this.picker.pick(this.store.data.accounts.filter((a) => !retry.tried.has(a.id)), {
+      strategy: this.store.data.settings.accountStrategy === 'even' ? 'even' : 'weighted',
+      filter: needsImage ? (a) => this.supportsImageGeneration(a) : undefined,
+    });
+    if (!account) throw httpError(503, '没有其他可用的账号可以重试', 'no_retry_account');
+    return account;
+  }
+
+  // 还有没试过、可以换过去的账号吗：已登录、权重大于 0，需要生图时还要能生图。
+  hasRetryAccount(retry) {
+    return this.store.data.accounts.some((a) => !retry.tried.has(a.id) && a.status === 'ready' && accountWeight(a) > 0
+      && (!retry.needsImage || this.supportsImageGeneration(a)));
   }
 
   async pickClient(options) {

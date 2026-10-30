@@ -8,7 +8,8 @@ const DEFAULT_SETTINGS = {
   defaultModel: null,
   webSearch: 'disabled',
   chatImageGeneration: true,
-  // Codex 账号渠道失败时改用 API 上游重试（按 API 用量计费，默认关闭）
+  // Codex 账号渠道失败时先换其他账号重试（不额外计费，默认开启），再改用 API 上游（按 API 用量计费，默认关闭）
+  accountRetry: true,
   upstreamFallback: false,
   // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
   accountStrategy: 'active',

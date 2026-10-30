@@ -107,3 +107,37 @@ test('AccountManager falls back to the current account when no account can rotat
   data.accounts = [];
   assert.throws(() => m.pickAccount(), { status: 503, code: 'no_active_account' });
 });
+
+test('retry picks only untried accounts, records the current one, and refuses to go back to a failed account', (t) => {
+  const data = { activeAccountId: 'a', settings: { accountStrategy: 'active' }, accounts: [acct('a'), acct('b'), acct('c', { weight: 0 })] };
+  const m = manager(t, data);
+  const retry = { tried: new Set(), current: null, needsImage: false };
+  assert.equal(m.pickAccount({ retry }).id, 'a');
+  assert.equal(retry.current, 'a');
+  retry.tried.add('a');
+  assert.equal(m.hasRetryAccount(retry), true);
+  // 当前账号模式下也会换到别的账号；权重 0 的 c 不参与
+  assert.equal(m.pickAccount({ retry }).id, 'b');
+  assert.equal(retry.current, 'b');
+  retry.tried.add('b');
+  assert.equal(m.hasRetryAccount(retry), false);
+  assert.throws(() => m.pickAccount({ retry }), { status: 503, code: 'no_retry_account' });
+});
+
+test('retry ignores session affinity, skips expired accounts, and keeps the image requirement', (t) => {
+  const data = {
+    activeAccountId: 'a',
+    settings: { accountStrategy: 'weighted' },
+    accounts: [acct('a'), acct('free', { planType: 'free' }), acct('gone', { status: 'expired' }), acct('img')],
+  };
+  const m = manager(t, data);
+  const retry = { tried: new Set(), current: null, needsImage: false };
+  const first = m.pickAccount({ needsImage: true, affinityKey: 'session-1', retry });
+  assert.equal(retry.needsImage, true);
+  retry.tried.add(first.id);
+  const second = m.pickAccount({ needsImage: true, affinityKey: 'session-1', retry });
+  assert.notEqual(second.id, first.id);
+  assert.ok(['a', 'img'].includes(second.id));
+  retry.tried.add(second.id);
+  assert.equal(m.hasRetryAccount(retry), false, 'free and expired accounts cannot take an image retry');
+});

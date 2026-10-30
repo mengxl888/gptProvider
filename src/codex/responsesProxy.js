@@ -62,7 +62,7 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = this.accounts.pickAccount({ affinityKey: affinityKey(body, req.headers) });
+    const account = this.accounts.pickAccount({ affinityKey: affinityKey(body, req.headers), retry: req.accountRetry });
     req.log?.account(account);
     const abort = new AbortController();
     const onClose = () => {

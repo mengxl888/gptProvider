@@ -305,10 +305,13 @@ class LogEntry {
     this.row.images = count;
   }
 
-  // Codex 账号失败、改用 API 上游重试前调用：记下原来的错误，清掉失败状态和用量，之后按上游的结果记。
+  // 失败后换账号或改用 API 上游重试前调用：每次失败记一行（哪个账号、什么错误），
+  // 清掉失败状态和用量，之后按最终结果记。
   fallback(err) {
     const status = err?.status || 500;
-    this.row.fallback_error = `${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 2000);
+    const who = this.row.account_email || this.row.account_id || '未分配账号';
+    const line = `${who}：${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 1500);
+    this.row.fallback_error = [this.row.fallback_error, line].filter(Boolean).join('\n').slice(0, 4000);
     this.row.status = 'success';
     for (const key of ['http_status', 'error_code', 'error_message', 'resolved_model',
       'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens']) {

@@ -158,7 +158,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, upstreamFallback, accountStrategy}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -168,6 +168,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.webSearch = body.webSearch;
     }
     if ('chatImageGeneration' in body) settings.chatImageGeneration = Boolean(body.chatImageGeneration);
+    if ('accountRetry' in body) settings.accountRetry = Boolean(body.accountRetry);
     if ('upstreamFallback' in body) settings.upstreamFallback = Boolean(body.upstreamFallback);
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');

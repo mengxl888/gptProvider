@@ -657,7 +657,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>失败时改用 API 上游</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，用「API 上游」里的 Key 再试一次，按 API 用量计费；内容安全拒绝、请求体错误不重试。<span id="set-fallback-hint"></span></span></div>
+            <div class="desc"><b>失败时换账号重试</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，先换一个还没试过的账号再试（已登录、权重大于 0 的账号，一个请求最多用 3 个账号）；内容安全拒绝、请求体错误不重试。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="set-account-retry"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>失败时改用 API 上游</b><span>换账号也失败（或没有别的账号）后，用「API 上游」里的 Key 再试一次，多个上游按优先级依次尝试，按 API 用量计费。<span id="set-fallback-hint"></span></span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-fallback"><span></span></label></div>
           </div>
           <div class="setting">
@@ -1863,6 +1867,11 @@ function renderLogStats() {
   renderWindowSwitches();
 }
 
+// 失败后重试过的请求：最后落在 API 上游（id 以 oa- 开头）还是换了账号
+const failoverToUpstream = (r) => String(r.account_id || '').startsWith('oa-');
+const failoverChip = (r) => (r.fallback_error
+  ? ` <span class="chip" title="${esc(r.fallback_error)}">${failoverToUpstream(r) ? '已切换上游' : '已换账号'}</span>` : '');
+
 function logStatus(row) {
   if (row.status === 'success') return `<span class="badge success"><span class="dot"></span>成功 ${row.http_status ?? ''}</span>`;
   if (row.status === 'aborted') return '<span class="badge"><span class="dot"></span>中断</span>';
@@ -1903,7 +1912,7 @@ function renderLogRows() {
       <td>${logStatus(r)}</td>
       <td>${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}${r.stream ? ' <span class="chip">流式</span>' : ''}${r.images ? ` <span class="chip">${r.images} 张图</span>` : ''}</td>
       <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
-      <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${r.fallback_error ? ' <span class="chip">已切换上游</span>' : ''}</td>
+      <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${failoverChip(r)}</td>
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td class="num">${esc(fmtMs(r.duration_ms))}</td>
       <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
@@ -1926,7 +1935,7 @@ function logDetail(r) {
     ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
     ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
     ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
-    ...(r.fallback_error ? [['Codex 账号错误', `<span style="color:var(--danger)">${esc(r.fallback_error)}</span><div class="small muted">Codex 账号先失败，已改用 API 上游重试；下面的状态是 API 上游的结果</div>`]] : []),
+    ...(r.fallback_error ? [['之前失败的尝试', `<div style="color:var(--danger);white-space:pre-wrap">${esc(r.fallback_error)}</div><div class="small muted">每行一次失败的尝试，之后${failoverToUpstream(r) ? '改用 API 上游' : '换了账号'}重试；上面的账号 / 上游和下面的状态是最后一次尝试的结果</div>`]] : []),
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
     ['原始 User-Agent', `<span class="mono small">${esc(r.user_agent || '未记录')}</span>`],
     ['上游 User-Agent', `<span class="mono small">${esc(r.upstream_user_agent || '未记录')}</span>`],
@@ -2051,6 +2060,7 @@ function renderSettings() {
   $('set-chat-image').checked = s.chatImageGeneration;
   $('set-chat-image').disabled = activeAccount()?.planType === 'free';
   document.querySelectorAll('#set-web button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.webSearch));
+  $('set-account-retry').checked = s.accountRetry;
   $('set-fallback').checked = s.upstreamFallback;
   $('set-fallback-hint').innerHTML = s.upstreamFallback && !S.state.upstreams.some((u) => u.enabled)
     ? ' <b style="color:var(--danger)">还没有启用的 API 上游，暂不生效，请先去 <a href="#upstreams">API 上游</a> 添加。</b>' : '';
@@ -2093,6 +2103,7 @@ function renderSettings() {
 const saveSettings = run(async (patch) => { await api('PUT', '/settings', patch); toast('设置已保存'); await refreshState(); });
 $('set-model').addEventListener('change', (e) => saveSettings({ defaultModel: e.target.value }));
 $('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGeneration: e.target.checked }));
+$('set-account-retry').addEventListener('change', (e) => saveSettings({ accountRetry: e.target.checked }));
 $('set-fallback').addEventListener('change', (e) => saveSettings({ upstreamFallback: e.target.checked }));
 $('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
 

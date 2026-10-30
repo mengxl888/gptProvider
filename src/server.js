@@ -17,7 +17,7 @@ import { openRequestLog, withLog } from './requestLog.js';
 import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
-import { fallbackBody, shouldFallback } from './upstreamFallback.js';
+import { clearHeaders, fallbackBody, runWithFailover } from './failover.js';
 import { UpstreamManager, endpointName } from './upstreams.js';
 
 // 每次启动不同，页面据此判断一键更新后服务是否已经重启。
@@ -121,12 +121,16 @@ async function route(req, res) {
       return withLog(req, res, entry, async () => {
         checkQuota(keyRecord);
         const raw = await readBody(req);
-        try {
-          await endpoint.handle(req, res, raw);
-        } catch (err) {
-          if (!shouldFallback(err, { res, settings: store.data.settings, upstreams: upstreams.records })) throw err;
-          await fallbackToUpstream(req, res, url, raw, endpoint.name, err);
-        }
+        // 失败后先换账号重试，再交给 API 上游，见 failover.js
+        await runWithFailover({
+          req,
+          res,
+          handle: () => endpoint.handle(req, res, raw),
+          accounts,
+          settings: store.data.settings,
+          upstreams: upstreams.records,
+          upstream: (err) => fallbackToUpstream(req, res, url, raw, endpoint.name, err),
+        });
       });
     }
   }
@@ -134,14 +138,11 @@ async function route(req, res) {
   throw httpError(404, `未找到 ${req.method} ${pathname}`, 'not_found');
 }
 
-// Codex 账号渠道失败、还没向客户端写出内容时，用「API 上游」把请求再发一次；上游也失败就返回上游的错误。
+// 用「API 上游」把请求再发一次；上游也失败就返回上游的错误。
 async function fallbackToUpstream(req, res, url, raw, name, err) {
   req.log?.fallback(err);
   req.log?.upstreamRequest({ userAgent: req.headers['user-agent'] ?? null, userAgentRewritten: false, systemMessagesConverted: 0 });
-  // 失败的那次可能已经设置了 retry-after、x-request-id 等响应头，不能带到上游的响应里。
-  for (const header of res.getHeaderNames()) {
-    if (header !== 'access-control-allow-origin') res.removeHeader(header);
-  }
+  clearHeaders(res);
   const body = fallbackBody(raw, {
     contentType: req.headers['content-type'],
     endpoint: name,

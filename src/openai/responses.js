@@ -38,6 +38,7 @@ export async function handleResponses(req, res, body, ctx) {
   const { account, client } = await accounts.pickClient({
     needsImage: imageGeneration,
     affinityKey: affinityKey(body, req.headers),
+    retry: req.accountRetry,
   });
   req.log?.account(account);
   if (imageGeneration && !accounts.supportsImageGeneration(account)) {
