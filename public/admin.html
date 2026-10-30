@@ -174,7 +174,8 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 50%, transpa
 .banner.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 .banner.info > svg.i { color: var(--accent); }
 .banner .notes, .release-notes { margin: 6px 0 2px; font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
-.release-notes { max-height: 240px; overflow-y: auto; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+.release-notes { max-height: 320px; overflow-y: auto; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+.release-version { color: var(--text); }
 details.notes-box { margin-top: 8px; font-size: 12.5px; }
 details.notes-box summary { cursor: pointer; color: var(--accent); }
 .overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgba(10,12,18,.55); backdrop-filter: blur(3px); }
@@ -1070,13 +1071,25 @@ const appUpdateBtn = (a, cls = 'primary') => {
   return `<button class="btn ${cls}" data-app-update>${icon('download')}更新到 v${esc(a.latest.version)}</button>`;
 };
 
+// 当前版本之后各版本的说明；旧的后端只给最新一个版本的 notes
+const pendingChanges = (a) => (a.latest?.changes?.length ? a.latest.changes : a.latest ? [{ version: a.latest.version, notes: a.latest.notes }] : []);
+function releaseChangesHtml(changes) {
+  return changes.map((c) => `<div class="release-version"><b>v${esc(c.version)}</b>${c.publishedAt ? ` <span class="muted">${esc(fmtTime(c.publishedAt))}</span>` : ''}</div>${
+    c.notes ? esc(c.notes) : '<span class="muted">这个版本没有写更新说明</span>'}`).join('\n\n');
+}
+function releaseNotesBox(title, changes, open) {
+  return `<details class="notes-box" ${open ? 'open' : ''}><summary>${esc(title)}</summary><div class="release-notes">${releaseChangesHtml(changes)}</div></details>`;
+}
+
 function renderAppBanner() {
   const a = S.state.app, el = $('app-banner');
   el.hidden = !a.updateAvailable;
   if (el.hidden) return;
-  const notes = (a.latest.notes || '').split('\n').filter((l) => l.trim()).slice(0, 4).join('\n');
-  el.innerHTML = `${icon('download')}<div class="txt"><b>发现新版本 v${esc(a.latest.version)}（当前 v${esc(a.version)}）</b>
-      ${notes ? `<div class="notes">${esc(notes)}</div>` : ''}
+  const changes = pendingChanges(a);
+  const lines = changes.flatMap((c) => (c.notes || '').split('\n').filter((l) => l.trim()));
+  const notes = `${lines.slice(0, 4).join('\n')}${lines.length > 4 ? `\n…等 ${lines.length} 项，去「设置」查看全部` : ''}`;
+  el.innerHTML = `${icon('download')}<div class="txt"><b>发现新版本 v${esc(a.latest.version)}（当前 v${esc(a.version)}${changes.length > 1 ? `，中间共 ${changes.length} 个版本` : ''}）</b>
+      ${lines.length ? `<div class="notes">${esc(notes)}</div>` : ''}
       <span><a href="${esc(a.latest.url)}" target="_blank" rel="noopener">查看完整更新说明</a></span></div>
     ${appUpdateBtn(a)}`;
 }
@@ -2058,7 +2071,8 @@ function renderSettings() {
       ${app.checkError ? `<div class="small" style="color:var(--danger);margin-top:4px">检查更新失败：${esc(app.checkError)}</div>` : ''}
       ${lastFailed ? `<div class="small" style="color:var(--danger);margin-top:4px">${esc(app.lastResult.error)}</div>` : ''}
       ${app.lastError ? `<div class="small" style="color:var(--danger);margin-top:4px;white-space:pre-wrap">上次更新失败：${esc(app.lastError)}</div>` : ''}
-      ${app.updateAvailable && app.latest.notes ? `<details class="notes-box" open><summary>v${esc(app.latest.version)} 更新说明</summary><div class="release-notes">${esc(app.latest.notes)}</div></details>` : ''}
+      ${app.updateAvailable ? releaseNotesBox(`更新说明：v${app.version} → v${app.latest.version}${pendingChanges(app).length > 1 ? `（共 ${pendingChanges(app).length} 个版本）` : ''}`, pendingChanges(app), true) : ''}
+      ${!app.updateAvailable && app.installed?.changes?.length ? releaseNotesBox(`本次更新内容：v${app.installed.from} → v${app.installed.to}`, app.installed.changes, false) : ''}
       <div class="inline-actions"><button class="btn sm" data-app-check>${icon('refresh')}检查更新</button>
       ${app.updateAvailable ? appUpdateBtn(app, 'sm primary') : ''}</div>`],
     ['Codex', `${esc(c.raw || '未知')}（${SOURCE_NAME[c.source]}） ${state}

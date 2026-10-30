@@ -25,6 +25,8 @@ export class AppUpdater {
     // 运行的是 data/app 下载的版本，还是镜像/仓库自带的版本
     this.source = isInside(config.appDir, this.appsDir) ? 'downloaded' : 'bundled';
     this.latest = null;
+    // 刚完成一键更新时，这次跨过的各版本说明（v1.3.5 直接更新到 v1.3.7 时也能看到 v1.3.6 改了什么）
+    this.installed = null;
     this.checkedAt = null;
     this.checkError = null;
     this.updating = false;
@@ -39,6 +41,7 @@ export class AppUpdater {
       repo: this.repo,
       supervised: this.config.supervised,
       latest: this.latest,
+      installed: this.installed,
       checkedAt: this.checkedAt,
       checkError: this.checkError,
       updateAvailable: Boolean(this.latest && compareVersions(this.version, this.latest.version) < 0),
@@ -69,7 +72,7 @@ export class AppUpdater {
     if (!this.repo) throw httpError(400, 'package.json 里没有 GitHub 仓库地址，也没有设置 UPDATE_REPO');
     try {
       const releases = await this.#fetchReleases();
-      const tag = (await this.#latestTag()) || releases[0]?.tag || null;
+      const tag = (await this.#latestTag()) || newestStableTag(releases);
       if (!tag) {
         this.latest = null;
       } else {
@@ -82,9 +85,13 @@ export class AppUpdater {
           url: `https://github.com/${this.repo}/releases/tag/${encodeURIComponent(tag)}`,
           publishedAt: entry?.updated || null,
           title: entry?.title || tag,
-          notes: entry?.notes || '',
+          notes: entry ? releaseNotes(entry) : '',
+          // 当前版本之后、到最新版本为止每个版本的说明，新的在前
+          changes: changesBetween(releases, this.version, version),
         };
       }
+      const from = this.lastResult?.to === this.version && this.lastResult.ok !== false ? this.lastResult.from : null;
+      this.installed = from ? { from, to: this.version, changes: changesBetween(releases, from, this.version) } : null;
       this.checkError = null;
     } catch (err) {
       this.checkError = err.message;
@@ -191,6 +198,34 @@ export class AppUpdater {
   }
 }
 
+// 没有 GitHub Release、只有标签时 /releases/latest 不可用：取版本号最高的正式版标签，预发布标签不提示更新。
+function newestStableTag(releases) {
+  let best = null;
+  for (const r of releases) {
+    const version = TAG_PATTERN.exec(r.tag)?.[1];
+    if (!version || version.includes('-')) continue;
+    if (!best || compareVersions(version, best.version) > 0) best = { tag: r.tag, version };
+  }
+  return best?.tag || null;
+}
+
+// releases.atom 里 (from, to] 之间的版本，新的在前；目标是正式版时跳过中间的预发布版。
+export function changesBetween(releases, from, to) {
+  const stable = !String(to).includes('-');
+  return releases
+    .map((r) => ({ ...r, version: TAG_PATTERN.exec(r.tag)?.[1] }))
+    .filter((r) => r.version && compareVersions(r.version, from) > 0 && compareVersions(r.version, to) <= 0)
+    .filter((r) => !stable || !r.version.includes('-'))
+    .sort((a, b) => compareVersions(b.version, a.version))
+    .map((r) => ({ version: r.version, tag: r.tag, publishedAt: r.updated, notes: releaseNotes(r) }));
+}
+
+// 没写说明的标签，GitHub 把标签名本身当作内容，这种不算说明。
+function releaseNotes(entry) {
+  const notes = (entry.notes || '').trim();
+  return notes === entry.tag || notes === entry.tag.replace(/^v/, '') ? '' : notes;
+}
+
 function ghUrl(url) {
   const proxy = process.env.GITHUB_PROXY;
   return proxy ? `${proxy.replace(/\/?$/, '/')}${url}` : url;
@@ -233,5 +268,7 @@ function htmlToText(html) {
       .replace(/<[^>]+>/g, ''),
   )
     .replace(/\n{3,}/g, '\n\n')
+    // 列表项之间不留空行
+    .replace(/\n\s*\n(?=• )/g, '\n')
     .trim();
 }

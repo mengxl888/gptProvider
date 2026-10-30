@@ -79,10 +79,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # 更新说明用标签说明（scripts/tag-release.js 根据提交整理的更新点），和没有 Release 时后台看到的一致。
+      # actions/checkout 可能把附注标签取成轻量标签，先重新取一次标签。
       - name: 创建 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
           FLAGS=""
           case "$GITHUB_REF_NAME" in *-*) FLAGS="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $FLAGS
+          if [ -s release-notes.md ]; then NOTES="--notes-file release-notes.md"; else NOTES="--generate-notes"; fi
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $NOTES --verify-tag $FLAGS

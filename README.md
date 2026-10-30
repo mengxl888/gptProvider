@@ -509,19 +509,23 @@ Codex 版本旧了。去「模型」页或「设置」页升级 Codex。
 
 ## 维护者：发布新版本
 
-后台的一键更新读取的是 GitHub Release；镜像由 GitHub Actions 自动构建。发布流程：
+后台的一键更新读取 GitHub 的版本列表（`releases.atom`）：有 GitHub Release 时用 Release 的说明，只有标签时用标签说明。镜像由 GitHub Actions 自动构建。发布流程：
 
 ```bash
-npm version patch     # 或 minor / major：更新 package.json 版本号，并创建提交和 vX.Y.Z 标签
-git push --follow-tags
+npm version patch --no-git-tag-version   # 或 minor / major：只改 package.json 的版本号
+git commit -am "更新点一；更新点二；版本 X.Y.Z"
+npm run release:tag                      # 创建 vX.Y.Z 附注标签，说明根据提交整理
+git push origin main vX.Y.Z
 ```
+
+`release:tag` 把上一个版本标签以来每个提交信息里用「；」分隔的段落各算一个更新点（末尾的「版本 X.Y.Z」除外，正文里以 `-` 开头的行也算），写成标签说明；`npm run release:tag -- --dry-run` 只打印不创建。后台「设置」和概览的新版本提示会列出当前版本之后每个版本的更新点，一键更新完成后还能看到这次跨过的版本各改了什么。
 
 推送标签后，[`.github/workflows/release.yml`](.github/workflows/release.yml) 会：
 
 1. 校验标签和 `package.json` 的版本一致；
 2. 构建镜像并做冒烟测试：容器能启动、`/healthz` 返回正确版本、内置的 codex 能运行；
 3. 推送多架构镜像 `ghcr.io/mengxl888/gptprovider:<版本>`、`:<主版本.次版本>`、`:latest`；
-4. 创建 GitHub Release，更新说明根据提交记录自动生成。
+4. 创建 GitHub Release，更新说明使用标签说明。
 
 用户的后台最多 6 小时后会发现新版本，也可以手动点「检查更新」。标签带 `-`（例如 `v1.2.0-beta.1`）会发布为预发布版本：不打 `latest` 镜像标签，后台也不会提示更新。
 
