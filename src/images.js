@@ -50,6 +50,12 @@ export class ImageLibrary {
     return record;
   }
 
+  removeAll() {
+    const removed = this.store.clearImages();
+    for (const record of removed) this.#unlink(record.file);
+    return removed.length;
+  }
+
   resolveFile(file) {
     if (!FILE_PATTERN.test(file)) return null;
     const full = path.join(this.dir, file);

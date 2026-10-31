@@ -99,6 +99,13 @@ export class Store {
     return record;
   }
 
+  clearImages() {
+    const removed = this.data.images;
+    this.data.images = [];
+    this.save();
+    return removed;
+  }
+
   // ---- api keys：只保存哈希，明文只在创建时返回一次 ----
   // channel：codex = 走 Codex 账号；openai = 原样转发到官方 API Key 上游
   // monthlyTokenLimit：本自然月输入 + 输出 token 上限，null 表示不限

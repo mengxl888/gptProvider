@@ -227,6 +227,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       if (!images.remove(parts[1])) throw httpError(404, '图片不存在');
       return ok();
     }
+    if (method === 'DELETE') return ok({ ok: true, removed: images.removeAll() });
   }
 
   // POST /admin/api/app/check   检查 GitHub 上的最新版本

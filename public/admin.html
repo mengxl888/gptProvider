@@ -663,6 +663,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <section data-view="images" hidden>
       <div class="page-head">
         <div><h1>生图</h1><p>通过 Codex 内置的 image_gen 工具生成（gpt-image-2），消耗当前账号的额度</p></div>
+        <div class="actions"><button class="btn danger" id="images-clear"><svg class="i" data-icon="trash"></svg>清空图库</button></div>
       </div>
       <div class="stack">
         <div class="card gen-card">
@@ -1778,11 +1779,20 @@ function renderGallery(pending = 0, startedAt = 0) {
   $('gallery').innerHTML = tiles.length ? tiles.join('')
     : `<div class="card" style="grid-column:1/-1"><div class="empty"><div class="icon-wrap">${icon('image')}</div><h3>还没有图片</h3><p>在上面输入描述开始生成，或者通过 API / 对话生成的图片也会出现在这里</p></div></div>`;
   $('gallery-more').hidden = S.images.data.length >= S.images.total;
+  $('images-clear').disabled = !S.images.total;
 }
 setInterval(() => document.querySelectorAll('.gen-timer').forEach((el) => {
   el.textContent = `生成中 ${Math.round((Date.now() - Number(el.dataset.start)) / 1000)}s`;
 }), 1000);
 $('load-more').addEventListener('click', () => loadImages(false));
+$('images-clear').addEventListener('click', run(async () => {
+  if (!S.images.total) return;
+  if (S.generating) return toast('正在生成图片，请稍后再清空', 'error');
+  if (!confirm(`删除图库中全部 ${S.images.total} 张图片？图片文件会一起删除，无法恢复。`)) return;
+  const r = await api('DELETE', '/images');
+  toast(`已删除 ${r.removed} 张图片`);
+  await loadImages(); refreshState().catch(() => {});
+}));
 $('gen-submit').addEventListener('click', run(async () => {
   const prompt = $('gen-prompt').value.trim();
   if (!prompt) { $('gen-prompt').focus(); return toast('先输入画面描述', 'error'); }
