@@ -5,7 +5,8 @@
 
 // 这些错误换账号、换上游也不会成功，或者不该换：请求体本身有问题、下游 Key 额度用完、
 // 内容被安全策略拒绝（同样的内容反复提交会连累账号或 API 账户）。
-const NO_RETRY_CODES = new Set([
+// 告警统计失败率时也不算这些（不是账号或上游的问题），见 alerts.js。
+export const NO_RETRY_CODES = new Set([
   'invalid_json', 'request_body_too_large', 'request_aborted', 'insufficient_quota',
   'content_policy_violation', 'image_generation_rejected',
 ]);

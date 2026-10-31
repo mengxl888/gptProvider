@@ -9,7 +9,7 @@ import { WINDOWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
-  const { accounts, upstreams, store, codex, images, requestLog, updater } = ctx;
+  const { accounts, upstreams, store, codex, images, requestLog, updater, alerts } = ctx;
   const parts = url.pathname.replace(/^\/admin\/api\/?/, '').split('/').filter(Boolean);
   const method = req.method;
   const ok = (payload = { ok: true }) => sendJson(res, 200, payload);
@@ -34,7 +34,18 @@ export async function handleAdmin(req, res, url, body, ctx) {
       refreshIntervalMs: BACKGROUND_REFRESH_MS,
       imageModel: IMAGE_MODEL_ID,
       logsEnabled: requestLog.enabled,
+      alerts: alerts.info(),
     });
+  }
+
+  // PUT /admin/api/alerts       {enabled, feishu: {webhook, secret} | null, rules: {errorRate: {...}, ...}, repeatMinutes, notifyRecovery}
+  // POST /admin/api/alerts/test 给飞书机器人发一条测试消息
+  if (parts[0] === 'alerts') {
+    if (method === 'PUT' && !parts[1]) {
+      alerts.update(body);
+      return ok({ alerts: alerts.info() });
+    }
+    if (method === 'POST' && parts[1] === 'test') return ok({ test: await alerts.test(), alerts: alerts.info() });
   }
 
   // GET /admin/api/stats?window=24h  整体和各账号的成功/失败数与 20 段健康度
@@ -92,11 +103,13 @@ export async function handleAdmin(req, res, url, body, ctx) {
       accounts.setActive(id);
       return ok();
     }
-    // PATCH /admin/api/accounts/:id {label?, weight?}  只改传了的字段
+    // PATCH /admin/api/accounts/:id {label?, weight?, enabled?}  只改传了的字段
     if (method === 'PATCH' && !action) {
-      if (!store.getAccount(id)) throw httpError(404, '账号不存在');
+      const before = store.getAccount(id);
+      if (!before) throw httpError(404, '账号不存在');
       const patch = { id };
       if ('label' in body) patch.label = String(body.label || '').trim() || '未命名';
+      if ('enabled' in body) patch.enabled = Boolean(body.enabled);
       if ('weight' in body) {
         const weight = Number(body.weight);
         if (!Number.isInteger(weight) || weight < 0 || weight > MAX_WEIGHT) {
@@ -104,7 +117,10 @@ export async function handleAdmin(req, res, url, body, ctx) {
         }
         patch.weight = weight;
       }
-      return ok({ account: store.upsertAccount(patch) });
+      const account = store.upsertAccount(patch);
+      // 停用期间不刷新状态和额度，重新启用时刷新一次
+      if (before.enabled === false && account.enabled !== false && account.status === 'ready') accounts.refreshStatus(id).catch(() => {});
+      return ok({ account });
     }
     if (method === 'DELETE' && !action) {
       await accounts.remove(id);
@@ -159,7 +175,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy, serviceTierMode}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy, autoDisableOnQuota, serviceTierMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -172,6 +188,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     if ('chatImageGeneration' in body) settings.chatImageGeneration = Boolean(body.chatImageGeneration);
     if ('accountRetry' in body) settings.accountRetry = Boolean(body.accountRetry);
     if ('upstreamFallback' in body) settings.upstreamFallback = Boolean(body.upstreamFallback);
+    if ('autoDisableOnQuota' in body) settings.autoDisableOnQuota = Boolean(body.autoDisableOnQuota);
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');
       settings.accountStrategy = body.accountStrategy;

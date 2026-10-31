@@ -95,6 +95,8 @@ export function initializeRequestLogSchema(db) {
 export class RequestLog {
   constructor(db) {
     this.db = db;
+    // 每次落到账号或上游的尝试结束时调用（包括失败后换了账号的那次），告警按它统计失败率，见 alerts.js
+    this.onAttempt = null;
     if (!db) return;
     initializeRequestLogSchema(db);
     this.insert = db.prepare(
@@ -110,6 +112,15 @@ export class RequestLog {
 
   begin(meta) {
     return new LogEntry(this, meta);
+  }
+
+  attempt(event) {
+    if (!this.onAttempt || !event.id) return;
+    try {
+      this.onAttempt(event);
+    } catch (err) {
+      console.warn('[gateway] 统计请求结果失败:', err.message);
+    }
   }
 
   write(row) {
@@ -309,6 +320,7 @@ class LogEntry {
   // 清掉失败状态和用量，之后按最终结果记。
   fallback(err) {
     const status = err?.status || 500;
+    this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status, code: err?.code ?? null, message: String(err?.message || err) });
     const who = this.row.account_email || this.row.account_id || '未分配账号';
     const line = `${who}：${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 1500);
     this.row.fallback_error = [this.row.fallback_error, line].filter(Boolean).join('\n').slice(0, 4000);
@@ -335,6 +347,10 @@ class LogEntry {
     this.done = true;
     this.row.duration_ms = Date.now() - this.row.ts;
     if (this.row.http_status == null && this.row.status !== 'aborted') this.row.http_status = res?.statusCode || 200;
+    const r = this.row;
+    if (r.status !== 'aborted') {
+      this.log.attempt({ id: r.account_id, label: r.account_email, ok: r.status === 'success', status: r.http_status, code: r.error_code, message: r.error_message });
+    }
     this.log.write(this.row);
   }
 }

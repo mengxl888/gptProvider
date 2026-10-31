@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { AccountPicker, accountWeight, affinityKey, limitExhausted } from '../src/codex/accountPicker.js';
+import { AccountPicker, accountUsable, accountWeight, affinityKey, limitExhausted, topLimitWindow } from '../src/codex/accountPicker.js';
 import { AccountManager } from '../src/codex/accounts.js';
 
 const acct = (id, extra = {}) => ({ id, status: 'ready', planType: 'pro', ...extra });
@@ -140,4 +140,73 @@ test('retry ignores session affinity, skips expired accounts, and keeps the imag
   assert.ok(['a', 'img'].includes(second.id));
   retry.tried.add(second.id);
   assert.equal(m.hasRetryAccount(retry), false, 'free and expired accounts cannot take an image retry');
+});
+
+test('disabled accounts are never picked; with pauseExhausted, used-up accounts are skipped even when nothing else is left', () => {
+  const now = Date.UTC(2026, 9, 30);
+  const full = acct('full', { rateLimits: { primary: { usedPercent: 100, resetsAt: now / 1000 + 3600 } } });
+  const accounts = [acct('off', { enabled: false, weight: 50 }), full, acct('ok')];
+  for (const strategy of ['even', 'weighted']) {
+    const picks = pickMany(new AccountPicker(), accounts, { strategy, now, pauseExhausted: true }, 6);
+    assert.deepEqual(new Set(picks.map((a) => a.id)), new Set(['ok']), strategy);
+  }
+  assert.equal(new AccountPicker().pick([acct('off', { enabled: false }), full], { strategy: 'even', now, pauseExhausted: true }), null);
+  // 不开自动停用时，和以前一样：都用满了仍然分配
+  assert.equal(new AccountPicker().pick([acct('off', { enabled: false }), full], { strategy: 'even', now }).id, 'full');
+  assert.equal(accountUsable(acct('x', { enabled: true })), true);
+  assert.equal(accountUsable(full, { pauseExhausted: true, now }), false);
+  assert.equal(accountUsable(full, { now }), true);
+});
+
+test('the top quota window ignores windows that already reset', () => {
+  const now = Date.UTC(2026, 9, 30);
+  const a = acct('a', { rateLimits: {
+    primary: { usedPercent: 100, resetsAt: now / 1000 - 1 },
+    secondary: { usedPercent: 63, resetsAt: now / 1000 + 3600 },
+  } });
+  assert.equal(topLimitWindow(a, now).usedPercent, 63);
+  assert.equal(topLimitWindow(acct('none'), now), null);
+});
+
+test('"current account" strategy moves to another usable account when the current one is disabled or used up', (t) => {
+  const exhausted = { rateLimits: { primary: { usedPercent: 100, resetsAt: Date.now() / 1000 + 3600 } } };
+  const data = { activeAccountId: 'a', settings: { autoDisableOnQuota: true }, accounts: [acct('a', { enabled: false }), acct('b'), acct('c', { weight: 0 })] };
+  const m = manager(t, data);
+  assert.deepEqual([m.pickAccount(), m.pickAccount()].map((a) => a.id), ['b', 'b']);
+
+  data.accounts = [acct('a', exhausted), acct('b')];
+  assert.equal(m.pickAccount().id, 'b');
+  assert.deepEqual(m.list().map((a) => [a.id, a.usable, a.quotaPaused]), [['a', false, true], ['b', true, false]]);
+  // 关掉自动停用：额度用满的当前账号照常使用，由上游报真实的额度错误
+  data.settings.autoDisableOnQuota = false;
+  assert.equal(m.pickAccount().id, 'a');
+  assert.deepEqual(m.list().map((a) => [a.id, a.usable, a.quotaPaused]), [['a', true, false], ['b', true, false]]);
+
+  // 当前账号登录失效时也改用其他账号
+  data.accounts = [acct('a', { status: 'expired' }), acct('b')];
+  assert.equal(m.pickAccount().id, 'b');
+});
+
+test('when no account is usable the error says why the current account is out', (t) => {
+  const exhausted = { rateLimits: { primary: { usedPercent: 100, resetsAt: Date.now() / 1000 + 3600 } } };
+  for (const strategy of ['active', 'even', 'weighted']) {
+    const data = { activeAccountId: 'a', settings: { accountStrategy: strategy, autoDisableOnQuota: true }, accounts: [acct('a', { enabled: false }), acct('b', { enabled: false })] };
+    const m = manager(t, data);
+    assert.throws(() => m.pickAccount(), { status: 503, code: 'account_disabled' }, strategy);
+    data.accounts = [acct('a', exhausted)];
+    assert.throws(() => m.pickAccount(), { status: 503, code: 'account_quota_exhausted' }, strategy);
+    data.accounts = [acct('a', { status: 'expired' })];
+    assert.throws(() => m.pickAccount(), { status: 503, code: 'account_not_ready' }, strategy);
+  }
+});
+
+test('retry never moves to a disabled or quota-paused account', (t) => {
+  const exhausted = { rateLimits: { primary: { usedPercent: 100, resetsAt: Date.now() / 1000 + 3600 } } };
+  const data = { activeAccountId: 'a', settings: { autoDisableOnQuota: true }, accounts: [acct('a'), acct('off', { enabled: false }), acct('full', exhausted), acct('ok')] };
+  const m = manager(t, data);
+  const retry = { tried: new Set(['a']), current: null, needsImage: false };
+  assert.equal(m.hasRetryAccount(retry), true);
+  assert.equal(m.pickAccount({ retry }).id, 'ok');
+  retry.tried.add('ok');
+  assert.equal(m.hasRetryAccount(retry), false);
 });

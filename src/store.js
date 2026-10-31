@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS = {
   upstreamFallback: false,
   // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
   accountStrategy: 'active',
+  // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复
+  autoDisableOnQuota: true,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
 };

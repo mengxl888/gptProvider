@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { handleAdmin } from './admin/routes.js';
+import { AlertMonitor } from './alerts.js';
 import { AccountManager, httpError } from './codex/accounts.js';
 import { CodexRuntime } from './codex/runtime.js';
 import { CodexResponsesProxy } from './codex/responsesProxy.js';
@@ -36,7 +37,13 @@ const images = new ImageLibrary({ store, dataDir: config.dataDir });
 const requestLog = await openRequestLog(config.dataDir);
 const updater = new AppUpdater({ config });
 const accountResponses = new CodexResponsesProxy({ accounts, store, codex });
-const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, restart };
+const alerts = new AlertMonitor({ store, accounts, appVersion: config.appVersion });
+// 每次尝试的结果交给告警统计失败率；账号遇到 429 时尽快刷新额度，额度用完自动停用才能及时生效
+requestLog.onAttempt = (event) => {
+  alerts.record(event);
+  if (!event.ok && event.status === 429 && store.getAccount(event.id)) accounts.refreshAfterLimit(event.id);
+};
+const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, alerts, restart };
 
 // Codex 账号渠道记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
 // raw 是原始请求体，失败后改用 API 上游时原样（或稍作调整）再发一次。
@@ -262,6 +269,7 @@ server.listen(config.port, config.host, () => {
   if (process.env.LOGIN_CALLBACK_FORWARD === '1') startLoginCallbackForward();
   updater.markHealthy();
   accounts.startBackgroundRefresh();
+  alerts.start();
   codex.startLatestCheck();
   updater.startLatestCheck();
 });

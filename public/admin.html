@@ -333,7 +333,17 @@ details.think div { white-space: pre-wrap; padding: 6px 0 2px 10px; border-left:
 .setting .desc b { display: block; font-weight: 600; margin-bottom: 2px; }
 .setting .desc span { color: var(--text-2); font-size: 13px; }
 .setting .control { flex: none; min-width: 220px; display: flex; justify-content: flex-end; }
+.setting .desc .inline-num { display: inline-block; width: 68px; height: 26px; padding: 0 6px; margin: 0 3px; text-align: center; font-size: 13px; color: var(--text); }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; padding: 18px 20px; margin: 0; font-size: 13px; }
+
+/* ---------- alerts ---------- */
+.alert-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.alert-item:last-child { border-bottom: none; }
+.alert-item .badge { flex: none; margin-top: 1px; }
+.alert-item .what { flex: 1; min-width: 0; }
+.alert-item .what b { font-weight: 600; }
+.alert-item .detail { color: var(--text-2); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+.alert-item .when { flex: none; color: var(--muted); font-size: 12px; text-align: right; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; }
 
 /* ---------- dialogs & toast ---------- */
@@ -431,6 +441,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <a href="#accounts" data-page="accounts"><svg class="i" data-icon="users"></svg>账号<span class="count" id="count-accounts"></span></a>
       <a href="#upstreams" data-page="upstreams"><svg class="i" data-icon="server"></svg>API 上游<span class="count" id="count-upstreams"></span></a>
       <a href="#logs" data-page="logs"><svg class="i" data-icon="activity"></svg>日志</a>
+      <a href="#alerts" data-page="alerts"><svg class="i" data-icon="bell"></svg>告警<span class="count" id="count-alerts"></span></a>
       <a href="#models" data-page="models"><svg class="i" data-icon="cpu"></svg>模型<span class="count" id="count-models"></span></a>
       <a href="#images" data-page="images"><svg class="i" data-icon="image"></svg>生图<span class="count" id="count-images"></span></a>
       <a href="#playground" data-page="playground"><svg class="i" data-icon="message"></svg>调试台</a>
@@ -498,6 +509,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="control"><div class="segmented" id="set-strategy">
             <button data-v="active">当前账号</button><button data-v="even">平均轮询</button><button data-v="weighted">按权重</button></div></div>
         </div>
+        <div class="setting">
+          <div class="desc"><b>额度用完自动停用</b><span>账号的 Codex 额度用满时自动停用、不再分配请求（「当前账号」策略下改用其他可用账号），额度重置后自动恢复。关闭时额度用满的账号只在轮询中暂时跳过，没有别的账号时仍会用它。账号卡片底部的暂停按钮可以手动停用 / 启用。</span></div>
+          <div class="control"><label class="switch"><input type="checkbox" id="set-auto-disable"><span></span></label></div>
+        </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
     </section>
@@ -544,6 +559,62 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <tbody id="log-rows"></tbody>
           </table></div>
           <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 告警 ---------- -->
+    <section data-view="alerts" hidden>
+      <div class="page-head">
+        <div><h1>告警</h1><p>每分钟检查一次账号和 API 上游，发现异常时发到飞书群机器人；异常持续时定时提醒，恢复后通知</p></div>
+        <div class="actions"><button class="btn" id="alert-test"><svg class="i" data-icon="send"></svg>发送测试消息</button></div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h2>通知渠道</h2><span class="sub">飞书群「设置 → 群机器人 → 添加机器人 → 自定义机器人」</span></div>
+          <div class="setting">
+            <div class="desc"><b>启用告警</b><span id="alert-state"></span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="alert-enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>飞书机器人</b><span id="alert-channel"></span></div>
+            <div class="control"><button class="btn sm" id="alert-edit-channel"></button></div>
+          </div>
+        </div>
+        <div class="card" id="alert-rules">
+          <div class="card-head"><h2>告警规则</h2><span class="sub">修改后自动保存</span></div>
+          <div class="setting">
+            <div class="desc"><b>失败率过高</b><span>某个账号或 API 上游近<input class="input inline-num" type="number" min="1" max="1440" data-rule="errorRate" data-field="minutes">分钟的失败率 ≥<input class="input inline-num" type="number" min="1" max="100" data-rule="errorRate" data-field="percent">%，且至少有<input class="input inline-num" type="number" min="1" data-rule="errorRate" data-field="minRequests">次请求时告警。按每次尝试统计：失败后换了账号的那次也算在原账号上；请求体错误、内容被安全策略拒绝不算。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="errorRate" data-field="enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>账号登录失效</b><span>账号的登录凭据失效、需要重新登录时告警。手动停用的账号不告警。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="accountDown" data-field="enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>额度快用完</b><span>账号的 Codex 额度用到<input class="input inline-num" type="number" min="1" max="100" data-rule="quota" data-field="percent">%时提醒，用完时再提醒一次（开启「额度用完自动停用」时会说明已自动停用）。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="quota" data-field="enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>没有可用的 Codex 账号</b><span>所有账号都停用、额度用完自动停用或登录失效时告警，Codex 账号渠道的请求这时会失败（开了「失败时改用 API 上游」则交给上游）。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="noAccount" data-field="enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>重复提醒</b><span>异常一直没恢复时，每隔<input class="input inline-num" type="number" min="0" max="1440" data-setting="repeatMinutes">分钟再提醒一次；填 0 只在开始时提醒。</span></div>
+            <div class="control"></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>恢复通知</b><span>异常恢复后发一条恢复消息。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-setting="notifyRecovery"><span></span></label></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>正在告警</h2><span class="sub" id="alert-firing-sub"></span></div>
+          <div id="alert-firing"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>最近通知</h2><span class="sub">保留最近 50 条</span></div>
+          <div id="alert-history"></div>
         </div>
       </div>
     </section>
@@ -730,6 +801,23 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   </div>
 </dialog>
 
+<!-- ================= 告警：飞书机器人 ================= -->
+<dialog id="alert-dialog">
+  <div class="dlg-head"><h3>飞书机器人</h3><button class="btn ghost sm icon" data-close-alert><svg class="i" data-icon="x"></svg></button></div>
+  <div class="dlg-body stack" style="gap:14px" id="alert-form">
+    <div class="field"><label>Webhook 地址</label><input id="al-webhook" class="input mono" autocomplete="off" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…">
+      <div class="small muted" style="margin-top:5px">添加自定义机器人后复制它的 Webhook 地址。地址泄露后任何人都能往群里发消息，不要公开</div></div>
+    <div class="field"><label>签名校验密钥（可选）</label><input id="al-secret" class="input mono" type="password" autocomplete="off">
+      <div class="small muted" style="margin-top:5px">机器人的安全设置里勾选了「签名校验」时填写。勾选了「自定义关键词」的话，把关键词设为「告警」</div></div>
+    <label class="small text-2" id="al-clear-secret-row" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="al-clear-secret">清除已保存的密钥（机器人关闭了签名校验）</label>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn danger" id="al-remove" style="margin-right:auto">删除机器人</button>
+    <button class="btn" data-close-alert>取消</button>
+    <button class="btn primary" id="al-save">保存并测试</button>
+  </div>
+</dialog>
+
 <!-- ================= 新建 / 编辑 API Key ================= -->
 <dialog id="key-dialog">
   <div class="dlg-head"><h3 id="key-title">新建 API Key</h3><button class="btn ghost sm icon" data-close-key><svg class="i" data-icon="x"></svg></button></div>
@@ -814,6 +902,7 @@ const ICONS = {
   server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
   pause: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
   play: '<path d="m6 3 14 9-14 9z"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${ICONS[name] || ''}</svg>`;
 function hydrateIcons(root = document) {
@@ -900,6 +989,11 @@ function avatar(seed, text, cls = '') {
 }
 const STATUS = { ready: ['success', '可用'], pending: ['warn', '登录中'], failed: ['danger', '失败'], expired: ['danger', '已失效'] };
 const statusBadge = (s) => { const [c, t] = STATUS[s] || ['', s]; return `<span class="badge ${c}"><span class="dot"></span>${t}</span>`; };
+// 账号状态加上停用：手动停用、额度用完自动停用（服务端算好的 quotaPaused）
+const accountBadge = (a) => (a.enabled === false
+  ? `<span class="badge" title="手动停用，不分配请求"><span class="dot"></span>已停用</span>${a.status === 'ready' ? '' : statusBadge(a.status)}`
+  : a.quotaPaused ? '<span class="badge warn" title="Codex 额度用满，额度重置后自动恢复"><span class="dot"></span>额度用完 · 已停用</span>'
+  : statusBadge(a.status));
 const PLAN = { free: 'Free', plus: 'Plus', pro: 'Pro', prolite: 'Pro Lite', team: 'Team', business: 'Business', enterprise: 'Enterprise', edu: 'Edu' };
 const planName = (p) => PLAN[p] || p || '';
 const LIMIT_NAME = { codex: 'Codex', image_gen: '生图', imagegen_premium: '高级生图' };
@@ -938,6 +1032,7 @@ async function refreshState() {
   if (S.page === 'upstreams') renderUpstreams();
   if (S.page === 'keys') renderKeys();
   if (S.page === 'settings') renderSettings();
+  if (S.page === 'alerts') renderAlerts();
   if (S.state.activeAccountId && (!S.models || S.models.updatedAt !== S.state.stats.modelsUpdatedAt || S.models.accountId !== S.state.activeAccountId)) {
     loadModels().catch(() => {});
   } else if (S.page === 'models') renderModels();
@@ -950,13 +1045,13 @@ async function refreshState() {
 
 // 自动刷新：页面可见时每 20 秒拉一次状态（账号额度、模型目录更新时间都在里面）
 setInterval(() => {
-  if (document.visibilityState !== 'visible' || $('app').hidden || $('login-dialog').open) return;
+  if (document.visibilityState !== 'visible' || $('app').hidden || $('login-dialog').open || $('alert-dialog').open) return;
   refreshState().catch(() => {});
 }, 20000);
 setInterval(() => { if (S.page === 'models' && S.models) $('models-updated').textContent = modelsNote(); }, 30000);
 
 // ============ 路由 ============
-const TITLES = { overview: '概览', accounts: '账号', upstreams: 'API 上游', logs: '日志', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
+const TITLES = { overview: '概览', accounts: '账号', upstreams: 'API 上游', logs: '日志', alerts: '告警', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
 const STATS_PAGES = ['overview', 'accounts', 'upstreams', 'logs'];
 function route() {
   const page = (location.hash || '#overview').slice(1);
@@ -964,7 +1059,7 @@ function route() {
   document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== S.page; });
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === S.page));
   document.title = `${TITLES[S.page]} · Codex Gateway`;
-  ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, models: renderModels, images: loadImages,
+  ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, alerts: renderAlerts, models: renderModels, images: loadImages,
      playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
   if (STATS_PAGES.includes(S.page)) loadStats().catch(() => {});
 }
@@ -982,6 +1077,8 @@ function renderShell() {
   $('count-models').textContent = st.stats.models || '';
   $('count-images').textContent = st.stats.images || '';
   $('count-keys').textContent = st.apiKeys.length || '';
+  $('count-alerts').textContent = st.alerts.enabled && st.alerts.feishu.configured ? st.alerts.firing.length || '' : '';
+  $('count-alerts').style.color = st.alerts.firing.length ? 'var(--danger)' : '';
   $('mini-account').innerHTML = a
     ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · ${(S.state.settings.accountStrategy || 'active') === 'active' ? '当前使用' : '默认 · 多账号轮询中'}</div></div>`
     : `<div class="avatar sm" style="background:var(--surface-3);color:var(--muted)">${icon('users')}</div><div class="who"><div class="email">未选择账号</div><div class="meta"><a href="#accounts">去添加</a></div></div>`;
@@ -1213,7 +1310,7 @@ function renderOverview() {
     <div class="card stat">
       <div class="stat-label"><span class="stat-icon">${icon('users')}</span>当前账号</div>
       <div class="stat-value text">${esc(a ? a.email || a.label : '未选择')}</div>
-      <div class="stat-foot">${a ? `${statusBadge(a.status)}${a.planType ? `<span class="badge accent">${esc(planName(a.planType))}</span>` : ''}` : '<a href="#accounts">添加账号</a>'}</div>
+      <div class="stat-foot">${a ? `${accountBadge(a)}${a.planType ? `<span class="badge accent">${esc(planName(a.planType))}</span>` : ''}` : '<a href="#accounts">添加账号</a>'}</div>
     </div>
     <div class="card stat">
       <div class="stat-label"><span class="stat-icon">${icon('zap')}</span>Codex 额度${rl ? ` · ${windowName(rl.windowDurationMins)}` : ''}</div>
@@ -1281,12 +1378,12 @@ const STRATEGY_DESC = {
   even: '可用的账号轮流分摊请求；权重为 0 的账号不参与。同一个会话（Codex CLI 等带会话标识的客户端）固定用同一个账号，保住提示词缓存。',
   weighted: '按权重分配：权重越高分到的请求越多，比例等于权重之比，点账号上的「权重」修改；权重为 0 不参与。同一个会话固定用同一个账号。',
 };
-// 与服务端 accountPicker.js 一致：没写权重按 1；轮询只在已登录、权重大于 0 的账号之间分配
+// 与服务端 accountPicker.js 一致：没写权重按 1；轮询只在能接请求（已登录、没停用）、权重大于 0 的账号之间分配
 const accountWeight = (a) => (Number.isInteger(a.weight) ? a.weight : 1);
 function accountShares(st) {
   const strategy = st.settings.accountStrategy || 'active';
   if (strategy === 'active') return null;
-  const pool = st.accounts.filter((a) => a.status === 'ready' && accountWeight(a) > 0);
+  const pool = st.accounts.filter((a) => a.usable && accountWeight(a) > 0);
   const total = pool.reduce((sum, a) => sum + (strategy === 'weighted' ? accountWeight(a) : 1), 0);
   return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
 }
@@ -1296,7 +1393,10 @@ function renderAccounts() {
   const strategy = st.settings.accountStrategy || 'active';
   const rotating = strategy !== 'active';
   document.querySelectorAll('#set-strategy button').forEach((b) => b.classList.toggle('on', b.dataset.v === strategy));
-  $('strategy-desc').textContent = `${STRATEGY_DESC[strategy]}${rotating ? '已登录但额度用满的账号会暂时跳过；没有可轮询的账号时用「默认」账号。' : ''}`;
+  $('strategy-desc').textContent = `${STRATEGY_DESC[strategy]}${rotating
+    ? `停用的账号不参与；${st.settings.autoDisableOnQuota ? '' : '额度用满的账号在还有其他账号可用时暂时跳过；'}没有可轮询的账号时用「默认」账号。`
+    : '当前账号停用、额度用完自动停用或登录失效时，请求改用其他可用账号。'}`;
+  $('set-auto-disable').checked = Boolean(st.settings.autoDisableOnQuota);
   const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
     const active = a.id === st.activeAccountId;
@@ -1308,12 +1408,13 @@ function renderAccounts() {
       ? `<button class="chip ${share ? 'on' : ''}" style="flex:none;cursor:pointer" data-acc="weight" data-id="${a.id}" title="点击修改调用权重">${
         weight === 0 ? '不参与轮询' : `${strategy === 'weighted' ? `权重 ${weight}` : '参与轮询'}${share ? ` · ${Math.round(share * 100)}%` : ''}`}</button>`
       : '';
-    return `<div class="card account-card ${active ? 'active' : ''}">
+    const disabled = a.enabled === false;
+    return `<div class="card account-card ${active ? 'active' : ''} ${disabled ? 'disabled' : ''}">
       <div class="account-top">
         <span class="badge provider">Codex</span>
         <div class="title" title="${esc(a.email || a.label)}">${esc(a.email || '尚未登录')}</div>
         ${active ? `<span class="badge accent" title="${rotating ? '模型列表用这个账号；没有可轮询的账号时也用它' : ''}">${rotating ? '默认' : '当前使用'}</span>` : ''}
-        ${statusBadge(a.status)}
+        ${accountBadge(a)}
       </div>
       <div class="ident" style="display:flex;gap:8px;align-items:center">
         <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(ident)}">${esc(ident)}</span>
@@ -1334,6 +1435,7 @@ function renderAccounts() {
           : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
         ${!active && a.status === 'ready' ? `<button class="btn sm ${rotating ? '' : 'primary'}" data-acc="activate" data-id="${a.id}">${icon('zap')}${rotating ? '设为默认' : '设为当前'}</button>` : ''}
         <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}">${icon('refresh')}</button>
+        <button class="btn sm ghost icon" title="${disabled ? '启用' : '停用'}" data-acc="toggle" data-id="${a.id}">${icon(disabled ? 'play' : 'pause')}</button>
         <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}">${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
         <button class="btn sm ghost icon danger" title="删除" data-acc="delete" data-id="${a.id}">${icon('trash')}</button>
@@ -1358,6 +1460,13 @@ $('account-grid').addEventListener('click', run(async (e) => {
     await api('PATCH', `/accounts/${id}`, { weight: Number(input.trim()) });
     toast('权重已保存');
   }
+  if (act === 'toggle') {
+    const enable = a.enabled === false;
+    const isActive = id === S.state.activeAccountId;
+    if (!enable && !confirm(`停用账号「${a.email || a.label}」？\n停用后不再给它分配请求${isActive ? '；它是当前 / 默认账号，请求会改用其他可用账号' : ''}，随时可以重新启用。`)) return;
+    await api('PATCH', `/accounts/${id}`, { enabled: enable });
+    toast(enable ? '账号已启用' : '账号已停用');
+  }
   if (act === 'refresh') {
     btn.disabled = true; btn.innerHTML = icon('refresh', 'spin');
     try { await api('POST', `/accounts/${id}/refresh`); toast('额度已刷新'); } finally { btn.disabled = false; }
@@ -1379,6 +1488,11 @@ $('set-strategy').addEventListener('click', run(async (e) => {
   if (!b || b.classList.contains('on')) return;
   await api('PUT', '/settings', { accountStrategy: b.dataset.v });
   toast('调用策略已保存');
+  await refreshState();
+}));
+$('set-auto-disable').addEventListener('change', run(async (e) => {
+  await api('PUT', '/settings', { autoDisableOnQuota: e.target.checked });
+  toast(e.target.checked ? '已开启：额度用完自动停用' : '已关闭：额度用完自动停用');
   await refreshState();
 }));
 
@@ -1977,8 +2091,114 @@ $('logs-clear').addEventListener('click', run(async () => {
   toast('日志已清空');
 }));
 
+// ============ 告警 ============
+const ALERT_KIND = { firing: ['danger', '异常'], repeat: ['danger', '持续'], resolved: ['success', '已恢复'], test: ['accent', '测试'] };
+const durationText = (m) => (m < 60 ? `${Math.max(1, m)} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分钟` : ''}`);
+
+function renderAlerts() {
+  const al = S.state.alerts;
+  const configured = al.feishu.configured;
+  $('alert-enabled').checked = al.enabled;
+  $('alert-state').innerHTML = !configured ? '<b style="color:var(--warn);display:inline">还没有配置飞书机器人，配置后才会发送告警</b>'
+    : !al.enabled ? '已关闭，不检查也不发送'
+    : `已开启 · ${al.firing.length ? `<span style="color:var(--danger)">${al.firing.length} 项异常</span>` : '目前一切正常'}`;
+  $('alert-channel').innerHTML = configured
+    ? `<span class="mono">${esc(al.feishu.webhook)}</span> · ${al.feishu.hasSecret ? '已开启签名校验' : '未开启签名校验'}${
+      al.lastError ? `<div style="color:var(--danger);margin-top:4px">上次发送失败（${esc(rel(al.lastError.at))}）：${esc(al.lastError.message)}</div>` : ''}`
+    : '填入群自定义机器人的 Webhook 地址；机器人开了签名校验的话还要填密钥';
+  $('alert-edit-channel').innerHTML = configured ? `${icon('pencil')}修改` : `${icon('plus')}配置机器人`;
+  $('alert-test').disabled = !configured;
+
+  // 正在输入的框不覆盖
+  document.querySelectorAll('#alert-rules [data-rule], #alert-rules [data-setting]').forEach((el) => {
+    if (el === document.activeElement) return;
+    const value = el.dataset.rule ? al.rules[el.dataset.rule][el.dataset.field] : al[el.dataset.setting];
+    if (el.type === 'checkbox') el.checked = Boolean(value); else el.value = value;
+  });
+
+  $('alert-firing-sub').textContent = al.enabled && configured ? '' : '告警没有开启或还没配置机器人时不检查';
+  $('alert-firing').innerHTML = al.firing.length ? al.firing.map((f) => `<div class="alert-item">
+      <span class="badge danger"><span class="dot"></span>异常</span>
+      <div class="what"><b>${esc(f.title)}</b>${f.subject ? ` · ${esc(f.subject)}` : ''}<div class="detail">${esc(f.detail)}</div></div>
+      <div class="when">${esc(rel(new Date(f.since).toISOString()))}开始<br>${f.notifiedAt ? '已通知' : '<span style="color:var(--danger)">未发出</span>'}</div>
+    </div>`).join('')
+    : `<div class="empty" style="padding:28px 20px"><p style="margin:0">目前没有异常</p></div>`;
+
+  $('alert-history').innerHTML = al.history.length ? al.history.map((h) => {
+    const [cls, text] = ALERT_KIND[h.kind] || ['', h.kind];
+    const tag = h.kind === 'repeat' || h.kind === 'resolved' ? `${text}${h.minutes ? ` · ${durationText(h.minutes)}` : ''}` : text;
+    return `<div class="alert-item">
+      <span class="badge ${cls}"><span class="dot"></span>${esc(tag)}</span>
+      <div class="what"><b>${esc(h.title)}</b>${h.subject ? ` · ${esc(h.subject)}` : ''}${h.kind === 'resolved' ? '' : `<div class="detail">${esc(h.detail)}</div>`}
+        ${h.delivered ? '' : `<div class="detail" style="color:var(--danger)">发送失败：${esc(h.error)}</div>`}</div>
+      <div class="when" title="${esc(fmtTime(h.at))}">${esc(fmtShortTime(h.at))}</div>
+    </div>`;
+  }).join('') : `<div class="empty" style="padding:28px 20px"><p style="margin:0">还没有发过通知</p></div>`;
+}
+
+const saveAlerts = run(async (patch, message = '告警设置已保存') => {
+  const r = await api('PUT', '/alerts', patch);
+  S.state.alerts = r.alerts;
+  toast(message);
+  renderShell(); renderAlerts();
+});
+$('alert-enabled').addEventListener('change', (e) => saveAlerts({ enabled: e.target.checked }, e.target.checked ? '告警已开启' : '告警已关闭'));
+$('alert-rules').addEventListener('change', (e) => {
+  const el = e.target;
+  const value = el.type === 'checkbox' ? el.checked : Number(el.value);
+  if (el.dataset.rule) saveAlerts({ rules: { [el.dataset.rule]: { [el.dataset.field]: value } } });
+  else if (el.dataset.setting) saveAlerts({ [el.dataset.setting]: value });
+});
+
+const testAlert = async () => {
+  const r = await api('POST', '/alerts/test');
+  S.state.alerts = r.alerts;
+  r.test.ok ? toast('测试消息已发送，请到飞书群里查看') : toast(`发送失败：${r.test.error}`, 'error');
+  renderShell(); if (S.page === 'alerts') renderAlerts();
+};
+$('alert-test').addEventListener('click', run(async () => {
+  const btn = $('alert-test');
+  btn.disabled = true;
+  try { await testAlert(); } finally { btn.disabled = false; }
+}));
+
+function openAlertChannel() {
+  const f = S.state.alerts.feishu;
+  $('al-webhook').value = '';
+  $('al-webhook').placeholder = f.configured ? `${f.webhook}（留空表示不修改）` : 'https://open.feishu.cn/open-apis/bot/v2/hook/…';
+  $('al-secret').value = '';
+  $('al-secret').placeholder = f.hasSecret ? '已保存（留空表示不修改）' : '没有开签名校验可以不填';
+  $('al-clear-secret').checked = false;
+  $('al-clear-secret-row').hidden = !f.hasSecret;
+  $('al-remove').hidden = !f.configured;
+  $('alert-dialog').showModal();
+  $('al-webhook').focus();
+}
+$('alert-edit-channel').addEventListener('click', openAlertChannel);
+document.querySelectorAll('[data-close-alert]').forEach((b) => b.addEventListener('click', () => $('alert-dialog').close()));
+$('alert-form').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) $('al-save').click(); });
+$('al-save').addEventListener('click', run(async () => {
+  const webhook = $('al-webhook').value.trim(), secret = $('al-secret').value.trim();
+  if (!webhook && !S.state.alerts.feishu.configured) { $('al-webhook').focus(); return toast('请填写 Webhook 地址', 'error'); }
+  const btn = $('al-save');
+  btn.disabled = true; btn.innerHTML = `${icon('loader', 'spin')}发送测试中…`;
+  try {
+    const r = await api('PUT', '/alerts', { feishu: { webhook, secret: $('al-clear-secret').checked ? null : secret } });
+    S.state.alerts = r.alerts;
+    $('alert-dialog').close();
+    await testAlert();
+  } finally {
+    btn.disabled = false; btn.textContent = '保存并测试';
+  }
+}));
+$('al-remove').addEventListener('click', run(async () => {
+  if (!confirm('删除飞书机器人配置？删除后不再发送告警。')) return;
+  $('alert-dialog').close();
+  await saveAlerts({ feishu: null }, '已删除飞书机器人');
+}));
+
 // ============ API Key ============
-const CHANNEL = { openai: ['accent', 'OpenAI API'], codex: ['', 'Codex 账号'] };
+const CHANNEL ={ openai: ['accent', 'OpenAI API'], codex: ['', 'Codex 账号'] };
 const fmtTokens = (n) => (n >= 1e8 ? `${(n / 1e8).toFixed(2)} 亿` : n >= 1e4 ? `${(n / 1e4).toFixed(n >= 1e6 ? 0 : 1)} 万` : fmtNum(n));
 
 function usageCell(k) {

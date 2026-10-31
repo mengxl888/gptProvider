@@ -3,12 +3,13 @@
 // 原生 Responses 转发通过 getAuthStatus 临时取得 access token，不读取 auth.json、不另存 token。
 // 每个请求用哪个账号由调用策略决定（accountPicker.js）：默认只用"当前账号"，也可以多账号轮询。
 // "当前账号"同时用于模型列表，并在没有可轮询的账号时兜底。
+// 账号可以手动停用（enabled: false）；开启「额度用完自动停用」时，Codex 额度用满的账号也不接请求，重置后自动恢复。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AccountPicker, accountWeight } from './accountPicker.js';
+import { AccountPicker, accountUsable, accountWeight, limitExhausted } from './accountPicker.js';
 import { AppServerClient } from './appServer.js';
 import { configServiceTier } from './serviceTier.js';
 
@@ -47,6 +48,8 @@ const CHAT_ONLY_DISABLED_FEATURES = [
 // app-server 自己每 4.5 分钟在线刷新一次模型目录（models_refresh_worker.rs），
 // 网关按 5 分钟读取一次，同时刷新当前账号的额度。
 export const BACKGROUND_REFRESH_MS = 5 * 60_000;
+// 请求遇到 429（额度用完或限流）后刷新这个账号额度的最短间隔
+const LIMIT_REFRESH_MS = 60_000;
 
 export class AccountManager {
   constructor({ store, dataDir, cmd, featureNames }) {
@@ -60,6 +63,7 @@ export class AccountManager {
     this.modelRefreshes = new Map();
     this.loggedWarnings = new Set();
     this.responsesAuthRefreshes = new Map();
+    this.limitRefreshedAt = new Map();
     this.picker = new AccountPicker();
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });
@@ -92,10 +96,13 @@ export class AccountManager {
       if (this.suspended) return;
       const id = this.store.data.activeAccountId;
       const ready = (a) => a?.status === 'ready';
-      // 轮询时参与轮询的账号也要刷新状态和额度，才能跳过失效或额度用满的账号。
-      const rotating = this.store.data.settings.accountStrategy && this.store.data.settings.accountStrategy !== 'active'
-        ? this.store.data.accounts.filter((a) => a.id !== id && ready(a) && accountWeight(a) > 0) : [];
-      for (const a of rotating) await this.refreshStatus(a.id).catch(() => {});
+      // 会分到请求的账号也要刷新状态和额度，才能跳过失效或额度用满的账号、额度重置后及时恢复：
+      // 轮询时是参与轮询的账号；「当前账号」策略下当前账号不能用时，请求改走其他账号，也要刷新它们。
+      const strategy = this.store.data.settings.accountStrategy;
+      const active = this.store.getAccount(id);
+      const others = (strategy && strategy !== 'active') || !active || !this.usable(active)
+        ? this.store.data.accounts.filter((a) => a.id !== id && ready(a) && a.enabled !== false && accountWeight(a) > 0) : [];
+      for (const a of others) await this.refreshStatus(a.id).catch(() => {});
       if (!id || !ready(this.store.getAccount(id))) return;
       await this.refreshStatus(id).catch(() => {});
       await this.refreshModels(id).catch(() => {});
@@ -112,6 +119,8 @@ export class AccountManager {
   list() {
     return this.store.data.accounts.map((a) => ({
       ...a,
+      usable: this.usable(a),
+      quotaPaused: a.status === 'ready' && a.enabled !== false && this.#pauseExhausted() && limitExhausted(a),
       login: this.logins.get(a.id) || null,
       loginResult: this.loginResults.get(a.id) || null,
       running: this.clients.has(a.id),
@@ -367,8 +376,25 @@ export class AccountManager {
     return account;
   }
 
+  #pauseExhausted() {
+    return Boolean(this.store.data.settings.autoDisableOnQuota);
+  }
+
+  // 账号现在能不能接请求：已登录、没有手动停用、没有因为额度用完被自动停用。
+  usable(account) {
+    return accountUsable(account, { pauseExhausted: this.#pauseExhausted() });
+  }
+
+  // 请求遇到 429 后尽快刷新这个账号的额度：额度真的用完时「额度用完自动停用」立即生效，不用等后台定时刷新。
+  refreshAfterLimit(id) {
+    const last = this.limitRefreshedAt.get(id) || 0;
+    if (this.suspended || Date.now() - last < LIMIT_REFRESH_MS || this.store.getAccount(id)?.status !== 'ready') return;
+    this.limitRefreshedAt.set(id, Date.now());
+    this.refreshStatus(id).catch(() => {});
+  }
+
   // 按调用策略给这次请求选账号。needsImage 只在能生图的账号里选；affinityKey 让同一会话固定在同一个账号。
-  // 没有可参与轮询的账号时退回当前账号（它也不可用就照常报错）。
+  // 没有可参与轮询的账号时退回当前账号；「当前账号」策略下当前账号不能用（停用、额度用完自动停用、登录失效）时改用其他可用账号。
   // retry 是这个请求的换账号记录 {tried, current, needsImage}：已经失败过的账号不会再选，见 server.js。
   pickAccount({ needsImage = false, affinityKey = null, retry = null } = {}) {
     const account = retry?.tried.size ? this.#pickRetry(retry, needsImage) : this.#pick(needsImage, affinityKey);
@@ -378,28 +404,43 @@ export class AccountManager {
 
   #pick(needsImage, affinityKey) {
     const strategy = this.store.data.settings.accountStrategy;
-    if (!strategy || strategy === 'active') return this.activeAccount();
-    const account = this.picker.pick(this.store.data.accounts, {
-      strategy,
+    const options = {
       affinityKey,
+      pauseExhausted: this.#pauseExhausted(),
       filter: needsImage ? (a) => this.supportsImageGeneration(a) : undefined,
-    });
-    return account || this.activeAccount();
+    };
+    const active = this.store.getAccount(this.store.data.activeAccountId);
+    if (!strategy || strategy === 'active') {
+      if (active && this.usable(active)) return active;
+      return this.picker.pick(this.store.data.accounts, { ...options, strategy: 'weighted' }) || this.#noAccount();
+    }
+    return this.picker.pick(this.store.data.accounts, { ...options, strategy })
+      || (active && this.usable(active) ? active : this.#noAccount());
+  }
+
+  // 没有账号可用：报出当前账号为什么不能用。
+  #noAccount() {
+    const active = this.activeAccount();
+    if (active.enabled === false) {
+      throw httpError(503, '当前账号已停用，也没有其他可用的账号，请在管理后台启用账号', 'account_disabled');
+    }
+    throw httpError(503, '当前账号的 Codex 额度已用完（已自动停用），也没有其他可用的账号', 'account_quota_exhausted');
   }
 
   // 换账号重试：在没试过的账号里按权重选（平均轮询时轮流选），不再回到已经失败的账号。
   #pickRetry(retry, needsImage) {
     const account = this.picker.pick(this.store.data.accounts.filter((a) => !retry.tried.has(a.id)), {
       strategy: this.store.data.settings.accountStrategy === 'even' ? 'even' : 'weighted',
+      pauseExhausted: this.#pauseExhausted(),
       filter: needsImage ? (a) => this.supportsImageGeneration(a) : undefined,
     });
     if (!account) throw httpError(503, '没有其他可用的账号可以重试', 'no_retry_account');
     return account;
   }
 
-  // 还有没试过、可以换过去的账号吗：已登录、权重大于 0，需要生图时还要能生图。
+  // 还有没试过、可以换过去的账号吗：能接请求、权重大于 0，需要生图时还要能生图。
   hasRetryAccount(retry) {
-    return this.store.data.accounts.some((a) => !retry.tried.has(a.id) && a.status === 'ready' && accountWeight(a) > 0
+    return this.store.data.accounts.some((a) => !retry.tried.has(a.id) && this.usable(a) && accountWeight(a) > 0
       && (!retry.needsImage || this.supportsImageGeneration(a)));
   }
 
