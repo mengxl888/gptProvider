@@ -1,6 +1,6 @@
 {
   "name": "gptprovider",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "type": "module",
   "description": "OpenAI 兼容网关：管理后台 + /v1 接口。Codex 账号渠道驱动官方 codex app-server，OpenAI API 渠道原样转发到官方 API Key",

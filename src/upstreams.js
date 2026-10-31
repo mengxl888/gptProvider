@@ -166,12 +166,16 @@ export class UpstreamManager {
       } catch (err) {
         if (err.aborted) throw err;
         this.#fail(upstream, 0, `连接失败：${err.message}`);
-        if (!isLast) continue;
+        if (!isLast) {
+          req.log?.failedAttempt?.(httpError(502, `连接上游失败：${err.message}`, 'upstream_unreachable'));
+          continue;
+        }
         throw httpError(502, `连接上游失败：${err.message}`, 'upstream_unreachable');
       }
       if (isFailover(upstreamRes.statusCode) && !isLast) {
         const text = (await readAll(upstreamRes)).toString('utf8');
         this.#fail(upstream, upstreamRes.statusCode, errorMessage(text, upstreamRes.statusCode), upstreamRes.headers);
+        req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, upstream.lastError, 'upstream_error'));
         continue;
       }
       return this.#relay(upstream, upstreamRes, res, req.log, stripUsageChunk);

@@ -577,14 +577,23 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="alert-enabled"><span></span></label></div>
           </div>
           <div class="setting">
+            <div class="desc"><b>服务标识</b><span>写在每条告警的标题和末尾，例如「【FDG16】Codex 账号告警」，有多台网关发到同一个群时用来区分。</span></div>
+            <div class="control"><input id="alert-instance" class="input" maxlength="32" placeholder="例如 FDG16" style="width:200px"></div>
+          </div>
+          <div class="setting">
             <div class="desc"><b>飞书机器人</b><span id="alert-channel"></span></div>
             <div class="control"><button class="btn sm" id="alert-edit-channel"></button></div>
           </div>
-        </div>
-        <div class="card" id="alert-rules">
-          <div class="card-head"><h2>告警规则</h2><span class="sub">修改后自动保存</span></div>
           <div class="setting">
-            <div class="desc"><b>失败率过高</b><span>某个账号或 API 上游近<input class="input inline-num" type="number" min="1" max="1440" data-rule="errorRate" data-field="minutes">分钟的失败率 ≥<input class="input inline-num" type="number" min="1" max="100" data-rule="errorRate" data-field="percent">%，且至少有<input class="input inline-num" type="number" min="1" data-rule="errorRate" data-field="minRequests">次请求时告警。按每次尝试统计：失败后换了账号的那次也算在原账号上；请求体错误、内容被安全策略拒绝不算。</span></div>
+            <div class="desc"><b>时间和时区</b><span id="alert-time"></span></div>
+            <div class="control"><select id="alert-timezone" class="select" style="width:260px"></select></div>
+          </div>
+        </div>
+        <div class="stack" id="alert-rules">
+        <div class="card">
+          <div class="card-head"><h2>Codex 账号告警</h2><span class="sub">单独发一条「Codex 账号告警」消息，写明是哪个账号 · 修改后自动保存</span></div>
+          <div class="setting">
+            <div class="desc"><b>账号失败率过高</b><span>某个账号近<input class="input inline-num" type="number" min="1" max="1440" data-rule="errorRate" data-field="minutes">分钟的失败率 ≥<input class="input inline-num" type="number" min="1" max="100" data-rule="errorRate" data-field="percent">%，且至少有<input class="input inline-num" type="number" min="1" data-rule="errorRate" data-field="minRequests">次请求时告警。按每次尝试统计：失败后换了账号的那次也算在原账号上；请求体错误、内容被安全策略拒绝不算。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" data-rule="errorRate" data-field="enabled"><span></span></label></div>
           </div>
           <div class="setting">
@@ -599,6 +608,20 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="desc"><b>没有可用的 Codex 账号</b><span>所有账号都停用、额度用完自动停用或登录失效时告警，Codex 账号渠道的请求这时会失败（开了「失败时改用 API 上游」则交给上游）。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" data-rule="noAccount" data-field="enabled"><span></span></label></div>
           </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>API 上游告警</h2><span class="sub">单独发一条「API 上游告警」消息，写明是哪个上游 · 修改后自动保存</span></div>
+          <div class="setting">
+            <div class="desc"><b>上游失败率过高</b><span>某个 API 上游近<input class="input inline-num" type="number" min="1" max="1440" data-rule="upstreamErrorRate" data-field="minutes">分钟的失败率 ≥<input class="input inline-num" type="number" min="1" max="100" data-rule="upstreamErrorRate" data-field="percent">%，且至少有<input class="input inline-num" type="number" min="1" data-rule="upstreamErrorRate" data-field="minRequests">次请求时告警。上游出错后自动换下一个上游的，那次失败也记在原上游上。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="upstreamErrorRate" data-field="enabled"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>上游 API Key 无效</b><span>上游返回 401（Key 被删除、失效或填错）时告警。停用的上游不告警。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" data-rule="upstreamDown" data-field="enabled"><span></span></label></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>通知方式</h2><span class="sub">账号和上游的告警都按这里的方式提醒</span></div>
           <div class="setting">
             <div class="desc"><b>重复提醒</b><span>异常一直没恢复时，每隔<input class="input inline-num" type="number" min="0" max="1440" data-setting="repeatMinutes">分钟再提醒一次；填 0 只在开始时提醒。</span></div>
             <div class="control"></div>
@@ -607,6 +630,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="desc"><b>恢复通知</b><span>异常恢复后发一条恢复消息。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" data-setting="notifyRecovery"><span></span></label></div>
           </div>
+        </div>
         </div>
         <div class="card">
           <div class="card-head"><h2>正在告警</h2><span class="sub" id="alert-firing-sub"></span></div>
@@ -2093,21 +2117,40 @@ $('logs-clear').addEventListener('click', run(async () => {
 
 // ============ 告警 ============
 const ALERT_KIND = { firing: ['danger', '异常'], repeat: ['danger', '持续'], resolved: ['success', '已恢复'], test: ['accent', '测试'] };
+const categoryChip = (c) => ({ account: '<span class="chip">Codex 账号</span> ', upstream: '<span class="chip">API 上游</span> ' }[c] || '');
+const alertWhat = (x) => `${categoryChip(x.category)}<b>${esc(x.title)}</b>${x.subject ? `<div class="detail" style="color:var(--text)">${esc(x.subject)}</div>` : ''}`;
 const durationText = (m) => (m < 60 ? `${Math.max(1, m)} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分钟` : ''}`);
+const skewText = (ms) => { const s = Math.round(Math.abs(ms) / 1000); return s < 60 ? `${s} 秒` : durationText(Math.round(s / 60)); };
+const TIME_ZONES = [['Asia/Shanghai', '北京时间（Asia/Shanghai）'], ['Asia/Tokyo', '东京（Asia/Tokyo）'], ['Asia/Singapore', '新加坡（Asia/Singapore）'],
+  ['Europe/London', '伦敦（Europe/London）'], ['America/New_York', '纽约（America/New_York）'], ['America/Los_Angeles', '洛杉矶（America/Los_Angeles）'], ['UTC', 'UTC']];
 
 function renderAlerts() {
   const al = S.state.alerts;
   const configured = al.feishu.configured;
   $('alert-enabled').checked = al.enabled;
+  if ($('alert-instance') !== document.activeElement) $('alert-instance').value = al.instanceName || '';
   $('alert-state').innerHTML = !configured ? '<b style="color:var(--warn);display:inline">还没有配置飞书机器人，配置后才会发送告警</b>'
     : !al.enabled ? '已关闭，不检查也不发送'
     : `已开启 · ${al.firing.length ? `<span style="color:var(--danger)">${al.firing.length} 项异常</span>` : '目前一切正常'}`;
   $('alert-channel').innerHTML = configured
-    ? `<span class="mono">${esc(al.feishu.webhook)}</span> · ${al.feishu.hasSecret ? '已开启签名校验' : '未开启签名校验'}${
+    ? `<span class="mono">${esc(al.feishu.webhook)}</span> · ${al.feishu.hasSecret ? `已开启签名校验，密钥 <span class="mono">${esc(al.feishu.secretPreview)}</span>` : '未开启签名校验'}${
       al.lastError ? `<div style="color:var(--danger);margin-top:4px">上次发送失败（${esc(rel(al.lastError.at))}）：${esc(al.lastError.message)}</div>` : ''}`
     : '填入群自定义机器人的 Webhook 地址；机器人开了签名校验的话还要填密钥';
   $('alert-edit-channel').innerHTML = configured ? `${icon('pencil')}修改` : `${icon('plus')}配置机器人`;
   $('alert-test').disabled = !configured;
+
+  const c = al.clock;
+  const clock = !c ? '发送一次消息后会显示和飞书的时间差'
+    : Math.abs(c.skewMs) > 5 * 60_000
+      ? `<b style="color:var(--danger);display:inline">服务器时钟和飞书相差 ${esc(skewText(c.skewMs))}，已自动按飞书的时间签名，建议校准服务器时间</b>`
+      : `和飞书的时间相差 ${esc(skewText(c.skewMs))}，正常（${esc(rel(c.at))}测量）`;
+  $('alert-time').innerHTML = `服务器现在是 ${esc(al.server.time)}（${esc(al.timeZone || al.server.timeZone)}）· ${clock}。<br>签名校验只用 Unix 时间戳，和时区无关；时区只影响告警消息里显示的时间。`;
+  const tz = $('alert-timezone');
+  if (tz !== document.activeElement) {
+    const zones = al.timeZone && !TIME_ZONES.some(([v]) => v === al.timeZone) ? [...TIME_ZONES, [al.timeZone, al.timeZone]] : TIME_ZONES;
+    tz.innerHTML = `<option value="">跟随服务器（${esc(al.server.timeZone)}）</option>${zones.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}`;
+    tz.value = al.timeZone || '';
+  }
 
   // 正在输入的框不覆盖
   document.querySelectorAll('#alert-rules [data-rule], #alert-rules [data-setting]').forEach((el) => {
@@ -2119,7 +2162,7 @@ function renderAlerts() {
   $('alert-firing-sub').textContent = al.enabled && configured ? '' : '告警没有开启或还没配置机器人时不检查';
   $('alert-firing').innerHTML = al.firing.length ? al.firing.map((f) => `<div class="alert-item">
       <span class="badge danger"><span class="dot"></span>异常</span>
-      <div class="what"><b>${esc(f.title)}</b>${f.subject ? ` · ${esc(f.subject)}` : ''}<div class="detail">${esc(f.detail)}</div></div>
+      <div class="what">${alertWhat(f)}<div class="detail">${esc(f.detail)}</div></div>
       <div class="when">${esc(rel(new Date(f.since).toISOString()))}开始<br>${f.notifiedAt ? '已通知' : '<span style="color:var(--danger)">未发出</span>'}</div>
     </div>`).join('')
     : `<div class="empty" style="padding:28px 20px"><p style="margin:0">目前没有异常</p></div>`;
@@ -2129,7 +2172,7 @@ function renderAlerts() {
     const tag = h.kind === 'repeat' || h.kind === 'resolved' ? `${text}${h.minutes ? ` · ${durationText(h.minutes)}` : ''}` : text;
     return `<div class="alert-item">
       <span class="badge ${cls}"><span class="dot"></span>${esc(tag)}</span>
-      <div class="what"><b>${esc(h.title)}</b>${h.subject ? ` · ${esc(h.subject)}` : ''}${h.kind === 'resolved' ? '' : `<div class="detail">${esc(h.detail)}</div>`}
+      <div class="what">${alertWhat(h)}${h.kind === 'resolved' ? '' : `<div class="detail">${esc(h.detail)}</div>`}
         ${h.delivered ? '' : `<div class="detail" style="color:var(--danger)">发送失败：${esc(h.error)}</div>`}</div>
       <div class="when" title="${esc(fmtTime(h.at))}">${esc(fmtShortTime(h.at))}</div>
     </div>`;
@@ -2143,6 +2186,8 @@ const saveAlerts = run(async (patch, message = '告警设置已保存') => {
   renderShell(); renderAlerts();
 });
 $('alert-enabled').addEventListener('change', (e) => saveAlerts({ enabled: e.target.checked }, e.target.checked ? '告警已开启' : '告警已关闭'));
+$('alert-timezone').addEventListener('change', (e) => saveAlerts({ timeZone: e.target.value || null }, '时区已保存'));
+$('alert-instance').addEventListener('change', (e) => saveAlerts({ instanceName: e.target.value.trim() || null }, '服务标识已保存'));
 $('alert-rules').addEventListener('change', (e) => {
   const el = e.target;
   const value = el.type === 'checkbox' ? el.checked : Number(el.value);
@@ -2167,7 +2212,7 @@ function openAlertChannel() {
   $('al-webhook').value = '';
   $('al-webhook').placeholder = f.configured ? `${f.webhook}（留空表示不修改）` : 'https://open.feishu.cn/open-apis/bot/v2/hook/…';
   $('al-secret').value = '';
-  $('al-secret').placeholder = f.hasSecret ? '已保存（留空表示不修改）' : '没有开签名校验可以不填';
+  $('al-secret').placeholder = f.hasSecret ? `已保存 ${f.secretPreview}，留空表示不修改` : '没有开签名校验可以不填';
   $('al-clear-secret').checked = false;
   $('al-clear-secret-row').hidden = !f.hasSecret;
   $('al-remove').hidden = !f.configured;

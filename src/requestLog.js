@@ -318,9 +318,14 @@ class LogEntry {
 
   // 失败后换账号或改用 API 上游重试前调用：每次失败记一行（哪个账号、什么错误），
   // 清掉失败状态和用量，之后按最终结果记。
+  // 只把这次尝试记成失败（告警统计用），不改日志这一行。上游之间自动切换前调用，见 upstreams.js
+  failedAttempt(err) {
+    this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status: err?.status || 500, code: err?.code ?? null, message: String(err?.message || err) });
+  }
+
   fallback(err) {
     const status = err?.status || 500;
-    this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status, code: err?.code ?? null, message: String(err?.message || err) });
+    this.failedAttempt(err);
     const who = this.row.account_email || this.row.account_id || '未分配账号';
     const line = `${who}：${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 1500);
     this.row.fallback_error = [this.row.fallback_error, line].filter(Boolean).join('\n').slice(0, 4000);

@@ -75,8 +75,8 @@ test('error-rate alert needs enough requests, fires once, repeats on schedule an
   attempts(m, 'a', true, 2);
   await m.check();
   assert.equal(sent.length, 1);
-  assert.match(sent[0].title, /1 项异常/);
-  assert.match(sent[0].text, /【异常】账号失败率过高\*\* · a@example\.com/);
+  assert.equal(sent[0].title, 'Codex 账号告警：1 项异常');
+  assert.match(sent[0].text, /\*\*【异常】账号失败率过高\*\*\n账号：a@example\.com\n/);
   assert.match(sent[0].text, /近 10 分钟 8 次请求失败 6 次（75%），阈值 50%/);
   assert.match(sent[0].text, /最近错误：503 server_is_overloaded：overloaded/);
   assert.equal(sent[0].message.card.header.template, 'red');
@@ -95,8 +95,8 @@ test('error-rate alert needs enough requests, fires once, repeats on schedule an
   clock.now += 11 * MIN;
   await m.check();
   assert.equal(sent.length, 3);
-  assert.match(sent[2].title, /1 项已恢复/);
-  assert.match(sent[2].text, /【已恢复 · 持续 41 分钟】账号失败率过高\*\* · a@example\.com/);
+  assert.equal(sent[2].title, 'Codex 账号告警：1 项已恢复');
+  assert.match(sent[2].text, /【已恢复 · 持续 41 分钟】账号失败率过高\*\*\n账号：a@example\.com/);
   assert.equal(sent[2].message.card.header.template, 'green');
   assert.deepEqual(data.alerts.firing, {});
 });
@@ -149,31 +149,56 @@ test('client-side failures and aborted requests do not count toward the error ra
   assert.equal(sent.length, 0);
 });
 
-test('upstreams are watched too; disabled accounts are not, and do not get a recovery message', async () => {
-  const { m, sent, data } = monitor({ upstreams: [{ id: 'oa-1', label: '主 Key', enabled: true }] });
-  attempts(m, 'oa-1', false, 5, { status: 429, code: 'rate_limit_exceeded' });
+test('account and upstream alerts go out as separate messages that name the account or upstream', async () => {
+  const upstreams = [
+    { id: 'oa-1', label: '主 Key', baseUrl: 'https://api.openai.com/v1', enabled: true, status: 'ready' },
+    { id: 'oa-2', label: '备用 Key', baseUrl: 'https://relay.example.com/v1', enabled: true, status: 'invalid', lastError: 'Incorrect API key provided' },
+  ];
+  const accounts = [acct('a', { label: '个人 Pro' }), acct('b')];
+  const { m, sent, data } = monitor({ accounts, upstreams, alerts: { instanceName: 'FDG16' } });
+  attempts(m, 'oa-1', false, 5, { status: 429, code: 'rate_limit_exceeded', message: 'Rate limit reached' });
   attempts(m, 'a', false, 5);
   await m.check();
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].title, /2 项异常/);
-  assert.match(sent[0].text, /API 上游失败率过高\*\* · 主 Key/);
+  assert.deepEqual(sent.map((s) => s.title), ['【FDG16】Codex 账号告警：1 项异常', '【FDG16】API 上游告警：2 项异常']);
+  assert.match(sent[0].text, /账号失败率过高\*\*\n账号：a@example\.com（备注：个人 Pro）\n近 10 分钟 5 次请求失败 5 次/);
+  assert.doesNotMatch(sent[0].text, /上游/);
+  assert.match(sent[1].text, /上游失败率过高\*\*\n上游：主 Key（api\.openai\.com，ID oa-1）\n近 10 分钟 5 次请求失败 5 次（100%）.*\n最近错误：429 rate_limit_exceeded：Rate limit reached/);
+  assert.match(sent[1].text, /上游 API Key 无效\*\*\n上游：备用 Key（relay\.example\.com，ID oa-2）\nIncorrect API key provided/);
+  assert.doesNotMatch(sent[1].text, /账号：/);
+  assert.match(sent[1].text, /服务 FDG16 · Codex Gateway v9\.9\.9/);
+  assert.deepEqual(data.alerts.history.map((h) => h.category), ['upstream', 'upstream', 'account']);
 
+  // 账号和上游的规则分开设置
+  m.update({ rules: { upstreamErrorRate: { enabled: false } } });
   data.accounts[0].enabled = false;
   await m.check();
-  assert.equal(sent.length, 1, '停用账号的告警直接撤掉，不发恢复');
-  assert.deepEqual(Object.keys(data.alerts.firing), ['errorRate:oa-1']);
+  assert.equal(sent.length, 2, '停用的账号、关掉的规则都直接撤掉，不发恢复');
+  assert.deepEqual(Object.keys(data.alerts.firing), ['upstreamDown:oa-2']);
+});
+
+test('an upstream that fails before the proxy switches to the next one is counted against that upstream', () => {
+  const log = new RequestLog(null);
+  const events = [];
+  log.onAttempt = (event) => events.push(event);
+  const entry = log.begin({ endpoint: 'chat.completions', source: 'api' });
+  entry.account({ id: 'oa-1', label: '主 Key' });
+  entry.failedAttempt(Object.assign(new Error('Rate limit reached'), { status: 429, code: 'upstream_error' }));
+  entry.account({ id: 'oa-2', label: '备用 Key' });
+  entry.end({ statusCode: 200 });
+  assert.deepEqual(events.map((e) => [e.id, e.ok, e.status]), [['oa-1', false, 429], ['oa-2', true, 200]]);
+  assert.equal(entry.row.fallback_error, undefined, '日志这一行不变');
 });
 
 test('quota alert warns at the threshold, escalates once when used up, and clears after reset', async () => {
   const { m, sent, data, clock } = monitor({ accounts: [acct('a', quota(92)), acct('b')] });
   await m.check();
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /【异常】账号额度快用完了\*\* · a@example\.com\nCodex 额度已用 92%（阈值 90%），预计 .* 重置/);
+  assert.match(sent[0].text, /【异常】账号额度快用完了\*\*\n账号：a@example\.com\nCodex 额度已用 92%（阈值 90%），预计 .* 重置/);
 
   data.accounts[0].rateLimits.primary.usedPercent = 100;
   await m.check();
   assert.equal(sent.length, 2, '用完时升级提醒一次');
-  assert.match(sent[1].text, /账号额度已用完\*\* · a@example\.com\nCodex 额度已用完，已自动停用，不再分配请求/);
+  assert.match(sent[1].text, /账号额度已用完\*\*\n账号：a@example\.com\nCodex 额度已用完，已自动停用，不再分配请求/);
   await m.check();
   assert.equal(sent.length, 2);
 
@@ -194,8 +219,8 @@ test('login expiry and "no usable account" alerts describe every account', async
   await m.check();
   assert.equal(sent.length, 1);
   const text = sent[0].text;
-  assert.match(text, /账号登录失效\*\* · a@example\.com/);
-  assert.doesNotMatch(text, /登录失效\*\* · d@/, '停用的账号不报登录失效');
+  assert.match(text, /账号登录失效\*\*\n账号：a@example\.com/);
+  assert.doesNotMatch(text, /登录失效\*\*\n账号：d@/, '停用的账号不报登录失效');
   assert.match(text, /没有可用的 Codex 账号\*\*\nCodex 账号渠道的请求现在都交给 API 上游/);
   assert.match(text, /a@example\.com：登录失效\nb@example\.com：已停用\nc@example\.com：额度用完，已自动停用\nd@example\.com：登录失效/);
 });
@@ -281,4 +306,77 @@ test('a card stays well under the 20 KB Feishu limit and neutralises markup in d
   assert.match(text, /另有 12 项/);
   assert.doesNotMatch(text, /<at/);
   assert.match(text, /Codex Gateway v1\.0\.0/);
+});
+
+// 假的飞书：按它自己的时钟校验签名（时间戳要在 1 小时内），响应头带 Date
+function fakeFeishu({ secret, clockMs }) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const ok = Math.abs(Number(body.timestamp) * 1000 - clockMs) <= 3600_000 && body.sign === feishuSign(body.timestamp, secret);
+    const payload = ok ? { code: 0, msg: 'success', data: {} } : { code: 19021, msg: 'sign match fail or timestamp is not within one hour from current time' };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { date: new Date(clockMs).toUTCString() } });
+  };
+  return { calls, fetchImpl };
+}
+
+test('a wrong server clock is detected from Feishu\'s Date header and corrected automatically', async () => {
+  const feishuNow = T0;
+  const serverNow = T0 - 8 * 3600_000; // 服务器时钟慢了 8 小时
+  const { calls, fetchImpl } = fakeFeishu({ secret: 'right-secret', clockMs: feishuNow });
+  const r = await sendFeishu({ webhook: WEBHOOK, secret: 'right-secret' }, { msg_type: 'text', content: { text: 'x' } }, { fetchImpl, now: serverNow });
+  assert.equal(calls.length, 2, '第一次按本机时间失败，按飞书时间重签一次');
+  assert.equal(calls[1].timestamp, String(feishuNow / 1000));
+  assert.equal(r.skewMs, 8 * 3600_000);
+  // 记住偏差后，下次直接按飞书时间签名
+  await sendFeishu({ webhook: WEBHOOK, secret: 'right-secret' }, { msg_type: 'text', content: { text: 'x' } }, { fetchImpl, now: serverNow, skewMs: r.skewMs });
+  assert.equal(calls.length, 3);
+});
+
+test('a 19021 with a correct clock says plainly that the secret is wrong, not the time zone', async () => {
+  const { calls, fetchImpl } = fakeFeishu({ secret: 'right-secret', clockMs: T0 + 2000 });
+  await assert.rejects(
+    sendFeishu({ webhook: WEBHOOK, secret: 'old-secret' }, {}, { fetchImpl, now: T0 }),
+    (err) => /密钥和机器人现在的密钥不一致/.test(err.message) && /只差 2 秒，不是时间或时区的问题/.test(err.message) && err.skewMs === 2000,
+  );
+  assert.equal(calls.length, 1, '时间没问题就不重试');
+  const slow = fakeFeishu({ secret: 'right-secret', clockMs: T0 + 3 * 3600_000 });
+  await assert.rejects(sendFeishu({ webhook: WEBHOOK, secret: 'old-secret' }, {}, { fetchImpl: slow.fetchImpl, now: T0 }),
+    /相差 3 小时，已按飞书的时间重新签名，仍然失败/);
+});
+
+test('the monitor remembers the measured clock offset and shows which secret is saved', async () => {
+  const { m, data } = monitor({ alerts: { feishu: { webhook: WEBHOOK, secret: 'AbcdTESTsecretXYZwxyz' } } });
+  assert.equal(m.info().feishu.secretPreview, 'Abcd…wxyz（21 位）');
+  data.alerts.feishu.secret = 'short';
+  assert.equal(m.info().feishu.secretPreview, '••••（5 位）');
+  const seen = [];
+  m.send = async (channel, message, options) => {
+    seen.push(options.skewMs);
+    return { skewMs: 3000 };
+  };
+  await m.test();
+  await m.test();
+  assert.deepEqual(seen, [0, 3000]);
+  assert.equal(m.info().clock.skewMs, 3000);
+});
+
+test('service identifier and time zone are validated and used in the message', () => {
+  const { m, data } = monitor();
+  m.update({ instanceName: '  FDG16 ', timeZone: 'UTC' });
+  assert.equal(data.alerts.instanceName, 'FDG16');
+  assert.equal(data.alerts.timeZone, 'UTC');
+  assert.throws(() => m.update({ instanceName: 'x'.repeat(33) }), { status: 400 });
+  assert.throws(() => m.update({ timeZone: 'Mars/Olympus' }), { status: 400 });
+  m.update({ instanceName: '', timeZone: null });
+  assert.equal(data.alerts.instanceName, null);
+  assert.equal(data.alerts.timeZone, null);
+
+  const item = [{ kind: 'test', category: 'test', title: '告警通道测试', detail: 'ok' }];
+  const utc = feishuCard(item, { now: T0, timeZone: 'UTC', instanceName: 'FDG16' });
+  const sh = feishuCard(item, { now: T0, timeZone: 'Asia/Shanghai' });
+  assert.equal(utc.card.header.title.content, '【FDG16】Codex Gateway 告警通道测试');
+  assert.match(utc.card.body.elements[0].content, /2026\/10\/31 02:00:00 · 服务 FDG16/);
+  assert.match(sh.card.body.elements[0].content, /2026\/10\/31 10:00:00 · Codex Gateway/);
 });
