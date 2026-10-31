@@ -238,7 +238,7 @@ npm start
 
 支持亮色和暗色主题，手机宽度也能用。
 
-**模型自动刷新：** app-server 自己每 4.5 分钟在线同步一次模型目录（`codex-rs/app-server/src/models_refresh_worker.rs`）。网关每 5 分钟读取一次当前账号的模型目录和额度并持久化。切换账号、登录成功后也会立即刷新。后台页面每 20 秒自动更新状态。
+**模型自动刷新：** app-server 自己每 4.5 分钟在线同步一次模型目录（`codex-rs/app-server/src/models_refresh_worker.rs`）。网关每 5 分钟读取一次当前账号的完整模型目录（包括隐藏的 Codex 系统模型）和额度并持久化。切换账号、登录成功后也会立即刷新。后台页面每 20 秒自动更新状态。
 
 ### 多账号调用策略
 
@@ -268,7 +268,7 @@ npm start
 
 | 接口 | 说明 |
 |---|---|
-| `GET /v1/models` | 当前账号可用的模型（来自 Codex `model/list`），非 Free 账号额外包含 `gpt-image-2` |
+| `GET /v1/models` | 当前账号可用的模型（来自 Codex `model/list`，包含隐藏系统模型），非 Free 账号额外包含 `gpt-image-2`、`gpt-image-1.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5` 这些生图别名 |
 | `POST /v1/chat/completions` | 支持流式、非流式和 `stream_options.include_usage` |
 | `POST /v1/responses` | 流式/非流式、推理摘要、结构化输出、客户端工具调用、内置工具 `image_generation` / `web_search`；普通对话支持 `previous_response_id`，工具调用需完整 `input`，详见下文 |
 | `POST /v1/images/generations` | 文生图，返回 `b64_json`（默认）或 `url` |
@@ -465,7 +465,7 @@ Webhook 地址和密钥保存在 `data/store.json`，后台只显示打码后的
 
 生图走的是 Codex 内置的 `image_gen.imagegen` 工具（`codex-rs/ext/image-generation`）：
 
-- **图片模型不从服务端拉取。** 生图工具在客户端代码里固定请求 `gpt-image-2`（`tool.rs` 里的 `IMAGE_MODEL`），发往 `chatgpt.com/backend-api/codex/images/generations`。升级 Codex 不会改变这个名字。
+- **图片模型不从服务端拉取。** 生图工具在客户端代码里固定请求 `gpt-image-2`（`tool.rs` 里的 `IMAGE_MODEL`），发往 `chatgpt.com/backend-api/codex/images/generations`。网关会把常用的 `gpt-image-*` 名称作为兼容别名列在 `/v1/models` 中，但它们最终都统一走这个工具，升级 Codex 不会改变这个内部名字。
 - **实际版本由服务端决定。** 按 OpenAI 2026-09-08 发布 ChatGPT Images 2.5 时的公告，Codex 用户也能用上 Images 2.5（默认 Flare，复杂提示词自动用 Sunburst）。服务端响应里不返回实际使用的模型，客户端无法确认，也不能指定。想明确指定 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst`，只能用 OpenAI API Key 按量调用。
 - 对话里填任意 `gpt-image-*` 模型名都按生图处理，`/v1/images/*` 接口会忽略 `model` 参数。
 - 每张通常 30–60 秒，消耗账号的**生图额度**。这个额度和对话额度分开计算，Codex 没有通过协议提供，所以后台看不到；用完时网关返回 429 并带重置时间。Free 套餐不可用，和 Codex 本身的限制一致。

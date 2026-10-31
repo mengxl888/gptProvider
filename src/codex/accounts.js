@@ -50,6 +50,8 @@ const CHAT_ONLY_DISABLED_FEATURES = [
 export const BACKGROUND_REFRESH_MS = 5 * 60_000;
 // 请求遇到 429（额度用完或限流）后刷新这个账号额度的最短间隔
 const LIMIT_REFRESH_MS = 60_000;
+// 目录请求包含隐藏模型；旧版本缓存只含选择器可见模型，不能继续复用。
+const MODEL_CATALOG_VERSION = 2;
 
 export class AccountManager {
   constructor({ store, dataDir, cmd, featureNames }) {
@@ -490,7 +492,12 @@ export class AccountManager {
   // 模型目录持久化在 store.modelCatalog[accountId]，后台定时刷新，过期时按需刷新。
   async listModels(id) {
     const entry = this.store.data.modelCatalog[id];
-    if (entry && Date.now() - Date.parse(entry.updatedAt) < BACKGROUND_REFRESH_MS * 2) return entry.data;
+    if (
+      entry?.version === MODEL_CATALOG_VERSION &&
+      Date.now() - Date.parse(entry.updatedAt) < BACKGROUND_REFRESH_MS * 2
+    ) {
+      return entry.data;
+    }
     return (await this.refreshModels(id)).data;
   }
 
@@ -502,11 +509,13 @@ export class AccountManager {
       const models = [];
       let cursor = null;
       do {
-        const page = await client.request('model/list', { cursor, limit: 100 });
+        // model/list 默认只返回模型选择器中的条目；网关还需要保留隐藏的
+        // Codex 系统模型（例如 codex-auto-review），因此显式请求完整目录。
+        const page = await client.request('model/list', { cursor, limit: 100, includeHidden: true });
         models.push(...page.data);
         cursor = page.nextCursor;
       } while (cursor);
-      const entry = { updatedAt: new Date().toISOString(), data: models };
+      const entry = { version: MODEL_CATALOG_VERSION, updatedAt: new Date().toISOString(), data: models };
       if (this.store.getAccount(id)) {
         this.store.data.modelCatalog[id] = entry;
         this.store.save();

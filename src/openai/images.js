@@ -12,6 +12,15 @@ import { imageGenerationError } from './imageErrors.js';
 // Codex 生图工具固定请求 gpt-image-2（tool.rs IMAGE_MODEL），实际版本由 ChatGPT 后端决定，
 // 客户端无法指定。所以对话里任何 gpt-image-* 名字（如 API 的 gpt-image-2.5-flare / -sunburst）都按生图处理。
 export const IMAGE_MODEL_ID = 'gpt-image-2';
+// 这些是对外可接受的图片模型名。它们最终都会走同一个 Codex image_gen 工具，
+// 实际使用的 Images 版本由服务端决定，名称只是兼容 OpenAI 客户端的别名。
+export const IMAGE_MODEL_IDS = Object.freeze([
+  IMAGE_MODEL_ID,
+  'gpt-image-1.5',
+  'gpt-image-2.5-flare',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5',
+]);
 export const isImageModel = (model) => typeof model === 'string' && /^gpt-image/i.test(model);
 const MAX_N = 4;
 const MAX_INPUT_IMAGES = 5;

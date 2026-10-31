@@ -486,7 +486,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
             <div class="card-pad small text-2 stack" style="border-top:1px solid var(--border);gap:8px">
-              <div><b>Codex 账号渠道</b>：提供上面这些接口，Responses 支持客户端工具调用，可接入 Codex CLI，仅供自己使用。在对话里选择模型 <code>gpt-image-2</code> 会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
+              <div><b>Codex 账号渠道</b>：提供上面这些接口，Responses 支持客户端工具调用，可接入 Codex CLI，仅供自己使用。在对话里选择任意 <code>gpt-image-*</code> 名称会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
               <div><b>OpenAI API 渠道</b>：<code>/v1</code> 下所有请求原样转发到「API 上游」里的官方 Key，工具调用、Embeddings、音频等官方接口都能用，Codex CLI 也能直接接入。</div>
             </div>
           </div>
@@ -662,7 +662,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <!-- ---------- 生图 ---------- -->
     <section data-view="images" hidden>
       <div class="page-head">
-        <div><h1>生图</h1><p>通过 Codex 内置的 image_gen 工具生成（gpt-image-2），消耗当前账号的额度</p></div>
+        <div><h1>生图</h1><p>通过 Codex 内置的 image_gen 工具生成（gpt-image-* 名称均可，内部固定 gpt-image-2），消耗当前账号的额度</p></div>
         <div class="actions"><button class="btn danger" id="images-clear"><svg class="i" data-icon="trash"></svg>清空图库</button></div>
       </div>
       <div class="stack">
@@ -700,7 +700,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="field"><label>推理强度</label>
             <select id="pg-effort" class="select"><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
           <div class="field"><label>System 提示词</label><textarea id="pg-system" class="textarea" rows="6" placeholder="可选，例如：你是一个简洁的中文助手"></textarea></div>
-          <div class="small muted">选择 <code>gpt-image-2</code> 时每次发送都会生成图片；可以附加图片让它在原图上修改。</div>
+          <div class="small muted">选择任意 <code>gpt-image-*</code> 名称时每次发送都会生成图片；可以附加图片让它在原图上修改。</div>
         </div>
         <div class="card chat">
           <div class="chat-log" id="chat-log"></div>
@@ -1705,7 +1705,11 @@ $('login-dialog').addEventListener('cancel', (e) => { e.preventDefault(); closeL
 async function loadModels(force = false) {
   const data = force ? await api('POST', '/models/refresh') : await api('GET', '/models');
   S.models = { ...data, accountId: S.state.activeAccountId };
-  if (S.state) S.state.stats.modelsUpdatedAt = data.updatedAt;
+  if (S.state) {
+    S.state.stats.modelsUpdatedAt = data.updatedAt;
+    const imageCount = activeAccount()?.planType !== 'free' ? (data.imageModels || S.state.imageModels || []).length : 0;
+    S.state.stats.models = (data.data || []).length + imageCount;
+  }
   if (S.page === 'models') renderModels();
   if (S.page === 'overview') renderCode();
   fillModelSelects();
@@ -1730,22 +1734,27 @@ function renderModels() {
     <td><div class="chips">${modal(m)}</div></td>
   </tr>`);
   const plan = activeAccount()?.planType;
-  if (plan !== 'free') rows.push(`<tr>
-    <td><div class="model-name">GPT Image <span class="badge success">生图</span></div>
-      <div class="model-id mono">${esc(S.state.imageModel)}<button class="btn ghost sm icon" title="复制模型 ID" data-copy="${esc(S.state.imageModel)}">${icon('copy')}</button></div></td>
-    <td><div class="model-desc">Codex 生图工具固定请求这个模型名，实际版本由服务端决定。按 OpenAI 公告，Codex 已用上 Images 2.5（自动在 Flare / Sunburst 间选择），无法手动指定。对话中填任意 gpt-image-* 名称都会生图</div></td>
-    <td class="muted">—</td><td><div class="chips"><span class="chip">${icon('type')}</span><span class="chip">${icon('image')}</span></div></td></tr>`);
+  if (plan !== 'free') {
+    const imageModels = S.models.imageModels || S.state.imageModels || [S.state.imageModel];
+    for (const id of imageModels) rows.push(`<tr>
+      <td><div class="model-name">${esc(id === S.state.imageModel ? 'GPT Image' : 'GPT Image 别名')} <span class="badge success">生图</span></div>
+        <div class="model-id mono">${esc(id)}<button class="btn ghost sm icon" title="复制模型 ID" data-copy="${esc(id)}">${icon('copy')}</button></div></td>
+      <td><div class="model-desc">图片名称用于兼容客户端，实际统一调用 Codex image_gen，使用的 Images 版本由服务端决定；对话中填任意 gpt-image-* 名称都会生图。</div></td>
+      <td class="muted">—</td><td><div class="chips"><span class="chip">${icon('type')}</span><span class="chip">${icon('image')}</span></div></td></tr>`);
+  }
   $('model-rows').innerHTML = rows.join('');
 }
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-copy]'); if (b) copyText(b.dataset.copy); });
 $('refresh-models').addEventListener('click', run(async () => {
   const b = $('refresh-models'); b.disabled = true; b.innerHTML = `${icon('refresh', 'spin')}刷新中`;
-  try { await loadModels(true); toast(`已获取 ${S.models.data.length} 个模型`); }
+  try { await loadModels(true); toast(`已获取 ${S.state.stats.models} 个模型`); }
   finally { b.disabled = false; b.innerHTML = `${icon('refresh')}立即刷新`; }
 }));
 function fillModelSelects() {
   const models = S.models?.data || [];
   const opts = models.map((m) => `<option value="${esc(m.id)}">${esc(m.displayName || m.id)}${m.isDefault ? '（默认）' : ''}</option>`).join('');
+  const imageModels = S.models?.imageModels || S.state?.imageModels || [S.state?.imageModel];
+  const imageOpts = imageModels.filter(Boolean).map((id) => `<option value="${esc(id)}">${esc(id)}（生图）</option>`).join('');
   const setSel = (el, html, value) => {
     if (document.activeElement === el) return;
     el.innerHTML = html;
@@ -1755,7 +1764,7 @@ function fillModelSelects() {
   const def = S.state.settings.defaultModel || '';
   setSel($('set-model'), `<option value="">Codex 默认</option>${opts}`, def);
   const pgVal = $('pg-model').value || def;
-  setSel($('pg-model'), `<option value="">Codex 默认</option>${opts}${activeAccount()?.planType !== 'free' ? `<option value="${S.state.imageModel}">GPT Image（生图）</option>` : ''}`, pgVal);
+  setSel($('pg-model'), `<option value="">Codex 默认</option>${opts}${activeAccount()?.planType !== 'free' ? imageOpts : ''}`, pgVal);
 }
 
 // ============ 生图 ============

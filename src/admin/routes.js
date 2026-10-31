@@ -4,7 +4,7 @@ import { MAX_WEIGHT, STRATEGIES } from '../codex/accountPicker.js';
 import { BACKGROUND_REFRESH_MS, httpError } from '../codex/accounts.js';
 import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
-import { IMAGE_MODEL_ID, handleImageGenerations } from '../openai/images.js';
+import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../openai/images.js';
 import { WINDOWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 
@@ -18,6 +18,8 @@ export async function handleAdmin(req, res, url, body, ctx) {
   if (method === 'GET' && parts[0] === 'state') {
     const activeId = store.data.activeAccountId;
     const catalog = activeId ? accounts.modelCatalog(activeId) : null;
+    const active = activeId ? store.getAccount(activeId) : null;
+    const imageModels = active && accounts.supportsImageGeneration(active) ? IMAGE_MODEL_IDS : [];
     return ok({
       app: updater.info(),
       codex: codex.info(),
@@ -28,11 +30,14 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings: store.data.settings,
       stats: {
         images: store.data.images.length,
-        models: catalog?.data.length ?? 0,
+        models:
+          (catalog?.data.length ?? 0) +
+          imageModels.length,
         modelsUpdatedAt: catalog?.updatedAt ?? null,
       },
       refreshIntervalMs: BACKGROUND_REFRESH_MS,
       imageModel: IMAGE_MODEL_ID,
+      imageModels,
       logsEnabled: requestLog.enabled,
       alerts: alerts.info(),
     });
@@ -208,11 +213,17 @@ export async function handleAdmin(req, res, url, body, ctx) {
   if (parts[0] === 'models') {
     const account = accounts.activeAccount();
     if (method === 'POST' && parts[1] === 'refresh') {
-      return ok(await accounts.refreshModels(account.id));
+      return ok({
+        ...(await accounts.refreshModels(account.id)),
+        imageModels: accounts.supportsImageGeneration(account) ? IMAGE_MODEL_IDS : [],
+      });
     }
     if (method === 'GET') {
       await accounts.listModels(account.id);
-      return ok(accounts.modelCatalog(account.id));
+      return ok({
+        ...accounts.modelCatalog(account.id),
+        imageModels: accounts.supportsImageGeneration(account) ? IMAGE_MODEL_IDS : [],
+      });
     }
   }
 

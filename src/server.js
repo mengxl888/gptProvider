@@ -12,13 +12,14 @@ import { sendJson } from './http.js';
 import { ImageLibrary } from './images.js';
 import { startLoginCallbackForward } from './loginForward.js';
 import { handleChatCompletions } from './openai/chat.js';
-import { IMAGE_MODEL_ID, handleImageEdits, handleImageGenerations } from './openai/images.js';
+import { IMAGE_MODEL_IDS, handleImageEdits, handleImageGenerations } from './openai/images.js';
 import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
 import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
 import { clearHeaders, fallbackBody, runWithFailover } from './failover.js';
+import { modelIdsForApi } from './modelCatalog.js';
 import { UpstreamManager, endpointName } from './upstreams.js';
 
 // 每次启动不同，页面据此判断一键更新后服务是否已经重启。
@@ -110,8 +111,10 @@ async function route(req, res) {
 
     if (req.method === 'GET' && pathname === '/v1/models') {
       const account = accounts.activeAccount();
-      const models = (await accounts.listModels(account.id)).map((m) => m.id);
-      if (accounts.supportsImageGeneration(account)) models.push(IMAGE_MODEL_ID);
+      const models = modelIdsForApi(
+        await accounts.listModels(account.id),
+        accounts.supportsImageGeneration(account) ? IMAGE_MODEL_IDS : [],
+      );
       return sendJson(res, 200, {
         object: 'list',
         data: models.map((id) => ({ id, object: 'model', created: 0, owned_by: 'openai' })),
