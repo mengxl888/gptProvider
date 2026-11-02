@@ -19,6 +19,8 @@ const DEFAULT_SETTINGS = {
   autoDisableOnQuota: true,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
+  // Exact model ids; USD per 1M tokens, optional USD per generated image.
+  modelPrices: {},
 };
 const MAX_IMAGE_RECORDS = 500;
 export const CHANNELS = ['codex', 'openai'];

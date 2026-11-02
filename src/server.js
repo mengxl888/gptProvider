@@ -35,7 +35,7 @@ const accounts = new AccountManager({
 });
 const upstreams = new UpstreamManager({ store });
 const images = new ImageLibrary({ store, dataDir: config.dataDir });
-const requestLog = await openRequestLog(config.dataDir);
+const requestLog = await openRequestLog(config.dataDir, { getPricing: () => store.data.settings.modelPrices || {} });
 const updater = new AppUpdater({ config });
 const accountResponses = new CodexResponsesProxy({ accounts, store, codex });
 const alerts = new AlertMonitor({ store, accounts, appVersion: config.appVersion });

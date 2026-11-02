@@ -87,6 +87,7 @@ export async function runTurn(client, { thread, input, turn, onEvent = () => {},
         case 'thread/tokenUsage/updated':
           // 线程是本次请求新建的，total 就是本回合的用量。
           result.usage = params.tokenUsage.total;
+          onEvent({ type: 'usage', usage: result.usage });
           break;
         case 'error':
           if (!params.willRetry) result.error = params.error;

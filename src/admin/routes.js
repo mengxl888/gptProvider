@@ -8,6 +8,7 @@ import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../open
 import { MAX_EXPORT_ROWS, WINDOWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 import { config } from '../config.js';
+import { pricingInfo, validatePrices } from '../pricing.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
   const { accounts, upstreams, store, codex, images, requestLog, updater, alerts } = ctx;
@@ -29,6 +30,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       upstreams: upstreams.list(),
       apiKeys: apiKeysWithUsage(store, requestLog),
       settings: store.data.settings,
+      pricing: pricingInfo(store.data.settings.modelPrices),
       stats: {
         images: store.data.images.length,
         models:
@@ -42,6 +44,17 @@ export async function handleAdmin(req, res, url, body, ctx) {
       logsEnabled: requestLog.enabled,
       alerts: alerts.info(),
     });
+  }
+
+  // Dollar estimates use the current administrator-maintained price catalog.
+  if (parts[0] === 'pricing' && !parts[1]) {
+    if (method === 'GET') return ok(pricingInfo(store.data.settings.modelPrices));
+    if (method === 'PUT') {
+      const models = validatePrices(body?.models);
+      store.data.settings.modelPrices = models;
+      store.save();
+      return ok(pricingInfo(models));
+    }
   }
 
   // PUT /admin/api/alerts       {enabled, feishu: {webhook, secret} | null, rules: {errorRate: {...}, ...}, repeatMinutes, notifyRecovery}

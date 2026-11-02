@@ -181,7 +181,10 @@ test('transport metadata does not change token accounting, health statistics, or
 
   assert.equal(log.list().total, 2);
   assert.equal(log.keyTokens('synthetic-key', Date.now() - 60_000), 19);
-  assert.deepEqual(log.keyUsage(Date.now() - 60_000)['synthetic-key'], { requests: 2, tokens: 19 });
+  const key = log.keyUsage(Date.now() - 60_000)['synthetic-key'];
+  assert.equal(key.requests, 2);
+  assert.equal(key.tokens, 19);
+  assert.equal(key.unpricedAttempts, 2, 'missing model prices are unknown rather than zero-dollar attempts');
   const stats = log.stats();
   assert.equal(stats.overall.success, 1);
   assert.equal(stats.overall.failure, 1);

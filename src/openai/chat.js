@@ -54,6 +54,7 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
   }
   const serviceTier = turnServiceTier(body, settings.serviceTierMode);
   if (serviceTier) turnOptions.serviceTierForTurn = serviceTier;
+  req.log?.request({ model: body.model || settings.defaultModel, stream: body.stream, serviceTier: serviceTier ?? 'default' });
 
   const id = `chatcmpl-${crypto.randomBytes(12).toString('hex')}`;
   const created = Math.floor(Date.now() / 1000);
@@ -92,7 +93,13 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
     return;
   }
 
-  const result = await runTurn(client, turnArgs).catch((err) => {
+  const result = await runTurn(client, {
+    ...turnArgs,
+    onEvent: (event) => {
+      if (event.type === 'started') req.log?.resolvedModel(event.model);
+      if (event.type === 'usage') req.log?.usage(event.usage);
+    },
+  }).catch((err) => {
     onTurnError(err);
     throw err;
   });
@@ -158,6 +165,8 @@ async function streamCompletion(res, client, turnArgs, { id, created, model, bod
           log?.resolvedModel(event.model);
           if (model !== IMAGE_MODEL_ID) responseModel = event.model || model;
           enqueue(() => stream.hold(data(chunk({ role: 'assistant', content: '' }))));
+        } else if (event.type === 'usage') {
+          log?.usage(event.usage);
         } else if (event.type === 'text') {
           // 多条助手消息之间补一个空行，和非流式拼接结果保持一致。
           const prefix = lastTextItem && lastTextItem !== event.itemId ? '\n\n' : '';

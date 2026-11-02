@@ -8,6 +8,8 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 
+import { estimateCost } from './pricing.js';
+
 const RETENTION_MS = 32 * 24 * 3600_000;
 const PRUNE_INTERVAL_MS = 6 * 3600_000;
 const MAX_DETAIL_BYTES = 16 * 1024;
@@ -27,16 +29,21 @@ const COLUMNS = [
   'account_id', 'account_email', 'api_key_id', 'api_key_name', 'user_agent',
   'upstream_user_agent', 'user_agent_rewritten', 'system_messages_converted',
   'status', 'http_status', 'error_code', 'error_message', 'fallback_error',
-  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'detail',
+  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'detail', 'service_tier',
 ];
 const ATTEMPT_COLUMNS = [
   'request_id', 'seq', 'ts', 'duration_ms', 'account_id', 'account_email',
-  'http_status', 'error_code', 'error_message',
+  'http_status', 'error_code', 'error_message', 'model', 'resolved_model', 'endpoint',
+  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'service_tier',
+];
+const COST_USAGE_COLUMNS = [
+  'model', 'resolved_model', 'endpoint', 'input_tokens', 'cached_tokens',
+  'output_tokens', 'reasoning_tokens', 'images', 'service_tier',
 ];
 // 换账号最多 3 个、上游之间还能再切换，留足余量；超出的只影响日志展示，不影响请求
 const MAX_ATTEMPTS_PER_REQUEST = 12;
 
-export async function openRequestLog(dataDir) {
+export async function openRequestLog(dataDir, options) {
   let DatabaseSync;
   // node:sqlite 加载时会打一条 ExperimentalWarning，这里只屏蔽这一条。
   const emitWarning = process.emitWarning;
@@ -48,13 +55,13 @@ export async function openRequestLog(dataDir) {
     ({ DatabaseSync } = await import('node:sqlite'));
   } catch {
     console.warn('[gateway] 当前 Node 不支持 node:sqlite（需要 22.13+），调用日志不可用');
-    return new RequestLog(null);
+    return new RequestLog(null, options);
   } finally {
     process.emitWarning = emitWarning;
   }
 
   const db = new DatabaseSync(path.join(dataDir, 'requests.db'));
-  return new RequestLog(db);
+  return new RequestLog(db, options);
 }
 
 // New fields deliberately default to NULL: old rows cannot tell whether a
@@ -118,14 +125,23 @@ export function initializeRequestLogSchema(db) {
     ['system_messages_converted', 'INTEGER'],
     ['fallback_error', 'TEXT'],
     ['detail', 'TEXT'],
+    ['service_tier', 'TEXT'],
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
+  }
+  const attemptColumns = new Set(db.prepare('PRAGMA table_info(failed_attempts)').all().map((column) => column.name.toLowerCase()));
+  for (const name of COST_USAGE_COLUMNS) {
+    if (!attemptColumns.has(name)) {
+      const type = ['model', 'resolved_model', 'endpoint', 'service_tier'].includes(name) ? 'TEXT' : 'INTEGER';
+      db.exec(`ALTER TABLE failed_attempts ADD COLUMN ${name} ${type}`);
+    }
   }
 }
 
 export class RequestLog {
-  constructor(db) {
+  constructor(db, { getPricing = () => ({}) } = {}) {
     this.db = db;
+    this.getPricing = getPricing;
     // 每次落到账号或上游的尝试结束时调用（包括失败后换了账号的那次），告警按它统计失败率，见 alerts.js
     this.onAttempt = null;
     if (!db) return;
@@ -196,7 +212,19 @@ export class RequestLog {
          FROM requests WHERE ts >= ? AND api_key_id IS NOT NULL GROUP BY api_key_id`,
       )
       .all(since);
-    for (const row of rows) usage[row.api_key_id] = { requests: row.n, tokens: row.t || 0 };
+    for (const row of rows) usage[row.api_key_id] = { requests: row.n, tokens: row.t || 0, ...emptyCostSummary() };
+    const costs = this.costGroups('requests', since, 'api_key_id');
+    // Failed attempts belong to the client's request/key even when they used a different account.
+    const failed = this.db.prepare(`
+      SELECT r.api_key_id, ${COST_USAGE_COLUMNS.map((name) => `f.${name}`).join(', ')}, COUNT(*) AS cost_count
+      FROM failed_attempts f JOIN requests r ON r.id = f.request_id
+      WHERE r.ts >= ? AND r.api_key_id IS NOT NULL
+      GROUP BY r.api_key_id, ${COST_USAGE_COLUMNS.map((name) => `f.${name}`).join(', ')}
+    `).all(since);
+    const pricing = this.getPricing();
+    for (const row of [...costs, ...failed]) {
+      if (row.api_key_id && usage[row.api_key_id]) addCost(usage[row.api_key_id], estimateCost(row, pricing), row.cost_count);
+    }
     return usage;
   }
 
@@ -242,7 +270,24 @@ export class RequestLog {
       .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
       .all(...args, Math.min(Number(limit) || 50, maxLimit), Number(offset) || 0);
     const attempts = this.attemptsFor(data.map((row) => row.id));
-    return { total, data: data.map((row) => ({ ...row, attempts: attempts.get(row.id) || [] })) };
+    const pricing = this.getPricing();
+    return { total, data: data.map((row) => {
+      const cost = estimateCost(row, pricing);
+      const previous = (attempts.get(row.id) || []).map((attempt) => ({ ...attempt, cost: estimateCost(attempt, pricing) }));
+      const costSummary = emptyCostSummary();
+      for (const item of [...previous, { cost }]) addCost(costSummary, item.cost);
+      return { ...row, cost, costSummary, attempts: previous };
+    }) };
+  }
+
+  // Group exact usage tuples rather than combining token counts before pricing:
+  // a per-request long-context multiplier must not be applied to a whole period.
+  costGroups(table, since, group = 'account_id') {
+    return this.db.prepare(`
+      SELECT ${group}, ${COST_USAGE_COLUMNS.join(', ')}, COUNT(*) AS cost_count
+      FROM ${table} WHERE ts >= ?
+      GROUP BY ${group}, ${COST_USAGE_COLUMNS.join(', ')}
+    `).all(since);
   }
 
   // 这些请求之前失败的尝试，按 seq 排好；分批查，避免导出 5000 条时参数太多
@@ -341,6 +386,12 @@ export class RequestLog {
     }
     actualOf(result.overall);
     for (const stats of Object.values(result.accounts)) actualOf(stats);
+    const pricing = this.getPricing();
+    for (const row of [...this.costGroups('requests', since), ...this.costGroups('failed_attempts', since)]) {
+      const cost = estimateCost(row, pricing);
+      addCost(result.overall, cost, row.cost_count);
+      if (row.account_id) addCost((result.accounts[row.account_id] ||= emptyStats()), cost, row.cost_count);
+    }
     return result;
   }
 }
@@ -355,6 +406,7 @@ function emptyStats() {
     cachedTokens: 0,
     outputTokens: 0,
     images: 0,
+    ...emptyCostSummary(),
     series: Array.from({ length: BUCKETS }, () => ({ s: 0, f: 0 })),
   };
 }
@@ -429,9 +481,10 @@ class LogEntry {
     });
   }
 
-  request({ model, stream }) {
-    this.row.model = model || null;
-    this.row.stream = stream ? 1 : 0;
+  request({ model, stream, serviceTier }) {
+    if (model !== undefined) this.row.model = model || null;
+    if (stream !== undefined) this.row.stream = stream ? 1 : 0;
+    if (serviceTier !== undefined) this.row.service_tier = clip(serviceTier, 40);
   }
 
   // Called immediately before each upstream attempt; the row describes the
@@ -451,6 +504,10 @@ class LogEntry {
 
   // 每次选定账号或上游时调用，也是这次尝试的开始
   account(account) {
+    // A new upstream attempt must not inherit already-observed usage from its predecessor.
+    for (const name of ['resolved_model', 'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images']) {
+      this.row[name] = null;
+    }
     this.row.account_id = account.id;
     this.row.account_email = account.email || account.label || null;
     this.attemptStartedAt = Date.now();
@@ -490,6 +547,7 @@ class LogEntry {
       http_status: status,
       error_code: err?.code ? String(err.code) : null,
       error_message: message.slice(0, 2000),
+      ...Object.fromEntries(COST_USAGE_COLUMNS.map((name) => [name, this.row[name] ?? null])),
     });
     // 下一次尝试从现在算起；选定下一个账号或上游时 account() 会再更新
     this.attemptStartedAt = now;
@@ -511,7 +569,7 @@ class LogEntry {
     this.row.status = 'success';
     // 账号也清掉：下一次尝试还没选到账号就失败时，不能记到上一个账号头上
     for (const key of ['account_id', 'account_email', 'http_status', 'error_code', 'error_message', 'resolved_model',
-      'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens']) {
+      'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'service_tier']) {
       this.row[key] = null;
     }
   }
@@ -545,6 +603,27 @@ class LogEntry {
       })}`);
     }
     this.log.write(this.row, this.attempts);
+  }
+}
+
+function emptyCostSummary() {
+  return {
+    costUsd: 0, inputCostUsd: 0, cachedInputCostUsd: 0, outputCostUsd: 0, imageCostUsd: 0,
+    pricedAttempts: 0, unpricedAttempts: 0, partialAttempts: 0,
+  };
+}
+
+function addCost(summary, cost, count = 1) {
+  if (Number.isFinite(cost?.usd)) {
+    summary.costUsd += cost.usd * count;
+    summary.inputCostUsd += (cost.inputUsd || 0) * count;
+    summary.cachedInputCostUsd += (cost.cachedInputUsd || 0) * count;
+    summary.outputCostUsd += (cost.outputUsd || 0) * count;
+    summary.imageCostUsd += (cost.imageUsd || 0) * count;
+    summary.pricedAttempts += count;
+    if (cost.status === 'partial') summary.partialAttempts += count;
+  } else {
+    summary.unpricedAttempts += count;
   }
 }
 

@@ -60,6 +60,7 @@ export async function handleResponses(req, res, body, ctx) {
   if (format?.type === 'json_schema' && format.schema) turnOptions.outputSchema = format.schema;
   const serviceTier = turnServiceTier(body, settings.serviceTierMode);
   if (serviceTier) turnOptions.serviceTierForTurn = serviceTier;
+  req.log?.request({ model: body.model || settings.defaultModel, stream: body.stream, serviceTier: serviceTier ?? 'default' });
 
   const abort = new AbortController();
   res.on('close', () => {
@@ -90,6 +91,10 @@ export async function handleResponses(req, res, body, ctx) {
   // 事件处理里有异步的图片保存，排进同一个队列保证输出顺序
   let queue = Promise.resolve();
   const onEvent = (event) => {
+    // Persist cumulative observations immediately: failed/aborted turns reject
+    // without returning runTurn's result, and must not lose consumed tokens.
+    if (event.type === 'started') req.log?.resolvedModel(event.model);
+    if (event.type === 'usage') req.log?.usage(event.usage);
     queue = queue.then(() => builder.handle(event)).catch(() => {});
   };
   const remember = (result) => {

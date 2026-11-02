@@ -85,6 +85,7 @@ export class CodexResponsesProxy {
       this.#payload(systemMessagesConverted ? { ...body, input } : body),
       this.store.data.settings.serviceTierMode,
     );
+    req.log?.request({ model: payload.model, stream: body.stream, serviceTier: payload.service_tier ?? 'default' });
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent']);
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
@@ -134,6 +135,7 @@ export class CodexResponsesProxy {
     let stream = null;
     let keepAlive;
     let forwardedFailure = false;
+    let usageLogged = false;
     try {
       let auth = await this.accounts.responsesAuth(account.id);
       const secrets = [auth.accessToken, req.headers.authorization, req.headers.authorization?.replace(/^Bearer\s+/i, '')];
@@ -213,6 +215,8 @@ export class CodexResponsesProxy {
         diag.bytes += chunk.length;
         diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
+        const actualTier = tracker.response?.service_tier ?? tracker.initial.service_tier;
+        if (actualTier != null) req.log?.request({ model: payload.model, stream: body.stream, serviceTier: actualTier });
         if (tracker.output) diag.firstOutputMs ??= ms();
         // A bare `error` event is terminal even without response.failed. Keep
         // response.failed on the normal terminal path so usage/output metadata
@@ -256,7 +260,10 @@ export class CodexResponsesProxy {
       const response = tracker.response;
       response.model ||= payload.model;
       req.log?.resolvedModel(response.model);
-      if (response.usage) req.log?.usage(toUsage(response.usage));
+      if (response.usage) {
+        req.log?.usage(toUsage(response.usage));
+        usageLogged = true;
+      }
       if (response.status === 'failed') {
         const failure = failedError(response.error);
         // 非流式还没写出任何内容，按普通错误抛出，交给 failover.js 换账号或改用 API 上游
@@ -273,6 +280,10 @@ export class CodexResponsesProxy {
       diag.phase = 'finished';
       diag.end = response.status;
     } catch (err) {
+      // A failed response may still report billable usage before failover.
+      if (!usageLogged && tracker?.response?.usage) req.log?.usage(toUsage(tracker.response.usage));
+      const observedModel = tracker?.response?.model ?? tracker?.initial?.model;
+      if (observedModel) req.log?.resolvedModel(observedModel);
       const observedFailure = err?.code === 'invalid_upstream_response'
         ? null
         : tracker?.failure && stream?.committed ? tracker.failure : null;
@@ -506,9 +517,9 @@ function responseHeaders(headers) {
 
 function toUsage(u) {
   return {
-    inputTokens: u.input_tokens ?? 0,
+    inputTokens: u.input_tokens ?? null,
     cachedInputTokens: u.input_tokens_details?.cached_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
+    outputTokens: u.output_tokens ?? null,
     reasoningOutputTokens: u.output_tokens_details?.reasoning_tokens ?? 0,
   };
 }

@@ -193,6 +193,8 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .stat .stat-value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
 .stat .stat-value.text { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; line-height: 1.5; }
 .stat .stat-foot { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stat.cost-stat { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 12px 24px; flex-wrap: wrap; }
+.cost-stat .stat-foot { margin-left: auto; }
 .overview-grid { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); align-items: start; }
 .endpoint { display: flex; align-items: center; gap: 10px; padding: 11px 20px; border-bottom: 1px solid var(--border); }
 .endpoint:last-child { border-bottom: none; }
@@ -231,6 +233,15 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .health-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-top: 6px; margin-right: 72px; }
 .health-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
 .health-meta b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cost-note { margin: 10px 0 0; font-size: 12px; color: var(--text-2); line-height: 1.6; }
+.cost-value { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; }
+.cost-breakdown { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--text-2); }
+.pricing-table { min-width: 900px; }
+.pricing-table th, .pricing-table td { padding: 10px 12px; }
+.pricing-table .input { min-width: 90px; height: 32px; padding: 0 8px; }
+.pricing-table .price-model { min-width: 190px; }
+.pricing-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 20px; }
+.pricing-help { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--border); }
 
 /* ---------- logs ---------- */
 .filters { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); align-items: center; }
@@ -567,7 +578,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <span class="right small muted" id="logs-updated"></span>
           </div>
           <div class="table-wrap"><table class="log-table">
-            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th>错误</th></tr></thead>
+            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th title="美元估算，包含已记录用量的失败重试">费用（USD）</th><th>错误</th></tr></thead>
             <tbody id="log-rows"></tbody>
           </table></div>
           <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
@@ -753,7 +764,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
 
     <!-- ---------- 设置 ---------- -->
     <section data-view="settings" hidden>
-      <div class="page-head"><div><h1>设置</h1><p>修改后自动保存</p></div></div>
+      <div class="page-head"><div><h1>设置</h1><p>常规设置修改后自动保存；模型价格需点击保存</p></div></div>
       <div class="stack">
         <div class="card">
           <div class="setting">
@@ -786,6 +797,12 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><div class="segmented" id="set-web">
               <button data-v="disabled">关闭</button><button data-v="cached">缓存</button><button data-v="live">实时</button></div></div>
           </div>
+        </div>
+        <div class="card" id="pricing-card">
+          <div class="card-head"><h2>美元费用估算</h2><span class="sub">模型价格</span><div class="right"><button class="btn sm" id="pricing-add">添加模型</button></div></div>
+          <p class="cost-note pricing-help">输入、缓存输入、输出的单位为美元 / 100 万 Tokens。推理已包含在输出中，不重复计费；不含缓存写入、搜索等工具附加费用。Codex 订阅按 API 等值估算，不代表现金扣款。缺用量、缺价格单列为未计价；保存价格会重新估算保留的历史日志。</p>
+          <div class="table-wrap"><table class="pricing-table"><thead><tr><th>模型 ID（精确匹配）</th><th>输入</th><th>缓存输入</th><th>输出</th><th>生图 $ / 张（可选）</th><th>Fast 倍率</th><th>来源 / 操作</th></tr></thead><tbody id="pricing-rows"></tbody></table></div>
+          <div class="pricing-foot"><div class="small text-2" id="pricing-source"></div><div class="inline-actions" style="margin:0"><span class="small muted" id="pricing-dirty"></span><button class="btn sm" id="pricing-discard">撤销修改</button><button class="btn sm primary" id="pricing-save">保存价格</button></div></div>
         </div>
         <div class="card">
           <div class="card-head"><h2>运行信息</h2></div>
@@ -969,6 +986,7 @@ const S = { token: readToken(), state: null, page: 'overview', models: null, ima
   chat: { messages: [], abort: null }, attachments: [], codeTab: 'curl', lightbox: null, generating: false,
   window: WINDOWS.some(([v]) => v === readPref('window')) ? readPref('window') : '24h', stats: null,
   logs: { total: 0, data: [], offset: 0, filters: {}, open: null, loadedAt: 0 } };
+const pricingEditor = { rows: null, overrides: {}, dirty: false, loading: false, saving: false };
 
 async function api(method, path, body) {
   const res = await fetch(`/admin/api${path}`, {
@@ -1023,6 +1041,38 @@ const fmtShortTime = (t) => {
 };
 const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
 const fmtMs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+const COST_SCOPE = '按当前价格和已记录用量折算美元，含失败重试；Codex 订阅不代表现金扣款。不含缓存写入、搜索等工具附加费用。';
+function fmtUsd(n) {
+  if (n == null || !Number.isFinite(Number(n))) return '未计价';
+  const value = Number(n);
+  if (value > 0 && value < 0.000001) return '<$0.000001';
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+}
+function costCoverage(o) {
+  if (!o) return '用量尚未加载';
+  const missing = Number(o.unpricedAttempts || 0), partial = Number(o.partialAttempts || 0);
+  return [missing ? `${fmtNum(missing)} 次未计价` : '', partial ? `${fmtNum(partial)} 次仅计部分费用` : ''].filter(Boolean).join(' · ') || '已记录用量均已计价';
+}
+function costSummaryValue(o) {
+  if (!o || (!o.pricedAttempts && o.unpricedAttempts)) return '未计价';
+  return fmtUsd(o.costUsd ?? 0);
+}
+function costSummaryLabel(o) {
+  return o?.unpricedAttempts || o?.partialAttempts ? '已计价小计' : '费用估算';
+}
+function costSummaryHtml(o, detail = false) {
+  return `<span class="cost-value" title="${esc(COST_SCOPE)}">${esc(costSummaryValue(o))}</span>${detail ? ` <span class="small muted">${costSummaryLabel(o)} · ${esc(costCoverage(o))}</span>` : ''}`;
+}
+const costReason = (c) => ({ missing_usage: '上游未返回用量', missing_price: '模型未配置价格', partial_usage: '上游仅返回部分用量', image_price_missing: '缺少生图单价，仅估算 Token 费用', unknown_model: '模型未配置价格', unsupported_modality: '部分模态缺少计价信息', invalid_usage: '用量不完整', missing_model: '未记录模型' }[c?.reason] || c?.reason || '用量或价格信息不完整');
+function attemptCostHtml(c) {
+  if (c?.usd == null) return `<span class="muted" title="${esc(costReason(c))}">未计价</span>`;
+  return `<span class="cost-value">${esc(fmtUsd(c.usd))}</span>${c.status === 'partial' ? ' <span class="small muted">部分费用</span>' : ''}`;
+}
+function costDetails(c) {
+  if (c?.usd == null) return `<span class="text-2">未计价：${esc(costReason(c))}</span> · <a href="#settings" data-focus-pricing>配置模型价格</a>`;
+  const parts = [['输入', c.inputUsd], ['缓存输入', c.cachedInputUsd], ['输出（含推理）', c.outputUsd], ['生图', c.imageUsd]].filter(([, v]) => v != null);
+  return `${attemptCostHtml(c)}<div class="cost-breakdown">${parts.map(([label, value]) => `<span>${label} ${esc(fmtUsd(value))}</span>`).join('')}</div><div class="small muted">${esc(c.model || '')}${c.serviceTier ? ` · ${esc(c.serviceTier)}` : ''}${c.assumedStandardTier ? ' · 档位未记录，按标准档估算' : ''}${c.multiplier && c.multiplier !== 1 ? ` · 档位倍率 ${esc(c.multiplier)}×` : ''}${c.longContext ? ' · 含长上下文倍率' : ''} · ${c.rateSource === 'custom' ? '自定义价格' : '内置参考价格'}${c.status === 'partial' ? ` · ${esc(costReason(c))}` : ''}</div>`;
+}
 const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#10b981', '#0ea5e9', '#14b8a6', '#f43f5e'];
 function avatar(seed, text, cls = '') {
   let h = 0; for (const c of String(seed)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -1192,7 +1242,8 @@ function requestBlock(stat) {
   return line(`实际请求 · ${windowLabel()}`, '这个账号 / 上游收到的每一次请求，包括失败后又换了账号或改用 API 上游的那次', stat?.actual || stat,
       retried > 0 ? `<span class="mid" title="其中 ${retried} 次失败后换了账号或上游，客户端没有看到这些失败">已转走 ${fmtNum(retried)}</span>` : '')
     + '<div class="req-gap"></div>'
-    + line('最终结果', '在这个账号 / 上游上结束的请求，也就是客户端实际拿到的结果', stat);
+    + line('最终结果', '在这个账号 / 上游上结束的请求，也就是客户端实际拿到的结果', stat)
+    + `<div class="cost-note">${costSummaryLabel(stat)} ${costSummaryHtml(stat)} <span class="muted">· ${esc(costCoverage(stat))}</span></div>`;
 }
 
 function healthCard(o, { title, link, switcher }) {
@@ -1206,7 +1257,8 @@ function healthCard(o, { title, link, switcher }) {
     <div class="health-axis"><span>${windowFrom()}</span><span>现在</span></div>
     <div class="health-meta"><span>平均耗时 <b>${fmtMs(o?.avgMs)}</b></span>
       <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span><span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
-      <span>生图 <b>${fmtNum(o?.images)}</b> 张</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>`;
+      <span>生图 <b>${fmtNum(o?.images)}</b> 张</span><span>${costSummaryLabel(o)} ${costSummaryHtml(o)}</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>
+      <div class="cost-note">${esc(costCoverage(o))} · Token 折算美元，Codex 订阅不代表现金扣款。<a href="#settings" data-focus-pricing>模型价格</a></div>`;
 }
 
 function renderWindowSwitches() {
@@ -2051,7 +2103,7 @@ function renderLogStats() {
   const s = o?.success ?? 0, f = o?.failure ?? 0, a = o?.aborted ?? 0, r = rateInfo(s, f);
   const retried = (o?.actual?.failure ?? 0) - f;
   const cachedPct = o?.inputTokens ? Math.round((o.cachedTokens / o.inputTokens) * 100) : 0;
-  const card = (ico, label, value, foot) => `<div class="card stat">
+  const card = (ico, label, value, foot, cls = '') => `<div class="card stat ${cls}">
     <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
     <div class="stat-value num">${value}</div><div class="stat-foot">${foot}</div></div>`;
   $('log-stats').innerHTML = [
@@ -2062,6 +2114,7 @@ function renderLogStats() {
     card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
     card('zap', 'Tokens', `${fmtNum(o?.inputTokens)}<span style="font-size:14px;color:var(--muted)"> / ${fmtNum(o?.outputTokens)}</span>`,
       `输入 / 输出 · 缓存命中 ${cachedPct}%`),
+    card('zap', `全部请求 · ${costSummaryLabel(o)} · USD`, esc(costSummaryValue(o)), `${esc(costCoverage(o))} · ${windowLabel()}，含失败重试的已记录用量`, 'cost-stat'),
   ].join('');
   $('log-health').innerHTML = healthCard(o, { title: '请求健康度', link: false, switcher: false });
   renderWindowSwitches();
@@ -2096,12 +2149,12 @@ function attemptChain(r) {
       <div class="small muted">${joinDot([`第 ${esc(fmtMs(Math.max(0, startMs)))} 开始`, ms != null && `耗时 ${esc(fmtMs(ms))}`])}</div>${extra}</div></div>`;
   const failed = tried.map((a, i) => step(i + 1, '', a.account_id, a.account_email,
     `<span class="badge danger"><span class="dot"></span>失败 ${esc(a.http_status ?? '')}</span>${a.error_code ? ` <span class="mono small">${esc(a.error_code)}</span>` : ''}`,
-    a.error_message ? `<div class="small" style="color:var(--danger);white-space:pre-wrap">${esc(a.error_message)}</div>` : '',
+    `<div class="small">本次估算 ${attemptCostHtml(a.cost)}</div>${a.error_message ? `<div class="small" style="color:var(--danger);white-space:pre-wrap">${esc(a.error_message)}</div>` : ''}`,
     a.ts - r.ts, a.duration_ms));
   const finalCls = r.status === 'success' ? 'ok' : r.status === 'aborted' ? 'mid' : '';
   const final = step(tried.length + 1, finalCls, r.account_id, r.account_email,
     `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`,
-    '<div class="small muted">最后一次尝试，就是这条日志的结果；下面的状态、Tokens 和错误信息都是它的</div>',
+    `<div class="small">本次估算 ${attemptCostHtml(r.cost)}</div><div class="small muted">最后一次尝试，就是这条日志的结果；下面的状态、Tokens 和错误信息都是它的</div>`,
     finalStart - r.ts, r.duration_ms == null ? null : r.ts + r.duration_ms - finalStart);
   return [['请求过程', `<div class="attempts">${failed.join('')}${final}</div>`]];
 }
@@ -2150,10 +2203,11 @@ function renderLogRows() {
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td class="num">${esc(fmtMs(r.duration_ms))}</td>
       <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
+      <td class="num" title="${esc(`${COST_SCOPE}\n${costCoverage(r.costSummary)}`)}">${costSummaryHtml(r.costSummary)}${r.costSummary?.unpricedAttempts || r.costSummary?.partialAttempts ? '<div class="small muted">已计价小计</div>' : ''}</td>
       <td class="err-cell" title="${esc(r.error_message || '')}"><div>${esc(r.error_message || '')}</div></td>
     </tr>`;
     return open ? row + logDetail(r) : row;
-  }).join('') : `<tr><td colspan="9"><div class="empty"><div class="icon-wrap">${icon('activity')}</div>
+  }).join('') : `<tr><td colspan="10"><div class="empty"><div class="icon-wrap">${icon('activity')}</div>
       <h3>${windowLabel()}没有调用记录</h3><p>通过 /v1 接口或调试台发起的对话、生图请求都会记录在这里</p></div></td></tr>`;
   const from = S.logs.total ? S.logs.offset + 1 : 0, to = S.logs.offset + rows.length;
   $('logs-range').textContent = `第 ${from}–${to} 条，共 ${fmtNum(S.logs.total)} 条`;
@@ -2182,11 +2236,13 @@ function logDetail(r) {
     ['耗时', esc(fmtMs(r.duration_ms))],
     ['Tokens', r.input_tokens == null ? '—'
       : `输入 ${fmtNum(r.input_tokens)}（缓存 ${fmtNum(r.cached_tokens)}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
+    ['本次费用估算', costDetails(r.cost)],
+    ['请求费用合计', `${costSummaryHtml(r.costSummary, true)}<div class="small muted">${esc(COST_SCOPE)}</div>`],
     ...(r.images ? [['生图', `${r.images} 张`]] : []),
     ...(r.error_message ? [['错误信息', `<pre>${esc(r.error_message)}</pre>`]] : []),
     ...logDiagnostics(r),
   ];
-  return `<tr class="log-detail"><td colspan="9"><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></td></tr>`;
+  return `<tr class="log-detail"><td colspan="10"><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></td></tr>`;
 }
 
 // ---- 诊断信息（detail 列）：连接、客户端会话、上游事件时间线，以及中断前后的关联 ----
@@ -2429,12 +2485,13 @@ const fmtTokens = (n) => (n >= 1e8 ? `${(n / 1e8).toFixed(2)} 亿` : n >= 1e4 ? 
 function usageCell(k) {
   const used = k.monthUsage?.tokens || 0, limit = k.monthlyTokenLimit;
   const reqs = `${fmtNum(k.monthUsage?.requests)} 次请求`;
-  if (limit == null) return `<div class="num">${fmtTokens(used)} tokens</div><div class="small muted">${reqs} · 不限额</div>`;
+  const cost = `<div class="small cost-note" title="${esc(COST_SCOPE)}">${costSummaryLabel(k.monthUsage)} ${costSummaryHtml(k.monthUsage)}<div class="muted">${esc(costCoverage(k.monthUsage))}</div></div>`;
+  if (limit == null) return `<div class="num">${fmtTokens(used)} tokens</div><div class="small muted">${reqs} · 不限额</div>${cost}`;
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100;
   return `<div style="min-width:170px"><div class="small" style="display:flex;justify-content:space-between;gap:8px">
       <span class="num">${fmtTokens(used)} / ${fmtTokens(limit)}</span><b class="num">${pct}%</b></div>
     <div class="progress ${pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : ''}" style="margin:6px 0 4px"><i style="width:${pct}%"></i></div>
-    <div class="small muted">${reqs}${pct >= 100 ? ' · 已用完，下月 1 日恢复' : ''}</div></div>`;
+    <div class="small muted">${reqs}${pct >= 100 ? ' · 已用完，下月 1 日恢复' : ''}</div>${cost}</div>`;
 }
 
 function renderKeys() {
@@ -2504,6 +2561,112 @@ $('key-rows').addEventListener('click', run(async (e) => {
 }));
 
 // ============ 设置 ============
+const PRICE_FIELDS = ['input', 'cachedInput', 'output', 'imagePerImage', 'fastMultiplier'];
+function pricingRows(info) {
+  return Object.entries(info.models || {}).sort(([a], [b]) => a.localeCompare(b)).map(([model, price]) => ({
+    model, originalModel: model, values: Object.fromEntries(PRICE_FIELDS.map((key) => [key, String(price[key] ?? (key === 'fastMultiplier' ? 2 : ''))])),
+    source: price.source || (Object.hasOwn(info.overrides || {}, model) ? 'custom' : 'official'), changed: false,
+  }));
+}
+function markPricingDirty() {
+  pricingEditor.dirty = true;
+  $('pricing-dirty').textContent = '有未保存的修改';
+  $('pricing-save').disabled = pricingEditor.saving;
+  $('pricing-discard').disabled = false;
+}
+function renderPricing(force = false) {
+  const p = pricingEditor, info = S.state.pricing;
+  if (!info) {
+    $('pricing-rows').innerHTML = '<tr><td colspan="7" class="muted">正在加载模型价格…</td></tr>';
+    if (!p.loading) {
+      p.loading = true;
+      api('GET', '/pricing').then((data) => { S.state.pricing = data; renderPricing(); })
+        .catch((e) => { $('pricing-rows').innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; })
+        .finally(() => { p.loading = false; });
+    }
+    return;
+  }
+  if (!p.rows) { p.rows = pricingRows(info); p.overrides = structuredClone(info.overrides || {}); }
+  // 自动刷新时保留未保存的输入和焦点。
+  if (force || !p.dirty || !$('pricing-rows').contains(document.activeElement)) {
+    $('pricing-rows').innerHTML = p.rows.map((row, index) => `<tr data-price-row="${index}">
+      <td><input class="input mono price-model" data-price-field="model" aria-label="模型 ID" value="${esc(row.model)}" ${row.originalModel ? 'readonly' : ''}></td>
+      ${PRICE_FIELDS.map((key) => `<td><input class="input num" type="number" min="0" step="any" data-price-field="${key}" aria-label="${esc(row.model || '新模型')} ${key}" value="${esc(row.values[key])}" ${key === 'imagePerImage' ? 'placeholder="未配置"' : ''}></td>`).join('')}
+      <td><span class="chip ${row.source === 'custom' ? 'on' : ''}">${row.source === 'custom' ? '自定义' : '官方参考'}</span> <button class="btn sm ghost" data-price-reset="${index}" title="恢复内置价格；没有内置价格的自定义模型将被移除">${row.originalModel && info.defaults?.[row.originalModel] ? '恢复默认' : '移除'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="7" class="muted">暂无价格，点击「添加模型」配置。</td></tr>';
+  }
+  const source = /^https:\/\//.test(info.sourceUrl || '') ? `<a href="${esc(info.sourceUrl)}" target="_blank" rel="noopener">官方价格参考</a>` : '官方价格参考';
+  $('pricing-source').innerHTML = `${source}${info.verifiedAt ? ` · ${esc(info.verifiedAt)} 核对` : ''}<div class="muted">Fast 倍率由模型价格决定；可为上游别名配置精确模型 ID。</div>`;
+  $('pricing-dirty').textContent = p.dirty ? '有未保存的修改' : '';
+  $('pricing-save').disabled = !p.dirty || p.saving;
+  $('pricing-discard').disabled = !p.dirty || p.saving;
+}
+$('pricing-rows').addEventListener('input', (e) => {
+  const input = e.target.closest('[data-price-field]'), tr = e.target.closest('[data-price-row]');
+  if (!input || !tr) return;
+  const row = pricingEditor.rows[Number(tr.dataset.priceRow)];
+  if (input.dataset.priceField === 'model') row.model = input.value;
+  else row.values[input.dataset.priceField] = input.value;
+  row.changed = true;
+  row.source = 'custom';
+  markPricingDirty();
+});
+$('pricing-add').addEventListener('click', () => {
+  if (!pricingEditor.rows) return;
+  pricingEditor.rows.push({ model: '', originalModel: '', values: { input: '', cachedInput: '', output: '', imagePerImage: '', fastMultiplier: '2' }, source: 'custom', changed: true });
+  markPricingDirty(); renderPricing(true);
+  const inputs = $('pricing-rows').querySelectorAll('[data-price-field="model"]');
+  inputs[inputs.length - 1]?.focus();
+});
+$('pricing-rows').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-price-reset]');
+  if (!button) return;
+  const index = Number(button.dataset.priceReset), row = pricingEditor.rows[index], defaults = S.state.pricing.defaults?.[row.originalModel];
+  delete pricingEditor.overrides[row.originalModel || row.model.trim()];
+  if (defaults) {
+    row.values = Object.fromEntries(PRICE_FIELDS.map((key) => [key, String(defaults[key] ?? (key === 'fastMultiplier' ? 2 : ''))]));
+    row.changed = false; row.source = 'official';
+  } else pricingEditor.rows.splice(index, 1);
+  markPricingDirty(); renderPricing(true);
+});
+$('pricing-discard').addEventListener('click', () => {
+  pricingEditor.rows = null; pricingEditor.dirty = false; renderPricing();
+});
+$('pricing-save').addEventListener('click', run(async () => {
+  const p = pricingEditor, overrides = structuredClone(p.overrides), seen = new Set();
+  for (const row of p.rows || []) {
+    const model = row.model.trim();
+    if (!model || seen.has(model)) throw new Error(!model ? '请填写模型 ID' : `模型 ID 重复：${model}`);
+    seen.add(model);
+    if (!row.changed) continue;
+    const price = {}, tokenFields = ['input', 'cachedInput', 'output'];
+    const tokenCount = tokenFields.filter((key) => row.values[key].trim() !== '').length;
+    if (tokenCount !== 0 && tokenCount !== tokenFields.length) throw new Error(`${model} 的输入、缓存输入、输出三项价格必须一起填写`);
+    if (tokenCount === 0 && row.values.imagePerImage.trim() === '') throw new Error(`${model} 请填写 Token 价格或每张图片价格`);
+    for (const key of PRICE_FIELDS) {
+      const raw = row.values[key].trim();
+      if (!raw && (key === 'imagePerImage' || tokenFields.includes(key))) continue;
+      if (key === 'fastMultiplier' && !raw) { price[key] = 2; continue; }
+      if (!raw || !Number.isFinite(Number(raw)) || Number(raw) < 0) throw new Error(`${model} 的价格和倍率必须是非负数`);
+      price[key] = Number(raw);
+    }
+    overrides[model] = price;
+  }
+  p.saving = true; renderPricing();
+  try {
+    const data = await api('PUT', '/pricing', { models: overrides });
+    S.state.pricing = data.models ? data : await api('GET', '/pricing');
+    p.rows = null; p.dirty = false;
+    await refreshState();
+    await loadStats();
+    await loadLogs();
+    toast('模型价格已保存，费用统计已重新估算');
+  } finally { p.saving = false; renderPricing(); }
+}));
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-focus-pricing]')) return;
+  requestAnimationFrame(() => { $('pricing-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+});
 function renderSettings() {
   const s = S.state.settings;
   // 自动刷新时不要覆盖正在输入的内容
@@ -2518,6 +2681,7 @@ function renderSettings() {
   $('set-fallback').checked = s.upstreamFallback;
   $('set-fallback-hint').innerHTML = s.upstreamFallback && !S.state.upstreams.some((u) => u.enabled)
     ? ' <b style="color:var(--danger)">还没有启用的 API 上游，暂不生效，请先去 <a href="#upstreams">API 上游</a> 添加。</b>' : '';
+  renderPricing();
   const a = activeAccount();
   const c = S.state.codex;
   const state = c.upgrading ? '<span class="badge warn">升级中</span>'

@@ -146,7 +146,7 @@ export class UpstreamManager {
       throw httpError(503, '还没有可用的 OpenAI API Key 上游，请在后台「API 上游」页添加', 'no_upstream');
     }
     const json = parseJsonRequest(req, body);
-    req.log?.request({ model: json?.model, stream: json?.stream });
+    req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: json?.service_tier ?? 'default' });
 
     // 流式对话默认不带用量，补上 include_usage 才能记 token、算额度；客户端没要的话把用量块过滤掉再回给它
     let stripUsageChunk = false;
@@ -160,6 +160,7 @@ export class UpstreamManager {
       const upstream = list[i];
       const isLast = i === list.length - 1;
       req.log?.account({ id: upstream.id, label: upstream.label });
+      req.log?.request({ serviceTier: json?.service_tier ?? 'default' });
       let upstreamRes;
       try {
         upstreamRes = await send(upstream, req.method, subPath + (search || ''), body, req.headers, res);
@@ -174,6 +175,10 @@ export class UpstreamManager {
       }
       if (isFailover(upstreamRes.statusCode) && !isLast) {
         const text = (await readAll(upstreamRes)).toString('utf8');
+        const info = parseJsonBody(Buffer.from(text));
+        if (info.model) req.log?.resolvedModel(info.model);
+        if (info.usage) req.log?.usage(info.usage);
+        if (info.serviceTier != null) req.log?.request({ serviceTier: info.serviceTier });
         this.#fail(upstream, upstreamRes.statusCode, errorMessage(text, upstreamRes.statusCode), upstreamRes.headers);
         req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, upstream.lastError, 'upstream_error'));
         continue;
@@ -211,6 +216,11 @@ export class UpstreamManager {
       upstreamRes.on('data', (chunk) => {
         if (tracker) {
           const text = tracker.feed(chunk);
+          // Keep observed usage/tier even if the downstream closes before EOF.
+          const info = tracker.result();
+          if (info.model) log?.resolvedModel(info.model);
+          if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
+          if (info.usage) log?.usage(info.usage);
           forward(filter ? filter.push(text) : chunk);
         } else {
           if (json && jsonBytes < MAX_TRACKED_JSON_BYTES) {
@@ -240,6 +250,8 @@ export class UpstreamManager {
     const info = tracker ? tracker.result() : json ? parseJsonBody(Buffer.concat(json)) : {};
     log?.resolvedModel(info.model);
     log?.usage(info.usage);
+    if (info.images != null) log?.images(info.images);
+    if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
     if (status >= 400 || info.error) {
       const err = new Error(info.error || `上游返回 HTTP ${status}`);
       err.status = status >= 400 ? status : 502;
@@ -321,7 +333,7 @@ class SseTracker {
   constructor() {
     this.decoder = new StringDecoder('utf8');
     this.buffer = '';
-    this.info = { model: null, usage: null, error: null, errorCode: null };
+    this.info = { model: null, usage: null, serviceTier: null, error: null, errorCode: null };
   }
 
   // 返回这一块解码后的文本，过滤用量块时要用
@@ -344,6 +356,7 @@ class SseTracker {
 
   #take(event) {
     this.info.model ||= event.model || event.response?.model || null;
+    this.info.serviceTier = event.service_tier ?? event.response?.service_tier ?? this.info.serviceTier;
     const usage = toUsage(event.usage || event.response?.usage);
     if (usage) this.info.usage = usage;
     const error = event.error || (event.type === 'response.failed' ? event.response?.error : null);
@@ -398,9 +411,14 @@ function isUsageOnlyChunk(event) {
 function parseJsonBody(buf) {
   try {
     const json = JSON.parse(buf.toString('utf8'));
+    // Embeddings also return `data`, so count only image-shaped entries.
+    const images = Array.isArray(json.data) ? json.data.filter((item) => item &&
+      (typeof item.url === 'string' || typeof item.b64_json === 'string')).length : 0;
     return {
       model: json.model || json.response?.model || null,
+      serviceTier: json.service_tier ?? json.response?.service_tier ?? null,
       usage: toUsage(json.usage || json.response?.usage),
+      images: images || null,
       error: json.error?.message || null,
       errorCode: json.error?.code || json.error?.type || null,
     };
@@ -412,10 +430,11 @@ function parseJsonBody(buf) {
 // Chat（prompt/completion）和 Responses（input/output）两种用量格式统一成日志用的字段
 function toUsage(u) {
   if (!u || typeof u !== 'object') return null;
+  if (u.input_tokens == null && u.prompt_tokens == null && u.output_tokens == null && u.completion_tokens == null) return null;
   return {
-    inputTokens: u.input_tokens ?? u.prompt_tokens ?? 0,
+    inputTokens: u.input_tokens ?? u.prompt_tokens ?? null,
     cachedInputTokens: u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0,
-    outputTokens: u.output_tokens ?? u.completion_tokens ?? 0,
+    outputTokens: u.output_tokens ?? u.completion_tokens ?? null,
     reasoningOutputTokens: u.output_tokens_details?.reasoning_tokens ?? u.completion_tokens_details?.reasoning_tokens ?? 0,
   };
 }

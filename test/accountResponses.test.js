@@ -513,6 +513,43 @@ test('nonstream failed is thrown as an error, keeping its usage, so failover can
   assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
 });
 
+test('cost telemetry uses the response service tier instead of the requested tier', async () => {
+  const h = harness(async () => upstream(terminalSse(response('completed', { service_tier: 'default' }))));
+  const req = request();
+  await h.proxy.handle(req, new ResponseSink(), toolBody({ stream: true, service_tier: 'priority' }));
+  const tiers = req.events.filter((e) => e.name === 'request' && e.value.serviceTier != null).map((e) => e.value.serviceTier);
+  assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier, 'priority');
+  assert.equal(tiers[0], 'priority');
+  assert.equal(tiers.at(-1), 'default');
+});
+
+test('streamed failure usage and resolved model are recorded before control returns to failover', async () => {
+  const result = response('failed', { output: [], error: { code: 'server_is_overloaded', message: 'Synthetic overload' } });
+  const h = harness(async () => upstream(Buffer.from(event('response.created', { response: response('in_progress') })
+    + event('response.failed', { response: result }))));
+  const req = request();
+  const res = new ResponseSink();
+  await assert.rejects(h.proxy.handle(req, res, toolBody({ stream: true })), (error) => {
+    assert.equal(error.code, 'server_is_overloaded');
+    assert.deepEqual(req.events.find((e) => e.name === 'usage')?.value, {
+      inputTokens: 12, cachedInputTokens: 3, outputTokens: 5, reasoningOutputTokens: 2,
+    });
+    assert.equal(req.events.find((e) => e.name === 'resolvedModel')?.value, result.model);
+    return true;
+  });
+  assert.equal(res.headersSent, false);
+  assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
+});
+
+test('empty upstream usage does not fabricate zero input or output consumption', async () => {
+  const h = harness(async () => upstream(terminalSse(response('completed', { usage: {} }))));
+  const req = request();
+  await h.proxy.handle(req, new ResponseSink(), toolBody());
+  const usage = req.events.find((e) => e.name === 'usage')?.value;
+  assert.equal(usage?.inputTokens, null);
+  assert.equal(usage?.outputTokens, null);
+});
+
 for (const stream of [false, true]) {
   test(`a valid SSE response without Content-Type is accepted (stream=${stream})`, async () => {
     const bytes = terminalSse();
