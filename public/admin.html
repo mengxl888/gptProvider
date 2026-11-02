@@ -52,7 +52,7 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
   background: linear-gradient(135deg, #6366f1, #8b5cf6 55%, #ec4899); box-shadow: 0 6px 16px -6px rgba(99,102,241,.6); }
 .brand-mark svg.i { width: 18px; height: 18px; stroke-width: 2.4; }
 .brand-name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
-.brand-sub { color: var(--muted); font-size: 12px; }
+.brand-instance { color: var(--accent); font-size: 12px; font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text-2);
   font-weight: 500; text-decoration: none; transition: background .12s, color .12s; }
@@ -394,7 +394,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar { position: sticky; z-index: 10; height: auto; flex-direction: row; align-items: center; padding: 10px 16px; border-right: none; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
-  .brand { padding: 0 8px 0 0; } .brand-name { white-space: nowrap; } .brand-sub, .sidebar-foot, .nav .count { display: none; }
+  .brand { padding: 0 8px 0 0; } .brand-name { white-space: nowrap; } .sidebar-foot, .nav .count { display: none; }
   .nav { flex-direction: row; } .nav a { padding: 7px 10px; white-space: nowrap; }
   .main { padding: 20px 16px 48px; }
   .page-head .actions { margin-left: 0; }
@@ -417,7 +417,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   <div class="card">
     <div class="brand">
       <div class="brand-mark"><svg class="i" data-icon="terminal"></svg></div>
-      <div><div class="brand-name">Codex Gateway</div><div class="brand-sub">本地 OpenAI 兼容网关</div></div>
+      <div><div class="brand-name">Codex Gateway</div><div class="brand-instance" id="gate-instance"></div></div>
     </div>
     <h2>输入管理口令</h2>
     <p>口令在启动网关时打印在终端里，也保存在 <code>data/store.json</code> 的 <code>adminToken</code> 字段。</p>
@@ -434,7 +434,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark"><svg class="i" data-icon="terminal"></svg></div>
-      <div><div class="brand-name">Codex Gateway</div><div class="brand-sub">本地 OpenAI 兼容网关</div></div>
+      <div style="min-width:0"><div class="brand-name">Codex Gateway</div><div class="brand-instance" id="brand-instance"></div></div>
     </div>
     <nav class="nav" id="nav">
       <a href="#overview" data-page="overview"><svg class="i" data-icon="dashboard"></svg>概览</a>
@@ -578,7 +578,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="alert-enabled"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>服务标识</b><span>写在每条告警的标题和末尾，例如「【FDG16】Codex 账号告警」，有多台网关发到同一个群时用来区分。</span></div>
+            <div class="desc"><b>服务标识</b><span>写在每条告警的标题和末尾，例如「【FDG16】Codex 账号告警」，有多台网关发到同一个群时用来区分；也显示在浏览器标签页标题和左上角。</span></div>
             <div class="control"><input id="alert-instance" class="input" maxlength="32" placeholder="例如 FDG16" style="width:200px"></div>
           </div>
           <div class="setting">
@@ -745,6 +745,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="page-head"><div><h1>设置</h1><p>修改后自动保存</p></div></div>
       <div class="stack">
         <div class="card">
+          <div class="setting">
+            <div class="desc"><b>服务标识</b><span>显示在浏览器标签页标题最前面、左上角和每条飞书告警里，部署了多个网关时用来区分（和「告警」页的服务标识是同一个）；留空时显示访问地址 <span id="set-instance-host" class="mono"></span></span></div>
+            <div class="control"><input id="set-instance" class="input" style="width:240px" maxlength="32" placeholder="例如 FDG16" autocomplete="off"></div>
+          </div>
           <div class="setting">
             <div class="desc"><b>默认模型</b><span>请求里没写 model 时使用；选「Codex 默认」则跟随 Codex 的推荐模型</span></div>
             <div class="control"><select id="set-model" class="select" style="width:240px"></select></div>
@@ -1084,16 +1088,27 @@ function route() {
   S.page = TITLES[page] ? page : 'overview';
   document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== S.page; });
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === S.page));
-  document.title = `${TITLES[S.page]} · Codex Gateway`;
+  renderInstance();
   ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, alerts: renderAlerts, models: renderModels, images: loadImages,
      playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
   if (STATS_PAGES.includes(S.page)) loadStats().catch(() => {});
 }
 window.addEventListener('hashchange', () => { if (S.state) route(); });
 
+// 服务标识（和飞书告警共用一个值），没填时用访问地址。放在标签页标题最前面（标签页窄时只露出开头）和左上角，方便区分多个部署。
+function renderInstance() {
+  const label = S.state?.alerts?.instanceName || location.host;
+  for (const id of ['brand-instance', 'gate-instance']) {
+    $(id).textContent = label;
+    $(id).title = `${label} · 本地 OpenAI 兼容网关`;
+  }
+  document.title = [label, S.state && TITLES[S.page], 'Codex Gateway'].filter(Boolean).join(' · ');
+}
+
 // ============ 外壳 ============
 function renderShell() {
   const st = S.state, a = activeAccount();
+  renderInstance();
   const hasUpdate = st.app.updateAvailable || st.codex.outdated;
   $('codex-version').innerHTML = `v${esc(st.app.version)} · codex ${esc(st.codex.version || '?')}${hasUpdate ? '<a href="#settings" class="update-dot" title="有新版本"></a>' : ''}`;
   renderCodexBanners();
@@ -2292,6 +2307,7 @@ const saveAlerts = run(async (patch, message = '告警设置已保存') => {
   S.state.alerts = r.alerts;
   toast(message);
   renderShell(); renderAlerts();
+  if (S.page === 'settings') renderSettings();
 });
 $('alert-enabled').addEventListener('change', (e) => saveAlerts({ enabled: e.target.checked }, e.target.checked ? '告警已开启' : '告警已关闭'));
 $('alert-timezone').addEventListener('change', (e) => saveAlerts({ timeZone: e.target.value || null }, '时区已保存'));
@@ -2434,6 +2450,9 @@ $('key-rows').addEventListener('click', run(async (e) => {
 // ============ 设置 ============
 function renderSettings() {
   const s = S.state.settings;
+  // 自动刷新时不要覆盖正在输入的内容
+  if (document.activeElement !== $('set-instance')) $('set-instance').value = S.state.alerts?.instanceName || '';
+  $('set-instance-host').textContent = location.host;
   fillModelSelects();
   $('set-chat-image').checked = s.chatImageGeneration;
   $('set-chat-image').disabled = activeAccount()?.planType === 'free';
@@ -2480,6 +2499,8 @@ function renderSettings() {
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
 }
 const saveSettings = run(async (patch) => { await api('PUT', '/settings', patch); toast('设置已保存'); await refreshState(); });
+$('set-instance').addEventListener('change', (e) => saveAlerts({ instanceName: e.target.value.trim() || null }, '服务标识已保存'));
+$('set-instance').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
 $('set-model').addEventListener('change', (e) => saveSettings({ defaultModel: e.target.value }));
 $('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGeneration: e.target.checked }));
 $('set-account-retry').addEventListener('change', (e) => saveSettings({ accountRetry: e.target.checked }));
@@ -2489,6 +2510,7 @@ $('set-service-tier').addEventListener('click', (e) => { const b = e.target.clos
 
 // ============ 入口 ============
 hydrateIcons();
+renderInstance();
 // 终端打印的快捷登录链接：/admin#login=<口令>，读取后立刻从地址栏抹掉
 if (location.hash.startsWith('#login=')) {
   S.token = decodeURIComponent(location.hash.slice(7)); writeToken(S.token);
