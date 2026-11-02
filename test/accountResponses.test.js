@@ -687,6 +687,17 @@ test('a non-streamed error event fails immediately even when the upstream keeps 
   assert.equal(h.fetchCalls.length, 1);
 });
 
+test('a valid upstream error wins over a trailing malformed SSE frame', async () => {
+  const bytes = Buffer.from(event('response.created', { response: response('in_progress') })
+    + event('error', { error: { code: 'server_is_overloaded', message: 'synthetic overload' } })
+    + 'event: trailing\ndata: {not-json}\n\n');
+  const h = harness(async () => upstream(bytes));
+  await assert.rejects(h.proxy.handle(request(), new ResponseSink(), toolBody({ stream: true })), {
+    code: 'server_is_overloaded', status: 503,
+  });
+  assert.equal(h.fetchCalls.length, 1);
+});
+
 test('401 refreshes once before output and retries the originally selected account', async () => {
   let attempts = 0;
   const h = harness(async () => ++attempts === 1 ? new Response('{"error":{"message":"Expired synthetic token"}}', { status: 401 }) : upstream());

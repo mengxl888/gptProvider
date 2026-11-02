@@ -39,6 +39,13 @@ const KEEP_ALIVE_MS = 5_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
 // 回合开头不含内容的事件：流式时先攒着，等第一段输出再一起发（见 DeferredStream）
 export const PREAMBLE_EVENTS = new Set(['response.created', 'response.in_progress']);
+// 只有这些事件（或带实际 delta 的事件）才算已经产生语义输出。
+// metadata/content-part 等结构事件不能阻止尚未输出时的账号重试。
+const OUTPUT_EVENT_TYPES = new Set([
+  'response.output_item.added', 'response.output_item.done',
+  'response.output_text.delta', 'response.reasoning_summary_text.delta',
+  'response.custom_tool_call_input.delta',
+]);
 
 // 诊断：客户端断开后，同一线程在这段时间内的下一次请求会和它互相关联（间隔、是否同一回合、新增了哪些输入项），
 // 用来判断是不是客户端主动打断后带着新输入重发。只在内存里，重启后清空。
@@ -214,7 +221,7 @@ export class CodexResponsesProxy {
         if (body.stream) {
           if (res.destroyed) throw abortedError();
           // 客户端还什么都没收到就失败了，按普通错误抛出
-          if (!stream.committed && tracker.failure) throw tracker.failure;
+          if (!stream.committed && tracker.failure && !tracker.failureAfterOutput) throw tracker.failure;
           if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) {
             const waitStarted = Date.now();
             diag.drainWaits = (diag.drainWaits || 0) + 1;
@@ -266,7 +273,9 @@ export class CodexResponsesProxy {
       diag.phase = 'finished';
       diag.end = response.status;
     } catch (err) {
-      const observedFailure = tracker?.failure && stream?.committed ? tracker.failure : null;
+      const observedFailure = err?.code === 'invalid_upstream_response'
+        ? null
+        : tracker?.failure && stream?.committed ? tracker.failure : null;
       diag.end = observedFailure ? `error:${clip(observedFailure.code || observedFailure.status || observedFailure.name, 60)}`
         : res.destroyed ? 'client_closed'
         : abort.signal.aborted && !err.status ? 'idle_timeout'
@@ -308,6 +317,8 @@ export class CodexResponsesProxy {
         Object.assign(diag, {
           events: tracker.events, items: tracker.itemsDone, itemKinds: [...tracker.itemKinds],
           openItem: tracker.openItem, lastEvent: tracker.lastEvent, responseId: tracker.responseId,
+          output: tracker.output, failureAfterOutput: tracker.failureAfterOutput,
+          failureCode: tracker.failure?.code || null,
           lastEventMs: tracker.lastEventAt ? tracker.lastEventAt - startedAt : null,
         });
       }
@@ -373,8 +384,9 @@ class ResponsesTracker {
     this.buffer = '';
     this.response = null;
     this.error = null;
-    // 收到过开头事件以外、不是失败的事件，即客户端会看到的输出
+    // 收到过有语义内容的事件，即客户端会看到的输出
     this.output = false;
+    this.failureAfterOutput = false;
     this.initial = {};
     this.items = new Map();
     // 诊断用：事件数、最后一个事件、已完成 / 正在输出的条目类型
@@ -418,13 +430,16 @@ class ResponsesTracker {
     if (!data || data === '[DONE]') return;
     let event;
     try { event = JSON.parse(data); } catch {
+      // Codex 上游把 error 当作终态；尾随的非 JSON 帧不能覆盖这个真实错误。
+      if (this.error) return;
       throw httpError(502, 'Codex Responses 上游事件不是合法 JSON', 'invalid_upstream_response');
     }
     this.#observe(event);
     if (event.type === 'error' || event.error) {
       const error = event.error || event;
+      if (this.output) this.failureAfterOutput = true;
       this.error ||= httpError(responseErrorStatus(error), error.message || 'Codex Responses 上游错误', error.code || 'upstream_error');
-    } else if (event.type !== 'response.failed' && !PREAMBLE_EVENTS.has(event.type)) {
+    } else if (isOutputEvent(event)) {
       this.output = true;
     }
     if (event.type === 'response.created' || event.type === 'response.in_progress') {
@@ -436,6 +451,7 @@ class ResponsesTracker {
     }
     if (['response.completed', 'response.failed', 'response.incomplete'].includes(event.type)) {
       const status = event.type.slice('response.'.length);
+      if (status === 'failed' && this.output) this.failureAfterOutput = true;
       if (!event.response || typeof event.response.id !== 'string'
         || (event.response.status != null && event.response.status !== status)
         || (event.response.output != null && !Array.isArray(event.response.output))) {
@@ -471,6 +487,13 @@ class ResponsesTracker {
     }
     if (this.error && this.response.status !== 'failed') throw this.error;
   }
+}
+
+function isOutputEvent(event) {
+  const type = event?.type;
+  if (!type || PREAMBLE_EVENTS.has(type)) return false;
+  if (OUTPUT_EVENT_TYPES.has(type)) return true;
+  return type.endsWith('.delta') && typeof event.delta === 'string' && event.delta.length > 0;
 }
 
 function failedError(error) {

@@ -66,6 +66,7 @@ const sse = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...d
 const created = sse('response.created', { response: { id: 'resp_x', status: 'in_progress' } });
 const completed = sse('response.completed', { response: { id: 'resp_x', status: 'completed', output: [] } });
 const failed = sse('response.failed', { response: { id: 'resp_x', status: 'failed', output: [], error: { code: 'rate_limit_exceeded', message: 'synthetic rate limit' } } });
+const metadata = sse('response.metadata', { response: { id: 'resp_x' } });
 
 function setup(t, outcomes, { settings = {}, upstreams = [{ enabled: true }] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stream-failover-'));
@@ -183,6 +184,17 @@ test('native responses stream: response.failed before output is retried, then fa
   assert.deepEqual(s.used, ['a', 'b']);
   assert.equal(s.upstreamCalls[0].code, 'rate_limit_exceeded');
   assert.equal(s.res.text, 'data: from-upstream\n\n');
+});
+
+test('native responses metadata before a failure does not block account retry', async (t) => {
+  const s = setup(t, {
+    a: { sse: created + metadata + failed },
+    b: { sse: created + sse('response.output_text.delta', { delta: '来自 b' }) + completed },
+  });
+  await s.run(native);
+  assert.deepEqual(s.used, ['a', 'b']);
+  assert.match(s.res.text, /来自 b/);
+  assert.doesNotMatch(s.res.text, /rate_limit_exceeded/);
 });
 
 test('deferred stream holds the opening events and sends them with the headers after holdMs without output', async () => {
