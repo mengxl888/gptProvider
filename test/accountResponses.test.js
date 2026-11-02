@@ -592,6 +592,101 @@ test('a stream cut off after output logs the failure and terminates with an expl
   assert.equal(h.fetchCalls.length, 1);
 });
 
+test('a streamed error after output terminates immediately without duplicating the error event', async () => {
+  const pieces = [
+    Buffer.from(event('response.created', { response: response('in_progress') })),
+    Buffer.from(event('response.output_text.delta', { delta: 'partial' })),
+    Buffer.from(event('error', { error: { code: 'server_error', message: 'synthetic upstream error' } })),
+  ];
+  const h = harness(async (_url, options) => {
+    let timer;
+    return new Response(new ReadableStream({
+      start(controller) {
+        let index = 0;
+        const push = () => {
+          if (index === pieces.length) return; // upstream keeps the connection open after error
+          controller.enqueue(pieces[index++]);
+          timer = setTimeout(push, 5);
+        };
+        push();
+        options.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          try { controller.close(); } catch {}
+        }, { once: true });
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const req = request();
+  const res = new ResponseSink();
+  await h.proxy.handle(req, res, toolBody({ stream: true }));
+  const text = res.body.toString('utf8');
+  assert.equal((text.match(/event: error/g) || []).length, 1);
+  assert.match(text, /synthetic upstream error/);
+  assert.equal(req.events.find((entry) => entry.name === 'fail')?.value.code, 'server_error');
+  assert.equal(h.fetchCalls.length, 1);
+});
+
+test('keep-alive comments are only written between complete events, never inside a split upstream event', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let controller;
+  const h = harness(async () => new Response(new ReadableStream({ start(c) { controller = c; } }), {
+    headers: { 'content-type': 'text/event-stream' },
+  }));
+  const res = new ResponseSink();
+  const pending = h.proxy.handle(request(), res, toolBody({ stream: true }));
+  const waitFor = async (text) => {
+    const deadline = Date.now() + 2_000;
+    while (!res.body.toString('utf8').endsWith(text)) {
+      assert.ok(Date.now() < deadline, `stream should end with ${JSON.stringify(text)}, got ${JSON.stringify(res.body.toString('utf8').slice(-120))}`);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  const split = event('response.output_text.delta', { delta: 'second' });
+  const cut = split.indexOf('second');
+  while (!controller) await new Promise((resolve) => setImmediate(resolve));
+  controller.enqueue(Buffer.from(event('response.output_text.delta', { delta: 'first' })));
+  await waitFor('\n\n');
+  controller.enqueue(Buffer.from(split.slice(0, cut)));
+  await waitFor(split.slice(0, cut));
+  t.mock.timers.tick(5_000);
+  controller.enqueue(Buffer.from(split.slice(cut)));
+  await waitFor(split);
+  t.mock.timers.tick(5_000);
+  controller.enqueue(terminalSse());
+  controller.close();
+  await pending;
+  const text = res.body.toString('utf8');
+  assert.equal((text.match(/: keep-alive/g) || []).length, 1);
+  assert.ok(text.includes(`${split}: keep-alive\n\n`));
+});
+
+test('a non-streamed error event fails immediately even when the upstream keeps the connection open', async () => {
+  const pieces = [
+    Buffer.from(event('response.created', { response: response('in_progress') })),
+    Buffer.from(event('error', { error: { code: 'server_error', message: 'synthetic upstream error' } })),
+  ];
+  const h = harness(async (_url, options) => {
+    let timer;
+    return new Response(new ReadableStream({
+      start(controller) {
+        let index = 0;
+        const push = () => {
+          if (index === pieces.length) return;
+          controller.enqueue(pieces[index++]);
+          timer = setTimeout(push, 5);
+        };
+        push();
+        options.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          try { controller.close(); } catch {}
+        }, { once: true });
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  await assert.rejects(h.proxy.handle(request(), new ResponseSink(), toolBody()), { code: 'server_error', status: 502 });
+  assert.equal(h.fetchCalls.length, 1);
+});
+
 test('401 refreshes once before output and retries the originally selected account', async () => {
   let attempts = 0;
   const h = harness(async () => ++attempts === 1 ? new Response('{"error":{"message":"Expired synthetic token"}}', { status: 401 }) : upstream());

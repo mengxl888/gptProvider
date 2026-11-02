@@ -35,6 +35,7 @@ const RESPONSE_HEADERS = [
   'x-codex-secondary-used-percent', 'x-codex-secondary-window-minutes', 'x-codex-secondary-reset-at',
 ];
 const IDLE_TIMEOUT_MS = 10 * 60_000;
+const KEEP_ALIVE_MS = 5_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
 // 回合开头不含内容的事件：流式时先攒着，等第一段输出再一起发（见 DeferredStream）
 export const PREAMBLE_EVENTS = new Set(['response.created', 'response.in_progress']);
@@ -124,6 +125,8 @@ export class CodexResponsesProxy {
     };
     resetIdle();
     let stream = null;
+    let keepAlive;
+    let forwardedFailure = false;
     try {
       let auth = await this.accounts.responsesAuth(account.id);
       const secrets = [auth.accessToken, req.headers.authorization, req.headers.authorization?.replace(/^Bearer\s+/i, '')];
@@ -190,6 +193,13 @@ export class CodexResponsesProxy {
           'cache-control': 'no-cache',
           'x-accel-buffering': 'no',
         });
+        // DeferredStream 延迟提交响应头期间不发送空事件；提交后定期发注释，
+        // 避免下游按空闲超时断开长时间没有正文的 Responses 回合。
+        // 上游分片可能停在半个事件中间（tracker.buffer 非空），这时插入注释会拆坏这个事件。
+        keepAlive = setInterval(() => {
+          if (stream.committed && !res.destroyed && !tracker.buffer) stream.write(': keep-alive\n\n');
+        }, KEEP_ALIVE_MS);
+        keepAlive.unref?.();
       }
       for await (const chunk of upstream.body) {
         resetIdle();
@@ -197,6 +207,10 @@ export class CodexResponsesProxy {
         diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
         if (tracker.output) diag.firstOutputMs ??= ms();
+        // A bare `error` event is terminal even without response.failed. Keep
+        // response.failed on the normal terminal path so usage/output metadata
+        // is still assembled before the failure is surfaced to failover.
+        if (!body.stream && tracker.error) throw tracker.error;
         if (body.stream) {
           if (res.destroyed) throw abortedError();
           // 客户端还什么都没收到就失败了，按普通错误抛出
@@ -214,6 +228,15 @@ export class CodexResponsesProxy {
             diag.committedMs ??= ms();
             diag.phase = 'streaming';
           }
+        }
+        // `error` 是 Responses 流的终态错误。客户端收到它后会主动结束
+        // 自己的读取；网关必须在这里收尾，不能继续等待一个永远不会来的
+        // response.completed/EOF。
+        if (tracker.failure && stream?.committed) {
+          forwardedFailure = Boolean(tracker.error);
+          diag.phase = 'terminal';
+          diag.terminalMs = ms();
+          break;
         }
         // Codex 后端在终态事件后可以继续保持 HTTP 连接；无需等待 EOF。
         if (tracker.response) {
@@ -243,10 +266,20 @@ export class CodexResponsesProxy {
       diag.phase = 'finished';
       diag.end = response.status;
     } catch (err) {
-      diag.end = res.destroyed ? 'client_closed'
+      const observedFailure = tracker?.failure && stream?.committed ? tracker.failure : null;
+      diag.end = observedFailure ? `error:${clip(observedFailure.code || observedFailure.status || observedFailure.name, 60)}`
+        : res.destroyed ? 'client_closed'
         : abort.signal.aborted && !err.status ? 'idle_timeout'
           : `error:${clip(err.code || err.status || err.name, 60)}`;
-      if (res.destroyed) throw abortedError();
+      if (res.destroyed) {
+        // 若客户端是在收到上游 error 后关闭，保留上游错误，避免把它误记成
+        // 一个没有原因的 499 中断。
+        if (observedFailure) {
+          req.log?.fail(observedFailure);
+          throw observedFailure;
+        }
+        throw abortedError();
+      }
       if (!res.headersSent) {
         if (err.status) throw err;
         throw httpError(502, abort.signal.aborted ? 'Codex Responses 上游响应超时' : '连接 Codex Responses 上游失败', 'upstream_unreachable');
@@ -254,9 +287,15 @@ export class CodexResponsesProxy {
       // 已输出的流不重发；以失败事件收尾，并保留日志里的实际错误。
       const failure = err.status ? err : httpError(502, 'Codex Responses 上游连接中断', 'upstream_disconnected');
       req.log?.fail(failure);
-      res.end(`event: error\ndata: ${JSON.stringify({ type: 'error', code: failure.code, message: failure.message })}\n\n`);
+      if (!forwardedFailure) {
+        res.end(`event: error\ndata: ${JSON.stringify({ type: 'error', code: failure.code, message: failure.message })}\n\n`);
+      } else {
+        // 上游 error 事件已经原样发给客户端，避免再追加一个重复的错误帧。
+        res.end();
+      }
     } finally {
       clearTimeout(idleTimer);
+      clearInterval(keepAlive);
       stream?.close();
       res.off('close', onClose);
       abort.abort();

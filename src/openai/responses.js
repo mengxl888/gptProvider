@@ -23,6 +23,7 @@ const REASONING_SUMMARIES = new Set(['auto', 'concise', 'detailed', 'none']);
 const HISTORY_TTL_MS = 6 * 3600_000;
 const HISTORY_MAX = 500;
 const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
+const KEEP_ALIVE_MS = 5_000;
 const history = new Map();
 
 export async function handleResponses(req, res, body, ctx) {
@@ -127,8 +128,10 @@ export async function handleResponses(req, res, body, ctx) {
     else stream.write(text);
   };
   const keepAlive = setInterval(() => {
-    if (!res.destroyed) stream.write(': keep-alive\n\n');
-  }, 15_000);
+    // Keep the deferred failover window intact. Once headers are committed,
+    // send comments often enough to prevent downstream idle timeouts.
+    if (stream.committed && !res.destroyed) stream.write(': keep-alive\n\n');
+  }, KEEP_ALIVE_MS);
   builder.start();
   try {
     const result = await runTurn(client, { ...turnArgs, onEvent });
