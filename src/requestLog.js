@@ -7,6 +7,10 @@ import path from 'node:path';
 
 const RETENTION_MS = 32 * 24 * 3600_000;
 const PRUNE_INTERVAL_MS = 6 * 3600_000;
+const MAX_DETAIL_BYTES = 16 * 1024;
+export const MAX_EXPORT_ROWS = 5000;
+// keep-alive 连接上已经处理过的请求数：反向代理通常会复用连接，客户端直连多半是新连接。
+const socketRequests = new WeakMap();
 export const BUCKETS = 20;
 export const WINDOWS = {
   '1h': 3600_000,
@@ -20,7 +24,7 @@ const COLUMNS = [
   'account_id', 'account_email', 'api_key_id', 'api_key_name', 'user_agent',
   'upstream_user_agent', 'user_agent_rewritten', 'system_messages_converted',
   'status', 'http_status', 'error_code', 'error_message', 'fallback_error',
-  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images',
+  'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'detail',
 ];
 
 export async function openRequestLog(dataDir) {
@@ -75,7 +79,8 @@ export function initializeRequestLogSchema(db) {
       cached_tokens INTEGER,
       output_tokens INTEGER,
       reasoning_tokens INTEGER,
-      images INTEGER
+      images INTEGER,
+      detail TEXT
     );
     CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
     CREATE INDEX IF NOT EXISTS requests_account_ts ON requests (account_id, ts);
@@ -87,6 +92,7 @@ export function initializeRequestLogSchema(db) {
     ['user_agent_rewritten', 'INTEGER'],
     ['system_messages_converted', 'INTEGER'],
     ['fallback_error', 'TEXT'],
+    ['detail', 'TEXT'],
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
   }
@@ -102,6 +108,7 @@ export class RequestLog {
     this.insert = db.prepare(
       `INSERT INTO requests (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
     );
+    this.updateDetail = db.prepare('UPDATE requests SET detail = ? WHERE id = ?');
     this.prune();
     setInterval(() => this.prune(), PRUNE_INTERVAL_MS).unref();
   }
@@ -129,6 +136,15 @@ export class RequestLog {
       this.insert.run(...COLUMNS.map((c) => row[c] ?? null));
     } catch (err) {
       console.warn('[gateway] 写调用日志失败:', err.message);
+    }
+  }
+
+  rewriteDetail(id, detail) {
+    if (!this.db) return;
+    try {
+      this.updateDetail.run(detail, id);
+    } catch (err) {
+      console.warn('[gateway] 更新调用日志失败:', err.message);
     }
   }
 
@@ -165,7 +181,7 @@ export class RequestLog {
     this.db?.exec('DELETE FROM requests');
   }
 
-  list({ window = '24h', limit = 50, offset = 0, account, status, endpoint, source } = {}) {
+  list({ window = '24h', limit = 50, offset = 0, account, status, endpoint, source, maxLimit = 200 } = {}) {
     if (!this.db) return { total: 0, data: [] };
     const where = ['ts >= ?'];
     const args = [Date.now() - (WINDOWS[window] || WINDOWS['24h'])];
@@ -179,7 +195,7 @@ export class RequestLog {
     const total = this.db.prepare(`SELECT COUNT(*) AS n FROM requests WHERE ${sql}`).get(...args).n;
     const data = this.db
       .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
-      .all(...args, Math.min(Number(limit) || 50, 200), Number(offset) || 0);
+      .all(...args, Math.min(Number(limit) || 50, maxLimit), Number(offset) || 0);
     return { total, data };
   }
 
@@ -261,6 +277,8 @@ class LogEntry {
   constructor(log, { endpoint, source, apiKey, userAgent }) {
     this.log = log;
     this.done = false;
+    // 排查用的诊断信息（连接、客户端会话标识、上游事件流的时间线），结束时以 JSON 存进 detail 列
+    this.diagnostics = {};
     this.row = {
       id: crypto.randomUUID(),
       ts: Date.now(),
@@ -272,6 +290,53 @@ class LogEntry {
       user_agent: userAgent ? String(userAgent).slice(0, 200) : null,
       status: 'success',
     };
+  }
+
+  get id() {
+    return this.row.id;
+  }
+
+  // 距请求开始（收到请求头）的毫秒数
+  elapsed() {
+    return Date.now() - this.row.ts;
+  }
+
+  // 按顶层键合并；两边都是对象时浅合并。日志已经写入后再调用会改写这一行的 detail。
+  diag(patch) {
+    for (const [key, value] of Object.entries(patch)) {
+      const prev = this.diagnostics[key];
+      this.diagnostics[key] = isPlainObject(prev) && isPlainObject(value) ? { ...prev, ...value } : value;
+    }
+    if (this.done) this.log.rewriteDetail(this.row.id, serializeDetail(this.diagnostics));
+  }
+
+  // 下游连接：客户端从哪来、什么时候断开、断开时响应头和数据发到哪一步。
+  watchConnection(req, res) {
+    const socket = req?.socket;
+    if (!socket || typeof res?.once !== 'function') return;
+    const startBytes = socket.bytesWritten ?? 0;
+    const reused = (socketRequests.get(socket) || 0) + 1;
+    socketRequests.set(socket, reused);
+    const connection = {
+      peer: socket.remoteAddress ?? null,
+      forwardedFor: clip(req.headers?.['x-forwarded-for'], 120),
+      httpVersion: req.httpVersion ?? null,
+      socketRequests: reused,
+    };
+    this.diagnostics.connection = connection;
+    const onError = (err) => { connection.socketError ??= clip(err?.code || err?.message, 80); };
+    const onEnd = () => { connection.clientFinMs ??= this.elapsed(); };
+    socket.on('error', onError);
+    socket.on('end', onEnd);
+    res.once('close', () => {
+      socket.off('error', onError);
+      socket.off('end', onEnd);
+      if (res.writableFinished) return;
+      connection.clientClosedMs = this.elapsed();
+      connection.headersSent = Boolean(res.headersSent);
+      connection.bytesOut = (socket.bytesWritten ?? 0) - startBytes;
+      connection.unsentBytes = socket.writableLength ?? null;
+    });
   }
 
   request({ model, stream }) {
@@ -329,6 +394,11 @@ class LogEntry {
     const who = this.row.account_email || this.row.account_id || '未分配账号';
     const line = `${who}：${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 1500);
     this.row.fallback_error = [this.row.fallback_error, line].filter(Boolean).join('\n').slice(0, 4000);
+    // 上一次尝试的上游时间线挪到 failedAttempts，后面的 upstream 只描述最后一次尝试
+    if (this.diagnostics.upstream) {
+      this.diagnostics.failedAttempts = [...(this.diagnostics.failedAttempts || []), this.diagnostics.upstream].slice(-5);
+      delete this.diagnostics.upstream;
+    }
     this.row.status = 'success';
     for (const key of ['http_status', 'error_code', 'error_message', 'resolved_model',
       'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens']) {
@@ -356,13 +426,40 @@ class LogEntry {
     if (r.status !== 'aborted') {
       this.log.attempt({ id: r.account_id, label: r.account_email, ok: r.status === 'success', status: r.http_status, code: r.error_code, message: r.error_message });
     }
+    if (Object.keys(this.diagnostics).length) r.detail = serializeDetail(this.diagnostics);
+    // 中断的请求同时打一行到标准输出，方便用 docker logs 收集
+    if (r.status === 'aborted') {
+      console.log(`[gateway] 请求中断 ${JSON.stringify({
+        id: r.id, time: new Date(r.ts).toISOString(), endpoint: r.endpoint, model: r.model,
+        account: r.account_email, key: r.api_key_name, durationMs: r.duration_ms, ...this.diagnostics,
+      })}`);
+    }
     this.log.write(this.row);
   }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function clip(value, max = 80) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+// 诊断信息在各处都有条数上限，这里再兜底一次，避免单行过大
+function serializeDetail(diagnostics) {
+  const json = JSON.stringify(diagnostics);
+  if (Buffer.byteLength(json) <= MAX_DETAIL_BYTES) return json;
+  return JSON.stringify({ truncated: true, keys: Object.keys(diagnostics) });
 }
 
 // 包一层处理函数：抛错记为失败，结束时写日志。处理函数通过 req.log 补充信息。
 export async function withLog(req, res, entry, fn) {
   req.log = entry;
+  entry.watchConnection?.(req, res);
   try {
     await fn();
   } catch (err) {

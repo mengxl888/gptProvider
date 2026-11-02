@@ -539,6 +539,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
         <div class="actions">
           <div class="segmented window-switch"></div>
           <button class="btn" id="logs-refresh"><svg class="i" data-icon="refresh"></svg>刷新</button>
+          <button class="btn" id="logs-export" title="按当前时间范围和筛选条件导出（最多 5000 条），包含诊断信息"><svg class="i" data-icon="download"></svg>导出</button>
           <button class="btn danger" id="logs-clear"><svg class="i" data-icon="trash"></svg>清空</button>
         </div>
       </div>
@@ -2112,11 +2113,87 @@ function logDetail(r) {
       : `输入 ${fmtNum(r.input_tokens)}（缓存 ${fmtNum(r.cached_tokens)}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
     ...(r.images ? [['生图', `${r.images} 张`]] : []),
     ...(r.error_message ? [['错误信息', `<pre>${esc(r.error_message)}</pre>`]] : []),
+    ...logDiagnostics(r),
   ];
   return `<tr class="log-detail"><td colspan="9"><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></td></tr>`;
 }
 
+// ---- 诊断信息（detail 列）：连接、客户端会话、上游事件时间线，以及中断前后的关联 ----
+const PHASE_NAME = {
+  before_start: '请求进入处理前', auth: '获取账号凭据', connecting: '等待上游响应头',
+  waiting_output: '上游已连上、还没有输出（客户端尚未收到响应头）', streaming: '正在向客户端输出',
+  terminal: '上游已发出结束事件、正在收尾', finished: '已完成',
+};
+const parseDetail = (r) => { try { return r.detail ? JSON.parse(r.detail) : null; } catch { return null; } };
+const kindChips = (list) => (list?.length ? list.map((k) => `<span class="chip mono">${esc(k)}</span>`).join(' ') : '—');
+const joinDot = (items) => items.filter(Boolean).join(' · ');
+
+function logDiagnostics(r) {
+  const d = parseDetail(r);
+  if (!d) return [];
+  const c = d.connection || {}, u = d.upstream || {}, cl = d.client || {}, at = u.atClose;
+  const rows = [];
+  if (r.status === 'aborted' || at || c.clientClosedMs != null) {
+    const lines = [
+      c.clientClosedMs != null && `客户端在请求开始后 <b>${esc(fmtMs(c.clientClosedMs))}</b> 断开连接`,
+      at && `断开时网关所处阶段：<b>${esc(PHASE_NAME[at.phase] || at.phase)}</b>`,
+      at?.lastEvent && `断开前最后一个上游事件：<span class="mono">${esc(at.lastEvent)}</span>${at.sinceLastEventMs != null ? `（距断开 ${esc(fmtMs(at.sinceLastEventMs))}）` : ''}，共收到 ${fmtNum(at.events)} 个事件`,
+      at && (at.lastItemDone || at.openItem) && joinDot([at.lastItemDone && `最后完成的条目：<span class="mono">${esc(at.lastItemDone)}</span>`, at.openItem && `正在输出的条目：<span class="mono">${esc(at.openItem)}</span>`]),
+      c.clientClosedMs != null && `已发给客户端：${c.headersSent ? '响应头 + ' : '未发响应头，'}${esc(fmtBytes(c.bytesOut || 0))}${c.unsentBytes ? `，另有 ${esc(fmtBytes(c.unsentBytes))} 堆积未发出（客户端读得慢）` : ''}`,
+      (c.socketError || c.clientFinMs != null) && `TCP：${joinDot([c.clientFinMs != null && `客户端在 ${esc(fmtMs(c.clientFinMs))} 发出 FIN`, c.socketError && `连接错误 <span class="mono">${esc(c.socketError)}</span>`])}`,
+      d.followUp ? `客户端在断开后 <b>${esc(fmtMs(d.followUp.gapMs))}</b> 对同一线程发起了新请求（${d.followUp.sameTurn === true ? '同一回合' : d.followUp.sameTurn === false ? '新回合' : '回合未知'}，输入多了 ${esc(d.followUp.inputDelta)} 项）：${kindChips(d.followUp.added)}<div class="small muted mono">新请求 ID：${esc(d.followUp.id || '未记录')}</div>`
+        : r.status === 'aborted' && '断开后 60 秒内同一线程没有新请求（或客户端没带线程标识）',
+    ].filter(Boolean);
+    rows.push(['断开分析', lines.map((l) => `<div>${l}</div>`).join('')]);
+  }
+  if (d.afterAbort) {
+    rows.push(['紧跟中断之后', `同一线程上一个请求在 <b>${esc(fmtMs(d.afterAbort.gapMs))}</b> 前被客户端中断（${d.afterAbort.sameTurn === true ? '同一回合' : d.afterAbort.sameTurn === false ? '不同回合' : '回合未知'}），这次输入多了 ${esc(d.afterAbort.inputDelta)} 项：${kindChips(d.afterAbort.added)}<div class="small muted mono">中断的请求 ID：${esc(d.afterAbort.id || '未记录')}</div>`]);
+  }
+  if (Object.keys(cl).length) {
+    rows.push(['客户端会话', `<div class="small">${joinDot([
+      cl.requestKind && `请求类型 <span class="mono">${esc(cl.requestKind)}</span>`,
+      cl.turnTrigger && `触发 <span class="mono">${esc(cl.turnTrigger)}</span>`,
+      cl.subagent && `子代理 <span class="mono">${esc(cl.subagent)}</span>`,
+      cl.subagentKind && `子代理类型 <span class="mono">${esc(cl.subagentKind)}</span>`,
+      cl.agentName && `代理名 <span class="mono">${esc(cl.agentName)}</span>`,
+      cl.concurrent ? `<span style="color:var(--warn)">同线程另有 ${esc(cl.concurrent)} 个请求在进行</span>` : null,
+    ]) || '—'}</div><div class="small muted mono">${joinDot([
+      cl.threadId && `thread ${esc(cl.threadId)}`, cl.turnId && `turn ${esc(cl.turnId)}`,
+      cl.parentThreadId && `parent ${esc(cl.parentThreadId)}`, cl.windowNumber != null && `window #${esc(cl.windowNumber)}`,
+    ])}</div>`]);
+  }
+  if (d.input) {
+    rows.push(['输入', `${fmtNum(d.input.items)} 项 · 工具 ${fmtNum(d.input.tools)} 个${d.input.effort ? ` · 推理 ${esc(d.input.effort)}` : ''}${d.input.serviceTier ? ` · ${esc(d.input.serviceTier)}` : ''}${d.request ? ` · 请求体 ${esc(fmtBytes(d.request.bodyBytes))}（读取 ${esc(fmtMs(d.request.bodyReadMs))}）` : ''}<div class="small muted">最后几项：${kindChips(d.input.tail)}</div>`]);
+  } else if (d.request) {
+    rows.push(['请求体', `${esc(fmtBytes(d.request.bodyBytes))}（读取 ${esc(fmtMs(d.request.bodyReadMs))}）`]);
+  }
+  if (d.upstream) {
+    rows.push(['上游时间线', `<div class="small">${joinDot([
+      u.handlerMs != null && `开始处理 ${esc(fmtMs(u.handlerMs))}`, u.requestMs != null && `发出请求 ${esc(fmtMs(u.requestMs))}`,
+      u.headersMs != null && `上游响应头 ${esc(fmtMs(u.headersMs))}${u.status ? `（HTTP ${esc(u.status)}）` : ''}`,
+      u.firstOutputMs != null && `首个输出 ${esc(fmtMs(u.firstOutputMs))}`, u.committedMs != null && `发出响应头 ${esc(fmtMs(u.committedMs))}`,
+      u.lastEventMs != null && `最后事件 ${esc(fmtMs(u.lastEventMs))}`, u.terminalMs != null && `结束事件 ${esc(fmtMs(u.terminalMs))}`,
+    ])}</div><div class="small">${joinDot([
+      `结果 <span class="mono">${esc(u.end || '—')}</span>`, `尝试 ${esc(u.attempts)} 次`, `事件 ${fmtNum(u.events)} 个`,
+      `${esc(fmtBytes(u.bytes || 0))}`, u.drainWaits && `等客户端读取 ${esc(u.drainWaits)} 次 / ${esc(fmtMs(u.drainMs))}`,
+      u.requestId && `x-request-id <span class="mono">${esc(u.requestId)}</span>`,
+    ])}</div><div class="small muted">完成的条目（${fmtNum(u.items)}）：${kindChips(u.itemKinds)}${u.openItem ? ` · 未完成：<span class="mono">${esc(u.openItem)}</span>` : ''}</div>`]);
+  }
+  if (d.failedAttempts?.length) rows.push(['失败尝试的时间线', `<pre>${esc(JSON.stringify(d.failedAttempts, null, 2))}</pre>`]);
+  if (d.connection) {
+    rows.push(['下游连接', `<span class="mono small">${esc(joinDot([c.peer, c.forwardedFor && `X-Forwarded-For ${c.forwardedFor}`, c.httpVersion && `HTTP/${c.httpVersion}`]))}</span>${c.socketRequests > 1 ? `<span class="small muted"> · 这条连接上的第 ${esc(c.socketRequests)} 个请求</span>` : ''}`]);
+  }
+  rows.push(['原始诊断', `<button class="btn sm" data-copy-detail="${esc(r.id)}">${icon('copy')}复制 JSON</button>`]);
+  return rows;
+}
+
 $('log-rows').addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('[data-copy-detail]');
+  if (copyBtn) {
+    const r = S.logs.data.find((x) => x.id === copyBtn.dataset.copyDetail);
+    if (r) copyText(JSON.stringify({ ...r, detail: parseDetail(r) }, null, 2));
+    return;
+  }
   const tr = e.target.closest('tr[data-log]');
   if (!tr) return;
   S.logs.open = S.logs.open === tr.dataset.log ? null : tr.dataset.log;
@@ -2125,6 +2202,18 @@ $('log-rows').addEventListener('click', (e) => {
 $('logs-prev').addEventListener('click', run(async () => { S.logs.offset = Math.max(0, S.logs.offset - LOG_PAGE); S.logs.open = null; await loadLogs(); }));
 $('logs-next').addEventListener('click', run(async () => { S.logs.offset += LOG_PAGE; S.logs.open = null; await loadLogs(); }));
 $('logs-refresh').addEventListener('click', run(async () => { await Promise.all([loadStats(), loadLogs()]); toast('已刷新'); }));
+$('logs-export').addEventListener('click', run(async () => {
+  const q = new URLSearchParams({ window: S.window });
+  for (const [k, v] of Object.entries(S.logs.filters)) if (v) q.set(k, v);
+  const r = await api('GET', `/logs/export?${q}`);
+  const blob = new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `gateway-logs-${S.window}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(r.total > r.data.length ? `已导出最近 ${r.data.length} 条（共 ${r.total} 条）` : `已导出 ${r.data.length} 条`);
+}));
 $('logs-clear').addEventListener('click', run(async () => {
   if (!confirm('清空所有调用日志？账号的请求记录和健康度也会一起清零，无法恢复。')) return;
   await api('DELETE', '/logs');

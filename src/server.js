@@ -131,6 +131,7 @@ async function route(req, res) {
       return withLog(req, res, entry, async () => {
         checkQuota(keyRecord);
         const raw = await readBody(req);
+        entry.diag({ request: { bodyBytes: raw.length, bodyReadMs: entry.elapsed() } });
         // 失败后先换账号重试，再交给 API 上游，见 failover.js
         await runWithFailover({
           req,
@@ -176,7 +177,9 @@ async function proxyToUpstream(req, res, url, keyRecord) {
   });
   return withLog(req, res, entry, async () => {
     checkQuota(keyRecord);
-    return upstreams.proxy(req, res, { ...options, body: await readBody(req) });
+    const body = await readBody(req);
+    entry.diag({ request: { bodyBytes: body.length, bodyReadMs: entry.elapsed() } });
+    return upstreams.proxy(req, res, { ...options, body });
   });
 }
 

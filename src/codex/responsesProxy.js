@@ -10,6 +10,7 @@ import { normalizeSystemMessages, responsesUserAgent } from './clientCompatibili
 import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
 import { applyServiceTierPolicy } from './serviceTier.js';
 import { DeferredStream, sendJson } from '../http.js';
+import { clip } from '../requestLog.js';
 
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const LOCAL_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
@@ -37,6 +38,20 @@ const IDLE_TIMEOUT_MS = 10 * 60_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
 // 回合开头不含内容的事件：流式时先攒着，等第一段输出再一起发（见 DeferredStream）
 export const PREAMBLE_EVENTS = new Set(['response.created', 'response.in_progress']);
+
+// 诊断：客户端断开后，同一线程在这段时间内的下一次请求会和它互相关联（间隔、是否同一回合、新增了哪些输入项），
+// 用来判断是不是客户端主动打断后带着新输入重发。只在内存里，重启后清空。
+const FOLLOW_UP_WINDOW_MS = 60_000;
+const MAX_TRACKED_ABORTS = 500;
+const recentAborts = new Map();
+const inflightThreads = new Map();
+const MAX_ITEM_KINDS = 12;
+// Codex 在 x-codex-turn-metadata（或 client_metadata）里带的回合信息，只取标识类字段
+const TURN_METADATA_FIELDS = {
+  thread_id: 'threadId', turn_id: 'turnId', request_kind: 'requestKind', turn_trigger: 'turnTrigger',
+  subagent_kind: 'subagentKind', agent_name: 'agentName', parent_thread_id: 'parentThreadId',
+  parent_turn_id: 'parentTurnId', window_number: 'windowNumber', thread_source: 'threadSource',
+};
 
 export function needsNativeResponses(body, headers = {}) {
   return String(headers['x-openai-internal-codex-responses-lite'] || '').trim().toLowerCase() === 'true'
@@ -70,12 +85,37 @@ export class CodexResponsesProxy {
     }
     const account = this.accounts.pickAccount({ affinityKey: affinityKey(body, req.headers), retry: req.accountRetry });
     req.log?.account(account);
+
+    // 时间都从收到请求头算起（没有日志条目时从这里算起）
+    const startedAt = Date.now() - (req.log?.elapsed?.() ?? 0);
+    const ms = () => Date.now() - startedAt;
+    const client = codexClientMeta(req.headers, body);
+    const threadKey = client.threadId || affinityKey(body, req.headers);
+    const inputItems = typeof body.input === 'string' ? [{ type: 'message', role: 'user' }] : body.input;
+    client.concurrent = threadKey ? inflightThreads.get(threadKey) || 0 : null;
+    if (threadKey) inflightThreads.set(threadKey, client.concurrent + 1);
+    req.log?.diag?.({ client, input: inputSummary(body, inputItems) });
+    linkFollowUp(req.log, threadKey, startedAt, client.turnId, inputItems);
+    const diag = { phase: 'auth', handlerMs: ms(), attempts: 0, events: 0, items: 0, bytes: 0 };
+    let tracker = null;
+
     const abort = new AbortController();
     const onClose = () => {
-      if (!res.writableFinished) abort.abort();
+      if (res.writableFinished) return;
+      abort.abort();
+      const lastEventAt = tracker?.lastEventAt;
+      diag.atClose = {
+        ms: ms(), phase: diag.phase, events: tracker?.events ?? 0,
+        lastEvent: tracker?.lastEvent ?? null, sinceLastEventMs: lastEventAt ? Date.now() - lastEventAt : null,
+        lastItemDone: tracker?.itemKinds.at(-1) ?? null, openItem: tracker?.openItem ?? null,
+      };
+      rememberAbort(threadKey, req.log, client.turnId, inputItems);
     };
     res.on('close', onClose);
-    if (res.destroyed) abort.abort();
+    if (res.destroyed) {
+      abort.abort();
+      diag.atClose = { ms: ms(), phase: 'before_start' };
+    }
     let idleTimer;
     const resetIdle = () => {
       clearTimeout(idleTimer);
@@ -94,6 +134,9 @@ export class CodexResponsesProxy {
       let retriedOverload = false;
       for (;;) {
         req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted });
+        diag.phase = 'connecting';
+        diag.attempts++;
+        diag.requestMs ??= ms();
         upstream = await this.fetch(RESPONSES_URL, {
           method: 'POST',
           redirect: 'error',
@@ -101,6 +144,9 @@ export class CodexResponsesProxy {
           headers: this.#headers(req, auth, userAgent),
           body: JSON.stringify(payload),
         });
+        diag.status = upstream.status;
+        diag.requestId = clip(upstream.headers.get('x-request-id'), 80);
+        diag.headersMs = ms();
         if (upstream.status === 401 && !refreshedAuth) {
           refreshedAuth = true;
           await upstream.body?.cancel();
@@ -134,7 +180,8 @@ export class CodexResponsesProxy {
         await upstream.body?.cancel();
         throw httpError(502, 'Codex Responses 上游未返回事件流', 'invalid_upstream_response');
       }
-      const tracker = new ResponsesTracker();
+      tracker = new ResponsesTracker();
+      diag.phase = 'waiting_output';
       // 响应头等到第一段输出再发：在这之前失败，还能换账号或改用 API 上游重试。
       if (body.stream) {
         stream = new DeferredStream(res, {
@@ -146,15 +193,34 @@ export class CodexResponsesProxy {
       }
       for await (const chunk of upstream.body) {
         resetIdle();
+        diag.bytes += chunk.length;
+        diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
+        if (tracker.output) diag.firstOutputMs ??= ms();
         if (body.stream) {
           if (res.destroyed) throw abortedError();
           // 客户端还什么都没收到就失败了，按普通错误抛出
           if (!stream.committed && tracker.failure) throw tracker.failure;
-          if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) await once(res, 'drain', { signal: abort.signal });
+          if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) {
+            const waitStarted = Date.now();
+            diag.drainWaits = (diag.drainWaits || 0) + 1;
+            try {
+              await once(res, 'drain', { signal: abort.signal });
+            } finally {
+              diag.drainMs = (diag.drainMs || 0) + Date.now() - waitStarted;
+            }
+          }
+          if (stream.committed) {
+            diag.committedMs ??= ms();
+            diag.phase = 'streaming';
+          }
         }
         // Codex 后端在终态事件后可以继续保持 HTTP 连接；无需等待 EOF。
-        if (tracker.response) break;
+        if (tracker.response) {
+          diag.phase = 'terminal';
+          diag.terminalMs = ms();
+          break;
+        }
       }
       tracker.finish();
       const response = tracker.response;
@@ -174,7 +240,12 @@ export class CodexResponsesProxy {
         for (const [name, value] of Object.entries(responseHeaders(upstream.headers))) res.setHeader(name, value);
         sendJson(res, 200, response);
       }
+      diag.phase = 'finished';
+      diag.end = response.status;
     } catch (err) {
+      diag.end = res.destroyed ? 'client_closed'
+        : abort.signal.aborted && !err.status ? 'idle_timeout'
+          : `error:${clip(err.code || err.status || err.name, 60)}`;
       if (res.destroyed) throw abortedError();
       if (!res.headersSent) {
         if (err.status) throw err;
@@ -189,6 +260,19 @@ export class CodexResponsesProxy {
       stream?.close();
       res.off('close', onClose);
       abort.abort();
+      if (threadKey) {
+        const left = (inflightThreads.get(threadKey) || 1) - 1;
+        if (left > 0) inflightThreads.set(threadKey, left);
+        else inflightThreads.delete(threadKey);
+      }
+      if (tracker) {
+        Object.assign(diag, {
+          events: tracker.events, items: tracker.itemsDone, itemKinds: [...tracker.itemKinds],
+          openItem: tracker.openItem, lastEvent: tracker.lastEvent, responseId: tracker.responseId,
+          lastEventMs: tracker.lastEventAt ? tracker.lastEventAt - startedAt : null,
+        });
+      }
+      req.log?.diag?.({ upstream: diag });
     }
   }
 
@@ -254,6 +338,17 @@ class ResponsesTracker {
     this.output = false;
     this.initial = {};
     this.items = new Map();
+    // 诊断用：事件数、最后一个事件、已完成 / 正在输出的条目类型
+    this.events = 0;
+    this.lastEvent = null;
+    this.lastEventAt = null;
+    this.itemKinds = [];
+    this.openItem = null;
+    this.responseId = null;
+  }
+
+  get itemsDone() {
+    return this.items.size;
   }
 
   // 目前为止收到的失败：error 事件或 response.failed
@@ -286,6 +381,7 @@ class ResponsesTracker {
     try { event = JSON.parse(data); } catch {
       throw httpError(502, 'Codex Responses 上游事件不是合法 JSON', 'invalid_upstream_response');
     }
+    this.#observe(event);
     if (event.type === 'error' || event.error) {
       const error = event.error || event;
       this.error ||= httpError(responseErrorStatus(error), error.message || 'Codex Responses 上游错误', error.code || 'upstream_error');
@@ -309,6 +405,19 @@ class ResponsesTracker {
       const output = event.response.output?.length ? event.response.output
         : [...this.items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
       this.response = { object: 'response', ...this.initial, ...event.response, status, output };
+    }
+  }
+
+  #observe(event) {
+    this.events++;
+    this.lastEvent = clip(event.type, 60);
+    this.lastEventAt = Date.now();
+    if (event.type === 'response.created') this.responseId = clip(event.response?.id, 80);
+    if (event.type === 'response.output_item.added') this.openItem = itemKind(event.item);
+    if (event.type === 'response.output_item.done') {
+      this.openItem = null;
+      this.itemKinds.push(itemKind(event.item));
+      if (this.itemKinds.length > MAX_ITEM_KINDS) this.itemKinds.shift();
     }
   }
 
@@ -344,4 +453,72 @@ function toUsage(u) {
 
 function abortedError() {
   return Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
+}
+
+// 只记类型、角色、phase 和工具名，不记内容
+export function itemKind(item) {
+  if (!item || typeof item !== 'object') return typeof item;
+  const type = clip(item.type || (item.role ? 'message' : 'unknown'), 40);
+  if (type === 'message') return [type, item.role, item.phase].filter(Boolean).map((s) => clip(s, 24)).join(':');
+  if (typeof item.name === 'string' && /_call$/.test(type)) return `${type}:${clip(item.name, 40)}`;
+  return type;
+}
+
+function inputSummary(body, items) {
+  return {
+    items: items.length,
+    tail: items.slice(-6).map(itemKind),
+    tools: Array.isArray(body.tools) ? body.tools.length : 0,
+    effort: clip(body.reasoning?.effort, 20),
+    serviceTier: clip(body.service_tier, 20),
+  };
+}
+
+export function codexClientMeta(headers, body) {
+  const metadata = body.client_metadata && typeof body.client_metadata === 'object' ? body.client_metadata : {};
+  const turn = parseObject(headers['x-codex-turn-metadata']) || parseObject(metadata['x-codex-turn-metadata']) || {};
+  const meta = {};
+  for (const [key, name] of Object.entries(TURN_METADATA_FIELDS)) meta[name] = clip(turn[key] ?? metadata[key]);
+  meta.threadId ??= clip(headers['thread-id'] || headers['x-client-request-id']);
+  meta.session = clip(headers['session-id'] || headers.session_id || turn.session_id || metadata.session_id);
+  meta.subagent = clip(headers['x-openai-subagent'] || metadata['x-openai-subagent']);
+  meta.parentThreadId ??= clip(headers['x-codex-parent-thread-id'] || metadata['x-codex-parent-thread-id']);
+  meta.windowId = clip(headers['x-codex-window-id']);
+  meta.turnState = typeof headers['x-codex-turn-state'] === 'string';
+  meta.responsesLite = String(headers['x-openai-internal-codex-responses-lite'] || '').trim().toLowerCase() === 'true';
+  return Object.fromEntries(Object.entries(meta).filter(([, value]) => value != null));
+}
+
+function parseObject(text) {
+  if (typeof text !== 'string' || !text) return null;
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberAbort(threadKey, entry, turnId, items) {
+  if (!threadKey) return;
+  recentAborts.delete(threadKey);
+  recentAborts.set(threadKey, { entry, at: Date.now(), turnId, inputCount: items.length });
+  if (recentAborts.size > MAX_TRACKED_ABORTS) recentAborts.delete(recentAborts.keys().next().value);
+}
+
+// 同一线程刚中断过：两条日志互相记下对方的 ID、间隔，以及新请求比中断的那次多出来的输入项类型
+function linkFollowUp(entry, threadKey, startedAt, turnId, items) {
+  const prev = threadKey && recentAborts.get(threadKey);
+  if (!prev) return;
+  recentAborts.delete(threadKey);
+  const gapMs = startedAt - prev.at;
+  if (gapMs > FOLLOW_UP_WINDOW_MS) return;
+  const link = {
+    gapMs,
+    sameTurn: prev.turnId && turnId ? prev.turnId === turnId : null,
+    inputDelta: items.length - prev.inputCount,
+    added: items.length >= prev.inputCount ? items.slice(prev.inputCount, prev.inputCount + 8).map(itemKind) : null,
+  };
+  entry?.diag?.({ afterAbort: { id: prev.entry?.id ?? null, ...link } });
+  prev.entry?.diag?.({ followUp: { id: entry?.id ?? null, ...link } });
 }

@@ -5,8 +5,9 @@ import { BACKGROUND_REFRESH_MS, httpError } from '../codex/accounts.js';
 import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
 import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../openai/images.js';
-import { WINDOWS, withLog } from '../requestLog.js';
+import { MAX_EXPORT_ROWS, WINDOWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
+import { config } from '../config.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
   const { accounts, upstreams, store, codex, images, requestLog, updater, alerts } = ctx;
@@ -59,8 +60,27 @@ export async function handleAdmin(req, res, url, body, ctx) {
   }
 
   // GET /admin/api/logs?window=&limit=&offset=&account=&status=&endpoint=&source=
+  // GET /admin/api/logs/export?…  同样的筛选，最多导出 MAX_EXPORT_ROWS 条，detail 解析成对象
   // DELETE /admin/api/logs  清空
   if (parts[0] === 'logs') {
+    if (method === 'GET' && parts[1] === 'export') {
+      const q = url.searchParams;
+      const { total, data } = requestLog.list({
+        window: validWindow(q.get('window')),
+        limit: MAX_EXPORT_ROWS,
+        maxLimit: MAX_EXPORT_ROWS,
+        account: q.get('account'),
+        status: q.get('status'),
+        endpoint: q.get('endpoint'),
+        source: q.get('source'),
+      });
+      return ok({
+        exportedAt: new Date().toISOString(),
+        appVersion: config.appVersion,
+        total,
+        data: data.map((row) => ({ ...row, detail: parseDetail(row.detail) })),
+      });
+    }
     if (method === 'GET') {
       const q = url.searchParams;
       return ok(
@@ -277,6 +297,15 @@ export async function handleAdmin(req, res, url, body, ctx) {
 
 function validWindow(value) {
   return value in WINDOWS ? value : '24h';
+}
+
+function parseDetail(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 // 本自然月的请求数和 token 数，和额度检查用的是同一个口径
