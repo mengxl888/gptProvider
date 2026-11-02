@@ -1,5 +1,7 @@
 # 运行数据：每个账号的 CODEX_HOME（含 auth.json 登录凭据）、管理口令、API Key 哈希、调用日志、生成的图片
 data/
+# docker compose 的本机设置（BIND_IP、ALLOWED_HOSTS 等），每台服务器各写各的
+.env
 node_modules/
 *.log
 .DS_Store

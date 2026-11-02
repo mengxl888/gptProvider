@@ -1,25 +1,35 @@
+# 本机设置不要直接改这个文件（以后 git pull 会冲突），写在同目录的 .env 里，compose 会自动读取，例如：
+#
+#   BIND_IP=0.0.0.0                               # 8787 对外开放；默认 127.0.0.1，只对本机开放
+#   ALLOWED_HOSTS=localhost,127.0.0.1,1.2.3.4     # 用服务器 IP 或域名访问时必须加上，否则返回「Host 不被允许」
+#   NPM_REGISTRY=https://registry.npmmirror.com   # 源码构建和后台「升级 Codex」用的 npm 镜像
+#   GITHUB_PROXY=https://your-github-proxy/       # 访问不了 GitHub 时，给一键更新配的代理前缀
+#   MAX_REQUEST_BODY_MB=100                       # 请求体上限（MiB，1–1024）；反向代理的上限不要比它小
+#
+# 改完执行 docker compose up -d 才生效（restart 不会读取新配置）。详见 README「部署在服务器上」。
 services:
   gptprovider:
-    image: ghcr.io/mengxl888/gptprovider:latest
-    # 想从源码构建（比如拉不到 ghcr.io 的镜像）：注释上一行，打开下面这行，再执行 docker compose up -d --build
-    # build: .
+    # 默认从源码构建：在克隆下来的仓库目录里执行 docker compose up -d --build
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-}"
+    # 也可以改用预构建镜像：注释掉上面整段 build，打开下面这行，再执行 docker compose up -d。
+    # 镜像由 GitHub Actions 发布，拉取报「error from registry: denied」说明镜像没发布成功或不是公开的，改回源码构建即可
+    # image: ghcr.io/mengxl888/gptprovider:latest
     container_name: gptprovider
     restart: unless-stopped
     init: true
     ports:
-      # 默认只对本机开放。部署在服务器上时用 SSH 隧道访问，见 README「部署在服务器上」
-      - "127.0.0.1:8787:8787"   # 管理后台 + /v1 接口
-      - "127.0.0.1:1455:1455"   # 浏览器登录 ChatGPT 的回调
+      # 默认只对本机开放，用服务器公网 IP 打开会失败（ERR_EMPTY_RESPONSE / 拒绝连接）。服务器上推荐用 SSH 隧道访问
+      - "${BIND_IP:-127.0.0.1}:8787:8787"   # 管理后台 + /v1 接口
+      - "127.0.0.1:1455:1455"               # 浏览器登录 ChatGPT 的回调，只给本机和 SSH 隧道用
     environment:
       TZ: Asia/Shanghai
-      # 允许访问的域名/IP（默认只允许 localhost、127.0.0.1）
-      # ALLOWED_HOSTS: "localhost,127.0.0.1,gpt.example.com"
-      # 请求体默认上限 100 MiB，可设为 1–1024 的整数；反向代理也应设置不小于此值的上限
-      MAX_REQUEST_BODY_MB: "100"
-      # 访问不了 GitHub 时，给一键更新配一个 GitHub 代理前缀
-      # GITHUB_PROXY: "https://your-github-proxy/"
-      # 后台「升级 Codex」用的 npm 镜像
-      # NPM_REGISTRY: "https://registry.npmmirror.com"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,::1}"
+      MAX_REQUEST_BODY_MB: "${MAX_REQUEST_BODY_MB:-100}"
+      GITHUB_PROXY: "${GITHUB_PROXY:-}"
+      NPM_REGISTRY: "${NPM_REGISTRY:-}"
     volumes:
       - gptprovider-data:/app/data
 

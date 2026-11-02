@@ -12,7 +12,7 @@
 - Codex 账号渠道：`/v1/chat/completions`、`/v1/responses`（都支持流式，Responses 支持客户端工具调用）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
 - OpenAI API 渠道：`/v1` 下所有请求原样转发到官方 API，函数调用、Embeddings、音频等都能用；多个 Key 按优先级自动切换
 - 一键更新：GitHub 发布新版本后，在后台点「更新」即可升级，失败自动回退
-- Docker 一条命令部署，也可以直接用 Node 运行
+- Docker 部署：克隆仓库后一条命令构建并启动，也可以直接用 Node 运行
 
 > **使用须知**：ChatGPT 订阅额度按账号授权给本人使用。**Codex 账号渠道只适合每个人用自己的账号、部署自己的实例、自己使用**，不要开放给他人或转售，否则可能违反 OpenAI 的使用条款并导致账号受限。要给别人用，请用 OpenAI API 渠道：费用记在 API Key 所属的 OpenAI 账户上，Key 的所有者要对经过它的使用负责，并遵守 OpenAI 的使用政策。默认配置只允许本机访问。
 
@@ -46,15 +46,17 @@
 docker compose version
 ```
 
-### 2. 下载配置并启动
+### 2. 下载源码并启动
 
 ```bash
-mkdir gptprovider && cd gptprovider
-curl -fsSLO https://raw.githubusercontent.com/mengxl888/gptProvider/main/docker-compose.yml
-docker compose up -d
+git clone https://github.com/mengxl888/gptProvider.git gptprovider   # 没有 git：apt install -y git
+cd gptprovider
+docker compose up -d --build
 ```
 
-镜像是 `ghcr.io/mengxl888/gptprovider:latest`，同时支持 amd64 和 arm64。拉不到镜像时见[国内网络](#国内网络)。
+`docker-compose.yml` 默认在本机从源码构建镜像。第一次构建要从 Docker Hub 拉取 `node:24-slim`，再用 npm 安装依赖（包括官方 Codex），需要几分钟；网络慢时见[国内网络](#国内网络)。
+
+> 不要只下载 `docker-compose.yml` 然后执行 `docker compose up -d`：源码构建需要完整仓库。预构建镜像 `ghcr.io/mengxl888/gptprovider:latest` 由 GitHub Actions 发布，拉取报 `error from registry: denied` 说明镜像没有发布成功或不是公开的，这时用源码构建，见[常见问题](#常见问题)。
 
 ### 3. 打开管理后台
 
@@ -65,6 +67,8 @@ docker compose logs gptprovider | grep -E "管理口令|快捷登录"
 ```
 
 在浏览器打开快捷登录链接，或者打开 <http://127.0.0.1:8787/admin> 后输入管理口令。
+
+链接里的 `127.0.0.1` 指 Docker 所在的机器。**部署在服务器上时**，在自己电脑上直接打开这个链接或者 `http://服务器IP:8787` 都打不开，要先按[部署在服务器上](#部署在服务器上)配置访问方式。
 
 ### 4. 添加 ChatGPT 账号或 OpenAI API Key
 
@@ -119,11 +123,13 @@ GitHub 上发布新版本后，后台会自动发现：概览页出现「发现�
 
 ### 更新运行环境（镜像）
 
-一键更新只更新网关代码。Node.js、系统依赖或自带的 Codex 有变化时，可以拉取新镜像：
+一键更新只更新网关代码。启动器（`launcher.js`）、`Dockerfile`、Node.js、系统依赖或自带的 Codex 有变化时，需要重新构建镜像，在仓库目录执行：
 
 ```bash
-docker compose pull && docker compose up -d
+git pull && docker compose up -d --build
 ```
+
+改用预构建镜像的，执行 `docker compose pull && docker compose up -d`。数据都在数据卷里，重建不会丢。
 
 ### 升级 Codex
 
@@ -133,17 +139,50 @@ docker compose pull && docker compose up -d
 
 ## 部署在服务器上
 
-compose 默认只把端口映射到服务器的 `127.0.0.1`，外网访问不到。推荐用 **SSH 隧道**在自己电脑上访问：
+compose 默认只把端口映射到服务器的 `127.0.0.1`，外网访问不到：在自己电脑上打开 `http://服务器IP:8787` 会显示 `ERR_EMPTY_RESPONSE`、拒绝连接或超时，这是有意的。有三种访问方式。
+
+> 下面的设置都写在仓库目录的 `.env` 文件里（compose 自动读取，已被 git 忽略），**不要直接改 `docker-compose.yml`**：以后 `git pull` 会冲突，而且容易出现改了注释行却忘了删行首 `#` 的情况。改完 `.env` 要执行 `docker compose up -d` 才会生效，`docker compose restart` 不会读取新配置。
+
+### 方式一：SSH 隧道（推荐）
+
+不用改任何配置。在自己电脑上执行（Windows 的 PowerShell 也自带 `ssh`），窗口保持打开：
 
 ```bash
 ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 ```
 
-隧道保持连接时，在自己电脑上打开 <http://127.0.0.1:8787/admin> 即可；浏览器登录的回调也会经过隧道（`1455` 端口），或者直接用设备码登录。
+隧道保持连接时，启动日志里的快捷登录链接（`http://127.0.0.1:8787/admin#login=...`）在自己电脑上就能直接打开。浏览器登录 ChatGPT 的回调也会经过隧道（`1455` 端口），也可以直接用设备码登录。
 
-如果一定要通过域名访问：
+### 方式二：用服务器公网 IP 直接访问
 
-1. 在 `docker-compose.yml` 里设置 `ALLOWED_HOSTS: "localhost,127.0.0.1,gpt.example.com"`。不在列表里的 Host 会被拒绝，用来防 DNS rebinding。
+适合临时调试。这种方式走明文 HTTP，管理口令和 API Key 都会明文传输，而且任何人都能访问到你的后台；长期使用请用方式一或方式三。
+
+1. 在仓库目录创建 `.env`，把 IP 换成你的服务器公网 IP：
+
+   ```bash
+   cat > .env <<'EOF'
+   BIND_IP=0.0.0.0
+   ALLOWED_HOSTS=localhost,127.0.0.1,1.2.3.4
+   EOF
+   docker compose up -d
+   ```
+
+   两项都要设置：`BIND_IP` 把 8787 对外开放；`ALLOWED_HOSTS` 不包含这个 IP 时，网关会返回 403「Host 不被允许」（这是为了防 DNS rebinding）。
+2. 确认已经生效：
+
+   ```bash
+   docker exec gptprovider printenv ALLOWED_HOSTS   # 应输出你写的列表；输出为空说明没生效
+   docker ps --format '{{.Ports}}'                  # 应包含 0.0.0.0:8787->8787/tcp
+   ```
+
+3. 在云服务商的安全组里放行 TCP 8787；服务器开了 ufw 时再执行 `ufw allow 8787/tcp`。
+4. 在自己电脑上打开 `http://服务器IP:8787/admin#login=管理口令`。如果这个标签页之前显示过报错，要按 **Ctrl+F5** 强制刷新：只修改链接里 `#` 后面的部分再回车，浏览器不会重新请求服务器，会一直停在旧的报错页上。
+
+这种方式下浏览器登录 ChatGPT 的回调到不了服务器（1455 只对本机开放），添加账号请用设备码登录。
+
+### 方式三：域名 + HTTPS 反向代理
+
+1. 在 `.env` 里设置 `ALLOWED_HOSTS=localhost,127.0.0.1,gpt.example.com`，执行 `docker compose up -d`。端口保持默认的只对本机开放即可，不用设置 `BIND_IP`。
 2. 用 Nginx、Caddy 等反向代理到 `127.0.0.1:8787`，**必须配 HTTPS**，否则管理口令和 API Key 会明文传输。
 3. 再次提醒：Codex 账号渠道只给自己用。要给别人用，只发 OpenAI API 渠道的 Key，并设置每月 Token 上限。
 
@@ -155,10 +194,11 @@ ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@你的服务器
 
 | 问题 | 解决办法 |
 |---|---|
-| 拉不到 `ghcr.io` 的镜像 | 给 Docker 配镜像加速，或者从源码构建：`git clone` 本仓库，把 `docker-compose.yml` 里的 `image:` 换成 `build: .`，再执行 `docker compose up -d --build` |
-| 源码构建时 npm 太慢 | `docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com` |
-| 后台「检查更新」失败 | 网关只访问 `github.com`（不依赖 `api.github.com`）。还是访问不了时，设置 `GITHUB_PROXY` 为一个 GitHub 加速前缀，例如 `https://your-proxy/`，网关会请求 `https://your-proxy/https://github.com/...` |
-| 后台「升级 Codex」失败 | 设置 `NPM_REGISTRY: "https://registry.npmmirror.com"` |
+| 源码构建时拉不到 `node:24-slim` | 这个基础镜像来自 Docker Hub。给 Docker 配镜像加速：在 `/etc/docker/daemon.json` 里写 `{"registry-mirrors": ["https://你的加速地址"]}`，再执行 `systemctl restart docker` |
+| 源码构建时 npm 太慢 | 在 `.env` 里加一行 `NPM_REGISTRY=https://registry.npmmirror.com`，再执行 `docker compose up -d --build`；后台「升级 Codex」也会用这个镜像 |
+| `git clone` 太慢或失败 | 用 GitHub 加速前缀克隆，或者下载源码包：`curl -fsSL https://github.com/mengxl888/gptProvider/archive/refs/heads/main.tar.gz \| tar xz && mv gptProvider-main gptprovider`（这样下载的目录不能 `git pull`，以后重新下载覆盖即可，`.env` 记得保留） |
+| 后台「检查更新」失败 | 网关只访问 `github.com`（不依赖 `api.github.com`）。还是访问不了时，在 `.env` 里设置 `GITHUB_PROXY` 为一个 GitHub 加速前缀，例如 `https://your-proxy/`，网关会请求 `https://your-proxy/https://github.com/...` |
+| 后台「升级 Codex」失败 | 在 `.env` 里设置 `NPM_REGISTRY=https://registry.npmmirror.com` |
 | 访问 ChatGPT 失败 | 网关所在机器需要能访问 `chatgpt.com` 和 `auth.openai.com` |
 | API 上游测试提示「连接失败」 | 网关所在机器需要能访问 `api.openai.com`；访问不了时，在上游的 Base URL 里填一个能到官方 API 的转发地址 |
 
@@ -218,6 +258,8 @@ npm start
 | `NPM_REGISTRY` | npm 官方源 | 升级 Codex 和源码构建时使用的 npm 镜像 |
 | `CODEX_BIN` | 自动查找 | 指定 `codex.exe` 或 `@openai/codex/bin/codex.js`，指定后后台不提供 Codex 升级 |
 | `TZ` | `Asia/Shanghai`（compose） | 时区 |
+
+Docker 部署时，`ALLOWED_HOSTS`、`MAX_REQUEST_BODY_MB`、`GITHUB_PROXY`、`NPM_REGISTRY` 写在仓库目录的 `.env` 里，compose 会自动传给容器；`.env` 里的 `BIND_IP` 控制 8787 映射到服务器的哪个地址（默认 `127.0.0.1`，`0.0.0.0` 表示对外开放）。改完执行 `docker compose up -d` 生效。
 
 ---
 
@@ -527,8 +569,19 @@ OpenAI API 渠道就是一个按 Key 鉴权、带故障切换和记账的反向�
 **设备码登录提示不可用**
 在 ChatGPT 网页版「设置 → 安全」里打开设备码登录（Codex 的设备码授权），然后重试。
 
+**`docker compose up` 报 `error from registry: denied`**
+你用的是预构建镜像 `ghcr.io/mengxl888/gptprovider`，但它没有发布成功或者不是公开的。改用源码构建：`git clone` 本仓库，在仓库目录执行 `docker compose up -d --build`（默认的 `docker-compose.yml` 就是源码构建）。只下载 `docker-compose.yml` 是构建不了的。
+
+**用服务器 IP 打不开后台（`ERR_EMPTY_RESPONSE`、拒绝连接或超时）**
+compose 默认只把 8787 映射到服务器的 `127.0.0.1`，日志里快捷登录链接的 `127.0.0.1` 指的也是服务器本身。按[部署在服务器上](#部署在服务器上)用 SSH 隧道，或者设置 `BIND_IP` 和 `ALLOWED_HOSTS` 后放行安全组的 8787 端口。
+
 **访问后台提示「Host 不被允许」**
-你用的域名或 IP 不在 `ALLOWED_HOSTS` 里，按[部署在服务器上](#部署在服务器上)添加。
+端口已经通了，但你用的域名或 IP 不在 `ALLOWED_HOSTS` 里，报错信息里的 `Host「…」` 就是要加进去的值。按下面的顺序检查：
+
+1. `docker exec gptprovider printenv ALLOWED_HOSTS` 有没有输出、里面有没有这个值。没有输出说明配置没生效。
+2. 配置写在 `.env` 里，格式是 `ALLOWED_HOSTS=localhost,127.0.0.1,你的IP或域名`。旧版 `docker-compose.yml` 里 `ALLOWED_HOSTS` 是一行注释，直接改它时要删掉行首的 `#`，缩进和 `TZ:` 对齐。
+3. 改完执行的是 `docker compose up -d`，而不是 `docker compose restart`。
+4. 服务器上已经生效了还是报错时，在浏览器按 **Ctrl+F5** 强制刷新，或者新开一个窗口再打开：只改链接里 `#` 后面的部分再回车，浏览器不会重新请求，会一直显示旧的报错页。
 
 **模型列表不是最新的**
 Codex 版本旧了。去「模型」页或「设置」页升级 Codex。
@@ -585,7 +638,9 @@ git push origin main vX.Y.Z
 
 用户的后台最多 6 小时后会发现新版本，也可以手动点「检查更新」。标签带 `-`（例如 `v1.2.0-beta.1`）会发布为预发布版本：不打 `latest` 镜像标签，后台也不会提示更新。
 
-首次发布后，到 GitHub 个人主页的 Packages 里确认 `gptprovider` 镜像的可见性是 **Public**，否则别人拉不到镜像。
+首次发布后，到 GitHub 个人主页的 Packages 里确认 `gptprovider` 镜像的可见性是 **Public**，否则别人拉不到镜像（报 `error from registry: denied`）。
+
+GitHub Actions 跑不起来时（例如账号因账单问题被锁，任务会显示「The job was not started because your account is locked due to a billing issue」），镜像不会推送，但一键更新不受影响：后台读的是标签和标签对应的源码包。所以 `docker-compose.yml` 默认从源码构建，不依赖预构建镜像。
 
 ---
 

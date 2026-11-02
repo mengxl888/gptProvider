@@ -30,13 +30,19 @@ export const config = {
   supervised: process.env.GATEWAY_SUPERVISED === '1',
 };
 
-export function isAllowedHostHeader(hostHeader) {
-  if (config.allowedHosts.includes('*')) return true;
-  if (!hostHeader) return false;
+// Host 头去掉端口后的主机名：38.97.249.132:8787 → 38.97.249.132，[::1]:8787 → ::1。
+export function hostFromHeader(hostHeader) {
+  if (!hostHeader) return '';
   const host = hostHeader.startsWith('[')
     ? hostHeader.slice(1, hostHeader.indexOf(']'))
     : hostHeader.split(':')[0];
-  return config.allowedHosts.includes(host.toLowerCase());
+  return host.toLowerCase();
+}
+
+export function isAllowedHostHeader(hostHeader) {
+  if (config.allowedHosts.includes('*')) return true;
+  const host = hostFromHeader(hostHeader);
+  return Boolean(host) && config.allowedHosts.includes(host);
 }
 
 // 是否允许本机以外的地址访问（只用于启动时的提醒）。

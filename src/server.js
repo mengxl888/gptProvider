@@ -7,7 +7,7 @@ import { AlertMonitor } from './alerts.js';
 import { AccountManager, httpError } from './codex/accounts.js';
 import { CodexRuntime } from './codex/runtime.js';
 import { CodexResponsesProxy } from './codex/responsesProxy.js';
-import { config, exposedBeyondLoopback, isAllowedHostHeader } from './config.js';
+import { config, exposedBeyondLoopback, hostFromHeader, isAllowedHostHeader } from './config.js';
 import { sendJson } from './http.js';
 import { ImageLibrary } from './images.js';
 import { startLoginCallbackForward } from './loginForward.js';
@@ -74,7 +74,13 @@ const server = http.createServer((req, res) => {
 });
 
 async function route(req, res) {
-  if (!isAllowedHostHeader(req.headers.host)) throw httpError(403, 'Host 不被允许，需要时用 ALLOWED_HOSTS 添加');
+  if (!isAllowedHostHeader(req.headers.host)) {
+    // 带上实际收到的 Host，部署时照着加进 ALLOWED_HOSTS 就行
+    const host = hostFromHeader(req.headers.host);
+    throw httpError(403, host
+      ? `Host「${host}」不被允许，需要时用 ALLOWED_HOSTS 添加。Docker 部署：在仓库目录的 .env 里写 ALLOWED_HOSTS=localhost,127.0.0.1,${host}，再执行 docker compose up -d`
+      : '请求缺少 Host 头');
+  }
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
 
@@ -271,6 +277,8 @@ server.listen(config.port, config.host, () => {
   console.log(`  API 地址:  ${base}/v1`);
   if (exposedBeyondLoopback()) {
     console.warn(`  注意：ALLOWED_HOSTS=${config.allowedHosts.join(',')}，本机以外的地址也能访问，请确认只有你自己能访问到。`);
+  } else if (['0.0.0.0', '::'].includes(config.host)) {
+    console.log('  提示：现在只能用 localhost / 127.0.0.1 访问；用服务器 IP 或域名访问需要设置 ALLOWED_HOSTS，见 README「部署在服务器上」');
   }
   if (process.env.LOGIN_CALLBACK_FORWARD === '1') startLoginCallbackForward();
   updater.markHealthy();
