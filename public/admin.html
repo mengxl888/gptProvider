@@ -225,6 +225,11 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .req-head .req-label { letter-spacing: .12em; color: var(--text-2); font-weight: 550; }
 .req-counts { display: flex; gap: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .req-counts .ok { color: var(--success); } .req-counts .bad { color: var(--danger); } .req-counts .mid { color: var(--muted); font-weight: 550; }
+.transfer-counts { display: flex; flex-wrap: wrap; gap: 5px 16px; margin-top: 8px; color: var(--text-2); font-size: 12px; }
+.transfer-counts > span { white-space: nowrap; }
+.transfer-counts b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.transfer-counts .unknown { color: var(--muted); }
+.stat-foot .transfer-counts { flex-basis: 100%; margin-top: 0; gap: 4px 12px; }
 .req-gap { height: 12px; }
 /* 日志详情：一个请求依次落到的账号 / 上游 */
 .attempts { display: grid; gap: 8px; }
@@ -1300,18 +1305,33 @@ function healthBar(series, large = false) {
   }).join('')}</div>`;
 }
 
+// 转走按失败后紧接的实际目标统计，不能根据请求的最终账号 / 上游推断中间每一跳。
+function transferCounts(stat) {
+  if (!S.stats) return { account: null, api: null, unknown: 0, total: null };
+  if (stat?.transfers) return stat.transfers;
+  // 兼容旧版统计：仅有转走总数时，缺失的目标明细归为未确认。
+  const total = Math.max(0, (stat?.actual?.failure ?? 0) - (stat?.failure ?? 0));
+  return { account: total ? null : 0, api: total ? null : 0, unknown: total, total };
+}
+function transferSummary(stat) {
+  const counts = transferCounts(stat);
+  const value = (n) => n == null ? '—' : fmtNum(n);
+  const tip = '按每次失败后紧接着实际选中的目标统计；账号 A → 账号 B → API，分别计为转走账号、转走 API。按失败尝试开始时间筛选；转走表示继续尝试，不代表最终成功。';
+  return `<div class="transfer-counts" title="${esc(tip)}"><span>已转走账号 <b>${value(counts.account)}</b></span><span>已转走 API <b>${value(counts.api)}</b></span>${counts.unknown > 0
+    ? `<span class="unknown" title="缺少后续目标记录，无法确认转给账号还是 API 上游；旧版统计的转走总数也计入此项">去向未确认 <b>${fmtNum(counts.unknown)}</b></span>` : ''}</div>`;
+}
+
 // 账号 / 上游卡片的两条健康条。失败后会换账号或改用 API 上游，只看最终结果会把这个账号自己的失败藏起来，
 // 所以先列「实际请求」（它收到的每一次请求，含失败后被换掉的），再列「最终结果」（在它上面结束、客户端拿到的）。
 function requestBlock(stat) {
-  const line = (label, tip, o, extra = '') => {
+  const line = (label, tip, o) => {
     const s = o?.success ?? 0, f = o?.failure ?? 0, r = rateInfo(s, f);
     return `<div class="req-head"><span class="req-label" title="${esc(tip)}">${label}</span>
-        <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span>${extra}</span></div>
+        <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span></span></div>
       <div class="health-row">${healthBar(o?.series)}<span class="rate ${r.cls}">${r.text}</span></div>`;
   };
-  const retried = (stat?.actual?.failure ?? 0) - (stat?.failure ?? 0);
-  return line(`实际请求 · ${windowLabel()}`, '这个账号 / 上游收到的每一次请求，包括失败后又换了账号或改用 API 上游的那次', stat?.actual || stat,
-      retried > 0 ? `<span class="mid" title="其中 ${retried} 次失败后换了账号或上游，客户端没有看到这些失败">已转走 ${fmtNum(retried)}</span>` : '')
+  return line(`实际请求 · ${windowLabel()}`, '这个账号 / 上游收到的每一次请求，包括失败后又换了账号或改用 API 上游的那次', stat?.actual || stat)
+    + transferSummary(stat)
     + '<div class="req-gap"></div>'
     + line('最终结果', '在这个账号 / 上游上结束的请求，也就是客户端实际拿到的结果', stat)
     + `<div class="cost-note">${costSummaryLabel(stat)} ${costSummaryHtml(stat)} <span class="muted">· ${esc(costCoverage(stat))}</span></div>`;
@@ -2226,7 +2246,7 @@ async function loadLogs() {
 function renderLogStats() {
   const o = S.stats?.overall;
   const s = o?.success ?? 0, f = o?.failure ?? 0, a = o?.aborted ?? 0, r = rateInfo(s, f);
-  const retried = (o?.actual?.failure ?? 0) - f;
+  const transfers = transferCounts(o);
   const cachedPct = o?.inputTokens ? Math.round((o.cachedTokens / o.inputTokens) * 100) : 0;
   const card = (ico, label, value, foot, cls = '') => `<div class="card stat ${cls}">
     <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
@@ -2234,8 +2254,7 @@ function renderLogStats() {
   $('log-stats').innerHTML = [
     card('activity', `请求数 · ${windowLabel()}`, fmtNum(s + f + a), a ? `含中断 ${fmtNum(a)}（客户端断开，不计入成功率）` : '所有记录的 /v1 请求和调试台'),
     card('check', '成功率', `<span class="rate ${r.cls}" style="font-size:inherit;text-align:left">${r.text}</span>`,
-      `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>${retried > 0
-        ? ` · <span title="失败后换了账号或改用 API 上游，客户端没有看到这些失败；状态筛选选「换过账号 / 上游」查看">另有 ${fmtNum(retried)} 次失败已转走</span>` : ''}`),
+      `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>${transfers.total > 0 ? transferSummary(o) : ''}`),
     card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
     card('zap', 'Tokens', `${fmtNum(o?.inputTokens)}<span style="font-size:14px;color:var(--muted)"> / ${fmtNum(o?.outputTokens)}</span>`,
       `输入 / 输出 · 缓存命中 ${cachedPct}%`),

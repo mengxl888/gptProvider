@@ -365,19 +365,37 @@ export class RequestLog {
       aborted: stats.aborted,
       series: stats.series.map((b) => ({ ...b })),
     });
+    // 转走按下一次真正选到的目标分类；只筛失败源的时间，目标要从完整链路里找。
+    // 旧日志若只有 fallback_error 文本则无法判断，不推断其次数或目的地。
     const failed = this.db
       .prepare(
-        `SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b, COUNT(*) AS n
-         FROM failed_attempts WHERE ts >= ? AND ts < ? GROUP BY account_id, b`,
+        `WITH destinations AS (
+           SELECT f.account_id, f.ts,
+                  COALESCE((SELECT next.account_id FROM failed_attempts next
+                            WHERE next.request_id = f.request_id AND next.seq > f.seq
+                              AND next.account_id IS NOT NULL AND next.account_id <> ''
+                            ORDER BY next.seq LIMIT 1), NULLIF(r.account_id, '')) AS destination
+           FROM failed_attempts f LEFT JOIN requests r ON r.id = f.request_id
+           WHERE f.ts >= ? AND f.ts < ?
+         )
+         SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b,
+                CASE WHEN destination IS NULL THEN 'unknown'
+                     WHEN substr(destination, 1, 3) = 'oa-' THEN 'api'
+                     ELSE 'account' END AS kind,
+                COUNT(*) AS n
+         FROM destinations GROUP BY account_id, b, kind`,
       )
-      .all(since, bucketMs, since, until);
+      .all(since, until, since, bucketMs);
     for (const row of failed) {
       const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
-      const targets = [actualOf(result.overall)];
-      if (row.account_id) targets.push(actualOf((result.accounts[row.account_id] ||= emptyStats())));
+      const targets = [result.overall];
+      if (row.account_id) targets.push((result.accounts[row.account_id] ||= emptyStats()));
       for (const t of targets) {
-        t.failure += row.n;
-        t.series[b].f += row.n;
+        const actual = actualOf(t);
+        actual.failure += row.n;
+        actual.series[b].f += row.n;
+        t.transfers[row.kind] += row.n;
+        t.transfers.total += row.n;
       }
     }
     actualOf(result.overall);
@@ -402,6 +420,7 @@ function emptyStats() {
     cachedTokens: 0,
     outputTokens: 0,
     images: 0,
+    transfers: { account: 0, api: 0, unknown: 0, total: 0 },
     ...emptyCostSummary(),
     series: Array.from({ length: BUCKETS }, () => ({ s: 0, f: 0 })),
   };
