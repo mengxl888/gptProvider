@@ -9,6 +9,9 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import { estimateCost } from './pricing.js';
+import { resolveTimeRange } from './timeRange.js';
+
+export { WINDOWS } from './timeRange.js';
 
 const RETENTION_MS = 32 * 24 * 3600_000;
 const PRUNE_INTERVAL_MS = 6 * 3600_000;
@@ -17,12 +20,6 @@ export const MAX_EXPORT_ROWS = 5000;
 // keep-alive 连接上已经处理过的请求数：反向代理通常会复用连接，客户端直连多半是新连接。
 const socketRequests = new WeakMap();
 export const BUCKETS = 20;
-export const WINDOWS = {
-  '1h': 3600_000,
-  '24h': 24 * 3600_000,
-  '7d': 7 * 24 * 3600_000,
-  '30d': 30 * 24 * 3600_000,
-};
 
 const COLUMNS = [
   'id', 'ts', 'duration_ms', 'endpoint', 'source', 'stream', 'model', 'resolved_model',
@@ -245,10 +242,11 @@ export class RequestLog {
 
   // account 同时匹配最后落在它上面的请求，和在它上面失败过、之后换了账号或上游的请求；
   // status 为 retried 时只看换过账号或上游的请求。每行带上 attempts：之前失败的尝试，按顺序。
-  list({ window = '24h', limit = 50, offset = 0, account, status, endpoint, source, maxLimit = 200 } = {}) {
+  list({ window = '24h', from, to, limit = 50, offset = 0, account, status, endpoint, source, maxLimit = 200 } = {}) {
+    const { since, until } = resolveTimeRange({ window, from, to });
     if (!this.db) return { total: 0, data: [] };
-    const where = ['ts >= ?'];
-    const args = [Date.now() - (WINDOWS[window] || WINDOWS['24h'])];
+    const where = ['ts >= ?', 'ts < ?'];
+    const args = [since, until];
     if (account) {
       where.push('(account_id = ? OR id IN (SELECT request_id FROM failed_attempts WHERE account_id = ?))');
       args.push(account, account);
@@ -282,12 +280,12 @@ export class RequestLog {
 
   // Group exact usage tuples rather than combining token counts before pricing:
   // a per-request long-context multiplier must not be applied to a whole period.
-  costGroups(table, since, group = 'account_id') {
+  costGroups(table, since, group = 'account_id', until) {
     return this.db.prepare(`
       SELECT ${group}, ${COST_USAGE_COLUMNS.join(', ')}, COUNT(*) AS cost_count
-      FROM ${table} WHERE ts >= ?
+      FROM ${table} WHERE ts >= ?${until === undefined ? '' : ' AND ts < ?'}
       GROUP BY ${group}, ${COST_USAGE_COLUMNS.join(', ')}
-    `).all(since);
+    `).all(...(until === undefined ? [since] : [since, until]));
   }
 
   // 这些请求之前失败的尝试，按 seq 排好；分批查，避免导出 5000 条时参数太多
@@ -307,11 +305,9 @@ export class RequestLog {
   }
 
   // 整体和每个账号：窗口内的成功/失败/中断数、平均耗时、token，以及 20 段健康度序列。
-  stats(window = '24h') {
-    const windowMs = WINDOWS[window] || WINDOWS['24h'];
-    const until = Date.now();
-    const since = until - windowMs;
-    const bucketMs = windowMs / BUCKETS;
+  stats(options = '24h') {
+    const { window, since, until } = resolveTimeRange(options);
+    const bucketMs = (until - since) / BUCKETS;
     const result = { window, since, until, bucketMs, buckets: BUCKETS, overall: emptyStats(), accounts: {} };
     if (!this.db) return result;
 
@@ -321,9 +317,9 @@ export class RequestLog {
                 SUM(status = 'success') AS s, SUM(status = 'error') AS f, SUM(status = 'aborted') AS a,
                 SUM(CASE WHEN status = 'success' THEN duration_ms END) AS dsum,
                 SUM(input_tokens) AS it, SUM(cached_tokens) AS ct, SUM(output_tokens) AS ot, SUM(images) AS im
-         FROM requests WHERE ts >= ? GROUP BY account_id`,
+         FROM requests WHERE ts >= ? AND ts < ? GROUP BY account_id`,
       )
-      .all(since);
+      .all(since, until);
     const durations = { overall: 0 };
     for (const row of totals) {
       const targets = [result.overall];
@@ -349,9 +345,9 @@ export class RequestLog {
       .prepare(
         `SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b,
                 SUM(status = 'success') AS s, SUM(status = 'error') AS f
-         FROM requests WHERE ts >= ? GROUP BY account_id, b`,
+         FROM requests WHERE ts >= ? AND ts < ? GROUP BY account_id, b`,
       )
-      .all(since, bucketMs, since);
+      .all(since, bucketMs, since, until);
     for (const row of series) {
       const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
       const targets = [result.overall.series];
@@ -372,9 +368,9 @@ export class RequestLog {
     const failed = this.db
       .prepare(
         `SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b, COUNT(*) AS n
-         FROM failed_attempts WHERE ts >= ? GROUP BY account_id, b`,
+         FROM failed_attempts WHERE ts >= ? AND ts < ? GROUP BY account_id, b`,
       )
-      .all(since, bucketMs, since);
+      .all(since, bucketMs, since, until);
     for (const row of failed) {
       const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
       const targets = [actualOf(result.overall)];
@@ -387,7 +383,7 @@ export class RequestLog {
     actualOf(result.overall);
     for (const stats of Object.values(result.accounts)) actualOf(stats);
     const pricing = this.getPricing();
-    for (const row of [...this.costGroups('requests', since), ...this.costGroups('failed_attempts', since)]) {
+    for (const row of [...this.costGroups('requests', since, 'account_id', until), ...this.costGroups('failed_attempts', since, 'account_id', until)]) {
       const cost = estimateCost(row, pricing);
       addCost(result.overall, cost, row.cost_count);
       if (row.account_id) addCost((result.accounts[row.account_id] ||= emptyStats()), cost, row.cost_count);

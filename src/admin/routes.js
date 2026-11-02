@@ -5,10 +5,11 @@ import { BACKGROUND_REFRESH_MS, httpError } from '../codex/accounts.js';
 import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
 import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../openai/images.js';
-import { MAX_EXPORT_ROWS, WINDOWS, withLog } from '../requestLog.js';
+import { MAX_EXPORT_ROWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 import { config } from '../config.js';
 import { pricingInfo, validatePrices } from '../pricing.js';
+import { resolveTimeRange } from '../timeRange.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
   const { accounts, upstreams, store, codex, images, requestLog, updater, alerts } = ctx;
@@ -69,7 +70,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
 
   // GET /admin/api/stats?window=24h  整体和各账号的成功/失败数与 20 段健康度
   if (method === 'GET' && parts[0] === 'stats') {
-    return ok(requestLog.stats(validWindow(url.searchParams.get('window'))));
+    return ok(requestLog.stats(timeFilter(url.searchParams)));
   }
 
   // GET /admin/api/logs?window=&limit=&offset=&account=&status=&endpoint=&source=
@@ -78,8 +79,9 @@ export async function handleAdmin(req, res, url, body, ctx) {
   if (parts[0] === 'logs') {
     if (method === 'GET' && parts[1] === 'export') {
       const q = url.searchParams;
+      const time = timeFilter(q);
       const { total, data } = requestLog.list({
-        window: validWindow(q.get('window')),
+        ...time,
         limit: MAX_EXPORT_ROWS,
         maxLimit: MAX_EXPORT_ROWS,
         account: q.get('account'),
@@ -90,6 +92,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       return ok({
         exportedAt: new Date().toISOString(),
         appVersion: config.appVersion,
+        range: { window: time.window, since: time.from, until: time.to },
         total,
         data: data.map((row) => ({ ...row, detail: parseDetail(row.detail) })),
       });
@@ -98,7 +101,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       const q = url.searchParams;
       return ok(
         requestLog.list({
-          window: validWindow(q.get('window')),
+          ...timeFilter(q),
           limit: q.get('limit'),
           offset: q.get('offset'),
           account: q.get('account'),
@@ -308,8 +311,14 @@ export async function handleAdmin(req, res, url, body, ctx) {
   throw httpError(404, '未知接口');
 }
 
-function validWindow(value) {
-  return value in WINDOWS ? value : '24h';
+function timeFilter(params) {
+  const { window, since, until } = resolveTimeRange({
+    window: params.get('window'),
+    ...(params.has('from') ? { from: params.get('from') } : {}),
+    ...(params.has('to') ? { to: params.get('to') } : {}),
+  });
+  // Resolve once so list/count/export/stats use the same absolute bounds.
+  return { window, from: since, to: until };
 }
 
 function parseDetail(text) {

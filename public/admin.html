@@ -71,7 +71,7 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
 .page-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
 .page-head p { margin: 4px 0 0; color: var(--text-2); }
-.page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
 
 /* ---------- primitives ---------- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
@@ -153,6 +153,12 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 50%, transpa
 .segmented { display: inline-flex; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; gap: 2px; }
 .segmented button { border: none; background: transparent; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--text-2); font-weight: 550; font-size: 13px; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.window-filter { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; }
+.window-switch { flex-wrap: wrap; }
+.window-switch button { white-space: nowrap; }
+.window-caption { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.range-error { color: var(--danger); font-size: 12.5px; margin: 0; }
+#time-range-dialog .input { min-width: 0; }
 
 .copy-field { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
 .copy-field .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
@@ -521,7 +527,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="page-head">
         <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，按下面的调用策略分配 API 请求</p></div>
         <div class="actions">
-          <div class="segmented window-switch"></div>
+          <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
           <button class="btn primary" data-action="add-account"><svg class="i" data-icon="plus"></svg>添加账号</button>
         </div>
       </div>
@@ -544,7 +550,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="page-head">
         <div><h1>API 上游</h1><p>添加 OpenAI 官方 API Key。「OpenAI API」渠道的下游 Key 会把 /v1 请求原样转发到这里，费用记在这些 Key 所属的 OpenAI 账户上</p></div>
         <div class="actions">
-          <div class="segmented window-switch"></div>
+          <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
           <button class="btn primary" data-action="add-upstream"><svg class="i" data-icon="plus"></svg>添加 API Key</button>
         </div>
       </div>
@@ -559,7 +565,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="page-head">
         <div><h1>调用日志</h1><p>每次调用 /v1 接口和调试台的记录，只记元数据不记内容，保留 32 天</p></div>
         <div class="actions">
-          <div class="segmented window-switch"></div>
+          <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
           <button class="btn" id="logs-refresh"><svg class="i" data-icon="refresh"></svg>刷新</button>
           <button class="btn" id="logs-export" title="按当前时间范围和筛选条件导出（最多 5000 条），包含诊断信息"><svg class="i" data-icon="download"></svg>导出</button>
           <button class="btn danger" id="logs-clear"><svg class="i" data-icon="trash"></svg>清空</button>
@@ -813,6 +819,21 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   </main>
 </div>
 
+<!-- ================= 统计时间范围 ================= -->
+<dialog id="time-range-dialog" aria-labelledby="time-range-title">
+  <form id="time-range-form">
+    <div class="dlg-head"><h3 id="time-range-title">自定义时间段</h3><button type="button" class="btn ghost sm icon" data-close-range aria-label="关闭"><svg class="i" data-icon="x"></svg></button></div>
+    <div class="dlg-body stack" style="gap:14px">
+      <div class="small text-2" id="time-range-zone"></div>
+      <div class="field"><label for="time-range-from">开始时间（含）</label><input id="time-range-from" class="input num" type="datetime-local" step="1" required></div>
+      <div class="field"><label for="time-range-to">结束时间（不含）</label><input id="time-range-to" class="input num" type="datetime-local" step="1" required></div>
+      <p class="range-error" id="time-range-error" role="alert" hidden></p>
+      <div class="small muted">账号、API 上游和日志共用此时间范围，费用统计与日志导出同步筛选。日志保留 32 天，更早的记录可能已清理。</div>
+    </div>
+    <div class="dlg-foot"><button type="button" class="btn" data-close-range>取消</button><button type="submit" class="btn primary" id="time-range-apply">应用时间段</button></div>
+  </form>
+</dialog>
+
 <!-- ================= 添加账号 / 登录 ================= -->
 <dialog id="login-dialog">
   <div class="dlg-head"><h3 id="login-title">添加账号</h3><button class="btn ghost sm icon" data-close-login><svg class="i" data-icon="x"></svg></button></div>
@@ -980,11 +1001,21 @@ const writeToken = (v) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : local
 const readPref = (k) => { try { return localStorage.getItem(`codex-gateway-${k}`); } catch { return null; } };
 const writePref = (k, v) => { try { localStorage.setItem(`codex-gateway-${k}`, v); } catch {} };
 
-const WINDOWS = [['1h', '近 1 小时', '1 小时前'], ['24h', '近 24 小时', '24 小时前'], ['7d', '近 7 天', '7 天前'], ['30d', '近 30 天', '30 天前']];
+const WINDOWS = [['today', '今天'], ['yesterday', '昨天'], ['1h', '近 1 小时', '1 小时前'], ['24h', '近 24 小时', '24 小时前'], ['7d', '近 7 天', '7 天前'], ['30d', '近 30 天', '30 天前'], ['custom', '自定义']];
+const WINDOW_MS = { '1h': 3600000, '24h': 86400000, '7d': 604800000, '30d': 2592000000 };
+const savedCustomRange = (() => {
+  try {
+    const range = JSON.parse(readPref('custom-range'));
+    return range && Number.isSafeInteger(range.from) && Number.isSafeInteger(range.to)
+      && Number.isFinite(new Date(range.from).getTime()) && Number.isFinite(new Date(range.to).getTime())
+      && range.from >= 0 && range.from < range.to ? range : null;
+  } catch { return null; }
+})();
 const LOG_PAGE = 50;
 const S = { token: readToken(), state: null, page: 'overview', models: null, images: { total: 0, data: [] },
   chat: { messages: [], abort: null }, attachments: [], codeTab: 'curl', lightbox: null, generating: false,
-  window: WINDOWS.some(([v]) => v === readPref('window')) ? readPref('window') : '24h', stats: null,
+  window: WINDOWS.some(([v]) => v === readPref('window')) && (readPref('window') !== 'custom' || savedCustomRange) ? readPref('window') : '24h',
+  customRange: savedCustomRange, stats: null,
   logs: { total: 0, data: [], offset: 0, filters: {}, open: null, loadedAt: 0 } };
 const pricingEditor = { rows: null, overrides: {}, dirty: false, loading: false, saving: false };
 
@@ -1188,10 +1219,49 @@ function renderShell() {
 
 // ============ 请求健康度 ============
 const windowLabel = () => WINDOWS.find(([v]) => v === S.window)[1];
-const windowFrom = () => WINDOWS.find(([v]) => v === S.window)[2];
+const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || '浏览器本地时区';
+const padTime = (value, width = 2) => String(value).padStart(width, '0');
+function localDateTimeValue(value) {
+  const d = new Date(value);
+  return `${padTime(d.getFullYear(), 4)}-${padTime(d.getMonth() + 1)}-${padTime(d.getDate())}T${padTime(d.getHours())}:${padTime(d.getMinutes())}:${padTime(d.getSeconds())}`;
+}
+const exactTime = (value) => localDateTimeValue(value).replace('T', ' ').replaceAll('-', '/');
+
+// 日历范围按浏览器本地时间计算，使用日期加减以兼容夏令时的 23/25 小时自然日。
+function calendarRange(kind, now = new Date()) {
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (kind === 'yesterday' ? -1 : 0));
+  const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
+  return { from: from.getTime(), to: to.getTime() };
+}
+function rangeParams() {
+  const params = new URLSearchParams({ window: S.window });
+  const range = S.window === 'custom' ? S.customRange
+    : ['today', 'yesterday'].includes(S.window) ? calendarRange(S.window) : null;
+  if (range) { params.set('from', String(range.from)); params.set('to', String(range.to)); }
+  return params;
+}
+function displayedRange() {
+  if (S.window === 'custom') return S.customRange;
+  if (['today', 'yesterday'].includes(S.window)) return calendarRange(S.window);
+  if (S.stats?.window === S.window) return { from: S.stats.since, to: S.stats.until };
+  const to = Date.now();
+  return { from: to - WINDOW_MS[S.window], to };
+}
+function windowCaption() {
+  const range = displayedRange();
+  return `${exactTime(range.from)} 至 ${exactTime(range.to)}（不含结束） · ${localZone()}`;
+}
+const windowFrom = () => WINDOW_MS[S.window] ? WINDOWS.find(([v]) => v === S.window)[2] : exactTime(displayedRange().from);
+const windowUntil = () => WINDOW_MS[S.window] ? '现在' : exactTime(displayedRange().to);
+let statsLoadId = 0, logsLoadId = 0;
 
 async function loadStats() {
-  S.stats = await api('GET', `/stats?window=${S.window}`);
+  const id = ++statsLoadId, query = rangeParams().toString();
+  let stats;
+  try { stats = await api('GET', `/stats?${query}`); }
+  catch (error) { if (id !== statsLoadId || query !== rangeParams().toString()) return; throw error; }
+  if (id !== statsLoadId || query !== rangeParams().toString()) return;
+  S.stats = stats;
   if (S.page === 'overview') renderOverviewHealth();
   if (S.page === 'accounts') renderAccounts();
   if (S.page === 'upstreams') renderUpstreams();
@@ -1207,6 +1277,7 @@ function rateInfo(s, f) {
 }
 
 function fmtRange(a, b) {
+  if (S.window === 'custom') return `${exactTime(a)}–${exactTime(b)}`;
   const da = new Date(a), db = new Date(b);
   const hm = (d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
   const today = new Date().toDateString();
@@ -1251,10 +1322,10 @@ function healthCard(o, { title, link, switcher }) {
   return `<div class="req-head"><b style="font-size:14.5px">${title}${switcher ? '' : ` · ${windowLabel()}`}</b>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span>${o?.aborted ? `<span class="mid">中断 ${fmtNum(o.aborted)}</span>` : ''}</span>
-        ${switcher ? '<div class="segmented window-switch"></div>' : ''}
+        ${switcher ? '<div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>' : ''}
       </div></div>
     <div class="health-row">${healthBar(o?.series, true)}<span class="rate ${r.cls}">${r.text}</span></div>
-    <div class="health-axis"><span>${windowFrom()}</span><span>现在</span></div>
+    <div class="health-axis"><span>${esc(windowFrom())}</span><span>${esc(windowUntil())}</span></div>
     <div class="health-meta"><span>平均耗时 <b>${fmtMs(o?.avgMs)}</b></span>
       <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span><span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
       <span>生图 <b>${fmtNum(o?.images)}</b> 张</span><span>${costSummaryLabel(o)} ${costSummaryHtml(o)}</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>
@@ -1263,18 +1334,64 @@ function healthCard(o, { title, link, switcher }) {
 
 function renderWindowSwitches() {
   document.querySelectorAll('.window-switch').forEach((el) => {
-    el.innerHTML = WINDOWS.map(([v, t]) => `<button data-window="${v}" class="${v === S.window ? 'on' : ''}">${t}</button>`).join('');
+    el.setAttribute('aria-label', '统计时间范围');
+    el.innerHTML = WINDOWS.map(([v, t]) => `<button type="button" data-window="${v}" class="${v === S.window ? 'on' : ''}" aria-pressed="${v === S.window}"${v === 'custom' ? ' aria-haspopup="dialog" aria-controls="time-range-dialog"' : ''}>${t}</button>`).join('');
   });
+  document.querySelectorAll('.window-caption').forEach((el) => { el.textContent = windowCaption(); });
 }
-document.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-window]');
-  if (!b || b.dataset.window === S.window) return;
-  S.window = b.dataset.window;
+
+function applyTimeWindow(kind, customRange) {
+  S.window = kind;
+  if (customRange) { S.customRange = customRange; writePref('custom-range', JSON.stringify(customRange)); }
   writePref('window', S.window);
   S.logs.offset = 0;
   S.logs.open = null;
+  S.logs.data = [];
+  S.logs.total = 0;
+  S.logs.loadedAt = 0;
+  S.stats = null;
+  if (S.page === 'overview') renderOverviewHealth();
+  if (S.page === 'accounts') renderAccounts();
+  if (S.page === 'upstreams') renderUpstreams();
+  if (S.page === 'logs') { renderLogStats(); renderLogRows(); }
   renderWindowSwitches();
-  run(async () => { await loadStats(); if (S.page === 'logs') await loadLogs(); })();
+  run(async () => { await Promise.all([loadStats(), ...(S.page === 'logs' ? [loadLogs()] : [])]); })();
+}
+
+function openTimeRange() {
+  const now = new Date(), range = S.customRange || { from: calendarRange('today', now).from, to: now.getTime() };
+  $('time-range-from').value = localDateTimeValue(range.from);
+  $('time-range-to').value = localDateTimeValue(range.to);
+  $('time-range-zone').textContent = `使用浏览器本地时区：${localZone()}，可精确到秒。`;
+  $('time-range-error').hidden = true;
+  $('time-range-dialog').showModal();
+}
+
+// Date 会自动修正不存在的本地时间；逐字段核对，避免夏令时跳时造成范围被静默改变。
+function parseLocalTime(value) {
+  const parts = /^(\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!parts) return null;
+  const expected = parts.slice(1).map((part) => Number(part || 0)), d = new Date(value);
+  const actual = [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
+  return Number.isFinite(d.getTime()) && d.getTime() >= 0 && expected.every((part, index) => part === actual[index]) ? d.getTime() : null;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-window]');
+  if (!b) return;
+  if (b.dataset.window === 'custom') { openTimeRange(); return; }
+  if (b.dataset.window !== S.window) applyTimeWindow(b.dataset.window);
+});
+document.querySelectorAll('[data-close-range]').forEach((button) => button.addEventListener('click', () => $('time-range-dialog').close()));
+$('time-range-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const from = parseLocalTime($('time-range-from').value), to = parseLocalTime($('time-range-to').value);
+  const message = from === null || to === null ? '请填写有效的本地起止时间；夏令时跳过的时间无法使用。'
+    : from >= to ? '结束时间必须晚于开始时间。' : '';
+  $('time-range-error').textContent = message;
+  $('time-range-error').hidden = !message;
+  if (message) return;
+  $('time-range-dialog').close();
+  applyTimeWindow('custom', { from, to });
 });
 
 function renderOverviewHealth() {
@@ -2090,10 +2207,18 @@ function fillLogFilters() {
   loadLogs().catch((e) => toast(e.message, 'error'));
 }));
 
-async function loadLogs() {
-  const q = new URLSearchParams({ window: S.window, limit: String(LOG_PAGE), offset: String(S.logs.offset) });
+function logQuery(paginate = true) {
+  const q = rangeParams();
+  if (paginate) { q.set('limit', String(LOG_PAGE)); q.set('offset', String(S.logs.offset)); }
   for (const [k, v] of Object.entries(S.logs.filters)) if (v) q.set(k, v);
-  const r = await api('GET', `/logs?${q}`);
+  return q.toString();
+}
+async function loadLogs() {
+  const id = ++logsLoadId, query = logQuery();
+  let r;
+  try { r = await api('GET', `/logs?${query}`); }
+  catch (error) { if (id !== logsLoadId || query !== logQuery()) return; throw error; }
+  if (id !== logsLoadId || query !== logQuery()) return;
   Object.assign(S.logs, { total: r.total, data: r.data, loadedAt: Date.now() });
   if (S.page === 'logs') renderLogRows();
 }
@@ -2330,13 +2455,12 @@ $('logs-prev').addEventListener('click', run(async () => { S.logs.offset = Math.
 $('logs-next').addEventListener('click', run(async () => { S.logs.offset += LOG_PAGE; S.logs.open = null; await loadLogs(); }));
 $('logs-refresh').addEventListener('click', run(async () => { await Promise.all([loadStats(), loadLogs()]); toast('已刷新'); }));
 $('logs-export').addEventListener('click', run(async () => {
-  const q = new URLSearchParams({ window: S.window });
-  for (const [k, v] of Object.entries(S.logs.filters)) if (v) q.set(k, v);
+  const selectedWindow = S.window, q = logQuery(false);
   const r = await api('GET', `/logs/export?${q}`);
   const blob = new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `gateway-logs-${S.window}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
+  a.download = `gateway-logs-${selectedWindow}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   toast(r.total > r.data.length ? `已导出最近 ${r.data.length} 条（共 ${r.total} 条）` : `已导出 ${r.data.length} 条`);
