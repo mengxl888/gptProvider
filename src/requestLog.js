@@ -1,6 +1,9 @@
 // 调用日志：每个 /v1 请求和调试台请求一条记录，存 data/requests.db（Node 自带的 node:sqlite），保留 32 天（够算整月用量）。
 // 只记元数据（账号或上游、接口、模型、状态、耗时、token），不记对话内容。
+// requests 一行描述最后一次尝试（客户端实际拿到的结果）；失败后换了账号或上游的那些尝试另记在 failed_attempts，
+// 两张表合起来就是这个请求依次落到了哪些账号 / 上游。
 // 健康度：把统计窗口等分成 20 段，每段统计成功/失败数；中断（客户端断开）不计入成功率。
+// 每个账号 / 上游有两套：最终结果（只看 requests）和实际请求（再加上它被换掉的失败尝试）。
 
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -26,6 +29,12 @@ const COLUMNS = [
   'status', 'http_status', 'error_code', 'error_message', 'fallback_error',
   'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'detail',
 ];
+const ATTEMPT_COLUMNS = [
+  'request_id', 'seq', 'ts', 'duration_ms', 'account_id', 'account_email',
+  'http_status', 'error_code', 'error_message',
+];
+// 换账号最多 3 个、上游之间还能再切换，留足余量；超出的只影响日志展示，不影响请求
+const MAX_ATTEMPTS_PER_REQUEST = 12;
 
 export async function openRequestLog(dataDir) {
   let DatabaseSync;
@@ -85,6 +94,22 @@ export function initializeRequestLogSchema(db) {
     CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
     CREATE INDEX IF NOT EXISTS requests_account_ts ON requests (account_id, ts);
     CREATE INDEX IF NOT EXISTS requests_key_ts ON requests (api_key_id, ts);
+    -- 失败后换了账号或上游的尝试，seq 从 1 开始按发生顺序；ts 是这次尝试开始的时间。
+    -- account_id 为空表示还没选到账号就失败了（例如没有可用账号，随后改用 API 上游）。
+    CREATE TABLE IF NOT EXISTS failed_attempts (
+      request_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      ts INTEGER NOT NULL,
+      duration_ms INTEGER,
+      account_id TEXT,
+      account_email TEXT,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      PRIMARY KEY (request_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS failed_attempts_ts ON failed_attempts (ts);
+    CREATE INDEX IF NOT EXISTS failed_attempts_account_ts ON failed_attempts (account_id, ts);
   `);
   const columns = new Set(db.prepare('PRAGMA table_info(requests)').all().map((column) => column.name.toLowerCase()));
   for (const [name, type] of [
@@ -109,6 +134,9 @@ export class RequestLog {
       `INSERT INTO requests (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
     );
     this.updateDetail = db.prepare('UPDATE requests SET detail = ? WHERE id = ?');
+    this.insertAttempt = db.prepare(
+      `INSERT OR REPLACE INTO failed_attempts (${ATTEMPT_COLUMNS.join(', ')}) VALUES (${ATTEMPT_COLUMNS.map(() => '?').join(', ')})`,
+    );
     this.prune();
     setInterval(() => this.prune(), PRUNE_INTERVAL_MS).unref();
   }
@@ -130,10 +158,13 @@ export class RequestLog {
     }
   }
 
-  write(row) {
+  write(row, attempts = []) {
     if (!this.db) return;
     try {
       this.insert.run(...COLUMNS.map((c) => row[c] ?? null));
+      for (const attempt of attempts.slice(0, MAX_ATTEMPTS_PER_REQUEST)) {
+        this.insertAttempt.run(...ATTEMPT_COLUMNS.map((c) => (c === 'request_id' ? row.id : attempt[c] ?? null)));
+      }
     } catch (err) {
       console.warn('[gateway] 写调用日志失败:', err.message);
     }
@@ -149,7 +180,10 @@ export class RequestLog {
   }
 
   prune() {
-    this.db?.prepare('DELETE FROM requests WHERE ts < ?').run(Date.now() - RETENTION_MS);
+    if (!this.db) return;
+    const before = Date.now() - RETENTION_MS;
+    this.db.prepare('DELETE FROM requests WHERE ts < ?').run(before);
+    this.db.prepare('DELETE FROM failed_attempts WHERE ts < ?').run(before);
   }
 
   // 各下游 Key 从 since 起的请求数和 token 数（输入 + 输出），用于本月用量和额度
@@ -178,14 +212,25 @@ export class RequestLog {
   }
 
   clear() {
-    this.db?.exec('DELETE FROM requests');
+    this.db?.exec('DELETE FROM requests; DELETE FROM failed_attempts;');
   }
 
+  // account 同时匹配最后落在它上面的请求，和在它上面失败过、之后换了账号或上游的请求；
+  // status 为 retried 时只看换过账号或上游的请求。每行带上 attempts：之前失败的尝试，按顺序。
   list({ window = '24h', limit = 50, offset = 0, account, status, endpoint, source, maxLimit = 200 } = {}) {
     if (!this.db) return { total: 0, data: [] };
     const where = ['ts >= ?'];
     const args = [Date.now() - (WINDOWS[window] || WINDOWS['24h'])];
-    for (const [column, value] of [['account_id', account], ['status', status], ['endpoint', endpoint], ['source', source]]) {
+    if (account) {
+      where.push('(account_id = ? OR id IN (SELECT request_id FROM failed_attempts WHERE account_id = ?))');
+      args.push(account, account);
+    }
+    if (status === 'retried') where.push('id IN (SELECT request_id FROM failed_attempts)');
+    else if (status) {
+      where.push('status = ?');
+      args.push(status);
+    }
+    for (const [column, value] of [['endpoint', endpoint], ['source', source]]) {
       if (value) {
         where.push(`${column} = ?`);
         args.push(value);
@@ -196,7 +241,24 @@ export class RequestLog {
     const data = this.db
       .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
       .all(...args, Math.min(Number(limit) || 50, maxLimit), Number(offset) || 0);
-    return { total, data };
+    const attempts = this.attemptsFor(data.map((row) => row.id));
+    return { total, data: data.map((row) => ({ ...row, attempts: attempts.get(row.id) || [] })) };
+  }
+
+  // 这些请求之前失败的尝试，按 seq 排好；分批查，避免导出 5000 条时参数太多
+  attemptsFor(ids) {
+    const result = new Map();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const rows = this.db
+        .prepare(`SELECT * FROM failed_attempts WHERE request_id IN (${chunk.map(() => '?').join(', ')}) ORDER BY request_id, seq`)
+        .all(...chunk);
+      for (const { request_id: id, ...attempt } of rows) {
+        if (!result.has(id)) result.set(id, []);
+        result.get(id).push(attempt);
+      }
+    }
+    return result;
   }
 
   // 整体和每个账号：窗口内的成功/失败/中断数、平均耗时、token，以及 20 段健康度序列。
@@ -254,6 +316,31 @@ export class RequestLog {
         t[b].f += row.f;
       }
     }
+
+    // 实际请求：最终结果再加上被换掉的失败尝试。成功的尝试一定是最后一次，所以多出来的只有失败。
+    const actualOf = (stats) => (stats.actual ||= {
+      success: stats.success,
+      failure: stats.failure,
+      aborted: stats.aborted,
+      series: stats.series.map((b) => ({ ...b })),
+    });
+    const failed = this.db
+      .prepare(
+        `SELECT account_id, CAST((ts - ?) / ? AS INTEGER) AS b, COUNT(*) AS n
+         FROM failed_attempts WHERE ts >= ? GROUP BY account_id, b`,
+      )
+      .all(since, bucketMs, since);
+    for (const row of failed) {
+      const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
+      const targets = [actualOf(result.overall)];
+      if (row.account_id) targets.push(actualOf((result.accounts[row.account_id] ||= emptyStats())));
+      for (const t of targets) {
+        t.failure += row.n;
+        t.series[b].f += row.n;
+      }
+    }
+    actualOf(result.overall);
+    for (const stats of Object.values(result.accounts)) actualOf(stats);
     return result;
   }
 }
@@ -279,6 +366,9 @@ class LogEntry {
     this.done = false;
     // 排查用的诊断信息（连接、客户端会话标识、上游事件流的时间线），结束时以 JSON 存进 detail 列
     this.diagnostics = {};
+    // 失败后换了账号或上游的尝试，结束时写进 failed_attempts；attemptStartedAt 是当前这次尝试开始的时间
+    this.attempts = [];
+    this.attemptStartedAt = null;
     this.row = {
       id: crypto.randomUUID(),
       ts: Date.now(),
@@ -359,9 +449,11 @@ class LogEntry {
     }
   }
 
+  // 每次选定账号或上游时调用，也是这次尝试的开始
   account(account) {
     this.row.account_id = account.id;
     this.row.account_email = account.email || account.label || null;
+    this.attemptStartedAt = Date.now();
   }
 
   resolvedModel(model) {
@@ -381,16 +473,33 @@ class LogEntry {
     this.row.images = count;
   }
 
-  // 失败后换账号或改用 API 上游重试前调用：每次失败记一行（哪个账号、什么错误），
-  // 清掉失败状态和用量，之后按最终结果记。
-  // 只把这次尝试记成失败（告警统计用），不改日志这一行。上游之间自动切换前调用，见 upstreams.js
+  // 当前这次尝试失败、马上要换下一个上游时调用：告警按它统计失败率，同时记进 failed_attempts。
+  // 上游之间自动切换前直接调用（见 upstreams.js）；换账号或改用 API 上游时经由 fallback() 调用。
   failedAttempt(err) {
-    this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status: err?.status || 500, code: err?.code ?? null, message: String(err?.message || err) });
+    const status = err?.status || 500;
+    const message = String(err?.message || err);
+    this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status, code: err?.code ?? null, message });
+    const now = Date.now();
+    const startedAt = this.attemptStartedAt ?? this.row.ts;
+    this.attempts.push({
+      seq: this.attempts.length + 1,
+      ts: startedAt,
+      duration_ms: now - startedAt,
+      account_id: this.row.account_id ?? null,
+      account_email: this.row.account_email ?? null,
+      http_status: status,
+      error_code: err?.code ? String(err.code) : null,
+      error_message: message.slice(0, 2000),
+    });
+    // 下一次尝试从现在算起；选定下一个账号或上游时 account() 会再更新
+    this.attemptStartedAt = now;
   }
 
+  // 失败后换账号或改用 API 上游重试前调用：记下这次失败，清掉失败状态、用量和账号，之后按最终结果记。
   fallback(err) {
     const status = err?.status || 500;
     this.failedAttempt(err);
+    // 旧版只有这一列文本，保留它，老页面和导出的数据照样能看
     const who = this.row.account_email || this.row.account_id || '未分配账号';
     const line = `${who}：${status}${err?.code ? ` ${err.code}` : ''}：${String(err?.message || err)}`.slice(0, 1500);
     this.row.fallback_error = [this.row.fallback_error, line].filter(Boolean).join('\n').slice(0, 4000);
@@ -400,7 +509,8 @@ class LogEntry {
       delete this.diagnostics.upstream;
     }
     this.row.status = 'success';
-    for (const key of ['http_status', 'error_code', 'error_message', 'resolved_model',
+    // 账号也清掉：下一次尝试还没选到账号就失败时，不能记到上一个账号头上
+    for (const key of ['account_id', 'account_email', 'http_status', 'error_code', 'error_message', 'resolved_model',
       'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens']) {
       this.row[key] = null;
     }
@@ -434,7 +544,7 @@ class LogEntry {
         account: r.account_email, key: r.api_key_name, durationMs: r.duration_ms, ...this.diagnostics,
       })}`);
     }
-    this.log.write(this.row);
+    this.log.write(this.row, this.attempts);
   }
 }
 

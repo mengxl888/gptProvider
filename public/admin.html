@@ -217,6 +217,17 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .req-head .req-label { letter-spacing: .12em; color: var(--text-2); font-weight: 550; }
 .req-counts { display: flex; gap: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .req-counts .ok { color: var(--success); } .req-counts .bad { color: var(--danger); } .req-counts .mid { color: var(--muted); font-weight: 550; }
+.req-gap { height: 12px; }
+/* 日志详情：一个请求依次落到的账号 / 上游 */
+.attempts { display: grid; gap: 8px; }
+.attempt { display: flex; gap: 8px; align-items: flex-start; }
+.attempt-no { flex: none; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; font-weight: 650; background: var(--danger-soft); color: var(--danger); }
+.attempt-no.ok { background: var(--success-soft); color: var(--success); }
+.attempt-no.mid { background: var(--surface-3); color: var(--text-2); }
+.attempt-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.attempt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip.warn { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
 .health-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-top: 6px; margin-right: 72px; }
 .health-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
 .health-meta b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -549,8 +560,8 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
         <div class="card card-pad" id="log-health"></div>
         <div class="card">
           <div class="filters">
-            <select class="select" id="f-account"></select>
-            <select class="select" id="f-status"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="aborted">中断</option></select>
+            <select class="select" id="f-account" title="选了账号或上游时，也会列出在它上面失败过、之后换了账号或上游的请求"></select>
+            <select class="select" id="f-status"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="aborted">中断</option><option value="retried">换过账号 / 上游</option></select>
             <select class="select" id="f-endpoint"><option value="">全部接口</option><option value="chat.completions">对话</option><option value="responses">Responses</option><option value="images.generations">生图</option><option value="images.edits">改图</option><option value="embeddings">Embeddings</option></select>
             <select class="select" id="f-source"><option value="">全部来源</option><option value="api">API</option><option value="playground">调试台</option></select>
             <span class="right small muted" id="logs-updated"></span>
@@ -1168,11 +1179,20 @@ function healthBar(series, large = false) {
   }).join('')}</div>`;
 }
 
+// 账号 / 上游卡片的两条健康条。失败后会换账号或改用 API 上游，只看最终结果会把这个账号自己的失败藏起来，
+// 所以先列「实际请求」（它收到的每一次请求，含失败后被换掉的），再列「最终结果」（在它上面结束、客户端拿到的）。
 function requestBlock(stat) {
-  const s = stat?.success ?? 0, f = stat?.failure ?? 0, r = rateInfo(s, f);
-  return `<div class="req-head"><span class="req-label">请求记录 · ${windowLabel()}</span>
-      <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span></span></div>
-    <div class="health-row">${healthBar(stat?.series)}<span class="rate ${r.cls}">${r.text}</span></div>`;
+  const line = (label, tip, o, extra = '') => {
+    const s = o?.success ?? 0, f = o?.failure ?? 0, r = rateInfo(s, f);
+    return `<div class="req-head"><span class="req-label" title="${esc(tip)}">${label}</span>
+        <span class="req-counts"><span class="ok">成功 ${fmtNum(s)}</span><span class="bad">失败 ${fmtNum(f)}</span>${extra}</span></div>
+      <div class="health-row">${healthBar(o?.series)}<span class="rate ${r.cls}">${r.text}</span></div>`;
+  };
+  const retried = (stat?.actual?.failure ?? 0) - (stat?.failure ?? 0);
+  return line(`实际请求 · ${windowLabel()}`, '这个账号 / 上游收到的每一次请求，包括失败后又换了账号或改用 API 上游的那次', stat?.actual || stat,
+      retried > 0 ? `<span class="mid" title="其中 ${retried} 次失败后换了账号或上游，客户端没有看到这些失败">已转走 ${fmtNum(retried)}</span>` : '')
+    + '<div class="req-gap"></div>'
+    + line('最终结果', '在这个账号 / 上游上结束的请求，也就是客户端实际拿到的结果', stat);
 }
 
 function healthCard(o, { title, link, switcher }) {
@@ -2029,6 +2049,7 @@ async function loadLogs() {
 function renderLogStats() {
   const o = S.stats?.overall;
   const s = o?.success ?? 0, f = o?.failure ?? 0, a = o?.aborted ?? 0, r = rateInfo(s, f);
+  const retried = (o?.actual?.failure ?? 0) - f;
   const cachedPct = o?.inputTokens ? Math.round((o.cachedTokens / o.inputTokens) * 100) : 0;
   const card = (ico, label, value, foot) => `<div class="card stat">
     <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
@@ -2036,7 +2057,8 @@ function renderLogStats() {
   $('log-stats').innerHTML = [
     card('activity', `请求数 · ${windowLabel()}`, fmtNum(s + f + a), a ? `含中断 ${fmtNum(a)}（客户端断开，不计入成功率）` : '所有记录的 /v1 请求和调试台'),
     card('check', '成功率', `<span class="rate ${r.cls}" style="font-size:inherit;text-align:left">${r.text}</span>`,
-      `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>`),
+      `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>${retried > 0
+        ? ` · <span title="失败后换了账号或改用 API 上游，客户端没有看到这些失败；状态筛选选「换过账号 / 上游」查看">另有 ${fmtNum(retried)} 次失败已转走</span>` : ''}`),
     card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
     card('zap', 'Tokens', `${fmtNum(o?.inputTokens)}<span style="font-size:14px;color:var(--muted)"> / ${fmtNum(o?.outputTokens)}</span>`,
       `输入 / 输出 · 缓存命中 ${cachedPct}%`),
@@ -2047,8 +2069,42 @@ function renderLogStats() {
 
 // 失败后重试过的请求：最后落在 API 上游（id 以 oa- 开头）还是换了账号
 const failoverToUpstream = (r) => String(r.account_id || '').startsWith('oa-');
-const failoverChip = (r) => (r.fallback_error
-  ? ` <span class="chip" title="${esc(r.fallback_error)}">${failoverToUpstream(r) ? '已切换上游' : '已换账号'}</span>` : '');
+const targetKind = (id) => (!id ? '未分配账号' : String(id).startsWith('oa-') ? 'API 上游' : 'Codex 账号');
+function failoverChip(r) {
+  const tried = r.attempts || [];
+  if (!tried.length) {
+    return r.fallback_error ? ` <span class="chip" title="${esc(r.fallback_error)}">${failoverToUpstream(r) ? '已切换上游' : '已换账号'}</span>` : '';
+  }
+  // 悬停看完整链路：每次失败的账号 / 上游和错误，最后是这一行的结果
+  const steps = [
+    ...tried.map((a, i) => `${i + 1}. ${a.account_email || targetKind(a.account_id)}：失败 ${a.http_status ?? ''}${a.error_code ? ` ${a.error_code}` : ''}`),
+    `${tried.length + 1}. ${r.account_email || targetKind(r.account_id)}：${{ success: '成功', aborted: '中断' }[r.status] || '失败'} ${r.http_status ?? ''}`,
+  ];
+  return ` <span class="chip warn" title="${esc(steps.join('\n'))}">重试 ${tried.length} 次</span>`;
+}
+
+// 日志详情里的「请求过程」：之前失败的每次尝试，加上最后一次（就是这一行）
+function attemptChain(r) {
+  const tried = r.attempts || [];
+  if (!tried.length) {
+    return r.fallback_error ? [['之前失败的尝试', `<div style="color:var(--danger);white-space:pre-wrap">${esc(r.fallback_error)}</div><div class="small muted">每行一次失败的尝试，之后${failoverToUpstream(r) ? '改用 API 上游' : '换了账号'}重试；上面的账号 / 上游和下面的状态是最后一次尝试的结果</div>`]] : [];
+  }
+  const last = tried[tried.length - 1];
+  const finalStart = last.ts + (last.duration_ms ?? 0);
+  const step = (n, cls, id, label, status, extra, startMs, ms) => `<div class="attempt"><span class="attempt-no ${cls}">${n}</span><div class="attempt-body">
+      <div class="attempt-head"><span class="chip">${esc(targetKind(id))}</span><b>${esc(label || (id ? id : '还没选到账号'))}</b>${status}</div>
+      <div class="small muted">${joinDot([`第 ${esc(fmtMs(Math.max(0, startMs)))} 开始`, ms != null && `耗时 ${esc(fmtMs(ms))}`])}</div>${extra}</div></div>`;
+  const failed = tried.map((a, i) => step(i + 1, '', a.account_id, a.account_email,
+    `<span class="badge danger"><span class="dot"></span>失败 ${esc(a.http_status ?? '')}</span>${a.error_code ? ` <span class="mono small">${esc(a.error_code)}</span>` : ''}`,
+    a.error_message ? `<div class="small" style="color:var(--danger);white-space:pre-wrap">${esc(a.error_message)}</div>` : '',
+    a.ts - r.ts, a.duration_ms));
+  const finalCls = r.status === 'success' ? 'ok' : r.status === 'aborted' ? 'mid' : '';
+  const final = step(tried.length + 1, finalCls, r.account_id, r.account_email,
+    `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`,
+    '<div class="small muted">最后一次尝试，就是这条日志的结果；下面的状态、Tokens 和错误信息都是它的</div>',
+    finalStart - r.ts, r.duration_ms == null ? null : r.ts + r.duration_ms - finalStart);
+  return [['请求过程', `<div class="attempts">${failed.join('')}${final}</div>`]];
+}
 
 function logStatus(row) {
   if (row.status === 'success') return `<span class="badge success"><span class="dot"></span>成功 ${row.http_status ?? ''}</span>`;
@@ -2113,7 +2169,7 @@ function logDetail(r) {
     ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
     ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
     ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
-    ...(r.fallback_error ? [['之前失败的尝试', `<div style="color:var(--danger);white-space:pre-wrap">${esc(r.fallback_error)}</div><div class="small muted">每行一次失败的尝试，之后${failoverToUpstream(r) ? '改用 API 上游' : '换了账号'}重试；上面的账号 / 上游和下面的状态是最后一次尝试的结果</div>`]] : []),
+    ...attemptChain(r),
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
     ['原始 User-Agent', `<span class="mono small">${esc(r.user_agent || '未记录')}</span>`],
     ['上游 User-Agent', `<span class="mono small">${esc(r.upstream_user_agent || '未记录')}</span>`],
