@@ -1,6 +1,9 @@
 // 在一个 app-server 上跑一次"临时线程 + 单个回合"，把流式事件回调出去。
 // 每个 API 请求都新建 ephemeral 线程：不落盘、互不串上下文。
 
+// 模型产出的条目；其中第一条开始（对应上游 response.output_item.added）就是首字时间
+const OUTPUT_ITEM_TYPES = new Set(['agentMessage', 'reasoning', 'webSearch', 'imageGeneration']);
+
 export async function runTurn(client, { thread, input, turn, onEvent = () => {}, signal }) {
   const started = await client.request('thread/start', {
     ...thread,
@@ -18,6 +21,7 @@ export async function runTurn(client, { thread, input, turn, onEvent = () => {},
     error: null,
   };
   const phases = new Map();
+  let outputStarted = false;
   onEvent({ type: 'started', model: started.model });
 
   return new Promise((resolve, reject) => {
@@ -42,6 +46,10 @@ export async function runTurn(client, { thread, input, turn, onEvent = () => {},
     const unsubscribe = client.subscribeThread(threadId, (method, params) => {
       switch (method) {
         case 'item/started':
+          if (!outputStarted && OUTPUT_ITEM_TYPES.has(params.item?.type)) {
+            outputStarted = true;
+            onEvent({ type: 'output_started' });
+          }
           if (params.item?.type === 'agentMessage') phases.set(params.item.id, params.item.phase);
           if (params.item?.type === 'imageGeneration') onEvent({ type: 'image_started', itemId: params.item.id });
           if (params.item?.type === 'webSearch') onEvent({ type: 'search_started', itemId: params.item.id });

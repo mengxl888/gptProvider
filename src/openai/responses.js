@@ -94,6 +94,7 @@ export async function handleResponses(req, res, body, ctx) {
     // Persist cumulative observations immediately: failed/aborted turns reject
     // without returning runTurn's result, and must not lose consumed tokens.
     if (event.type === 'started') req.log?.resolvedModel(event.model);
+    if (event.type === 'output_started') req.log?.firstToken?.();
     if (event.type === 'usage') req.log?.usage(event.usage);
     queue = queue.then(() => builder.handle(event)).catch(() => {});
   };

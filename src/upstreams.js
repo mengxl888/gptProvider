@@ -9,6 +9,7 @@ import https from 'node:https';
 import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './codex/accounts.js';
+import { isOutputEvent } from './codex/responsesProxy.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
@@ -218,6 +219,7 @@ export class UpstreamManager {
           const text = tracker.feed(chunk);
           // Keep observed usage/tier even if the downstream closes before EOF.
           const info = tracker.result();
+          if (info.output) log?.firstToken?.();
           if (info.model) log?.resolvedModel(info.model);
           if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
           if (info.usage) log?.usage(info.usage);
@@ -333,7 +335,7 @@ class SseTracker {
   constructor() {
     this.decoder = new StringDecoder('utf8');
     this.buffer = '';
-    this.info = { model: null, usage: null, serviceTier: null, error: null, errorCode: null };
+    this.info = { model: null, usage: null, serviceTier: null, error: null, errorCode: null, output: false };
   }
 
   // 返回这一块解码后的文本，过滤用量块时要用
@@ -355,6 +357,7 @@ class SseTracker {
   }
 
   #take(event) {
+    this.info.output ||= isOutputEvent(event) || hasChatOutput(event);
     this.info.model ||= event.model || event.response?.model || null;
     this.info.serviceTier = event.service_tier ?? event.response?.service_tier ?? this.info.serviceTier;
     const usage = toUsage(event.usage || event.response?.usage);
@@ -395,6 +398,12 @@ class UsageChunkFilter {
     this.pending = '';
     return Buffer.from(rest);
   }
+}
+
+// Chat 流里第一块带内容的增量：正文、推理、拒答或工具调用
+function hasChatOutput(event) {
+  return Array.isArray(event.choices) && event.choices.some(({ delta } = {}) => delta && (delta.tool_calls?.length > 0
+    || ['content', 'reasoning_content', 'reasoning', 'refusal'].some((key) => typeof delta[key] === 'string' && delta[key].length > 0)));
 }
 
 function isUsageOnlyChunk(event) {

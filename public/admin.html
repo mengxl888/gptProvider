@@ -271,6 +271,18 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .log-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; color: var(--danger); }
 .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); }
 .pager .btns { display: flex; gap: 8px; }
+.log-summary { display: flex; flex-wrap: wrap; gap: 10px 32px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.log-summary .item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.log-summary .label { font-size: 12px; color: var(--muted); }
+.log-summary .value { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.lat { display: flex; gap: 10px; }
+.lat::before { content: ''; flex: none; width: 3px; border-radius: 3px; background: linear-gradient(var(--lat-a), var(--lat-b)); }
+.lat-grid { display: grid; grid-template-columns: auto auto; gap: 1px 12px; font-size: 12.5px; line-height: 1.5; }
+.lat-grid span { color: var(--muted); }
+.lat-grid b { font-weight: 550; font-variant-numeric: tabular-nums; }
+.speed-success { color: var(--success); }
+.speed-warn { color: var(--warn); }
+.speed-danger { color: var(--danger); }
 
 /* ---------- accounts ---------- */
 .account-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
@@ -599,8 +611,9 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <select class="select" id="f-source"><option value="">全部来源</option><option value="api">API</option><option value="playground">调试台</option></select>
             <span class="right small muted" id="logs-updated"></span>
           </div>
+          <div class="log-summary" id="log-summary" hidden></div>
           <div class="table-wrap"><table class="log-table">
-            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th>耗时</th><th title="输入 / 输出">Tokens</th><th title="美元估算，包含已记录用量的失败重试">费用（USD）</th><th>错误</th></tr></thead>
+            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th title="首字：从收到请求到模型开始输出&#10;输出 TPS = 输出 Tokens ÷（总耗时 − 首字）">耗时</th><th title="输入 / 输出">Tokens</th><th title="美元估算，包含已记录用量的失败重试">费用（USD）</th><th>错误</th></tr></thead>
             <tbody id="log-rows"></tbody>
           </table></div>
           <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
@@ -1379,6 +1392,7 @@ function applyTimeWindow(kind, customRange) {
   S.logs.open = null;
   S.logs.data = [];
   S.logs.total = 0;
+  S.logs.summary = null;
   S.logs.loadedAt = 0;
   S.stats = null;
   if (S.page === 'overview') renderOverviewHealth();
@@ -2359,8 +2373,46 @@ async function loadLogs() {
   try { r = await api('GET', `/logs?${query}`); }
   catch (error) { if (id !== logsLoadId || query !== logQuery()) return; throw error; }
   if (id !== logsLoadId || query !== logQuery()) return;
-  Object.assign(S.logs, { total: r.total, data: r.data, loadedAt: Date.now() });
+  Object.assign(S.logs, { total: r.total, summary: r.summary, data: r.data, loadedAt: Date.now() });
   if (S.page === 'logs') renderLogRows();
+}
+
+// 快慢颜色：首字 10 秒、总耗时 60 秒以内算快，超过 3 倍算慢
+const FIRST_TOKEN_FAST_MS = 10_000, DURATION_FAST_MS = 60_000;
+const speedLevel = (ms, fast) => (ms == null ? null : ms < fast ? 'success' : ms < fast * 3 ? 'warn' : 'danger');
+function fmtLatency(ms) {
+  if (ms == null) return '—';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+const fmtTps = (tps) => (tps == null ? '—' : `${tps.toFixed(1)} tok/s`);
+
+function latencyCell(r) {
+  const first = speedLevel(r.first_token_ms, FIRST_TOKEN_FAST_MS), total = speedLevel(r.duration_ms, DURATION_FAST_MS);
+  const bar = (level) => (level ? `var(--${level})` : 'var(--border)');
+  const value = (level, text) => `<b${level ? ` class="speed-${level}"` : ''}>${esc(text)}</b>`;
+  return `<div class="lat" style="--lat-a:${bar(first || total)};--lat-b:${bar(total)}"><div class="lat-grid">
+    <span>首字</span>${value(first, fmtLatency(r.first_token_ms))}
+    <span>总耗时</span>${value(total, fmtLatency(r.duration_ms))}
+    <span>输出 TPS</span>${value(null, fmtTps(r.tps))}</div></div>`;
+}
+
+function renderLogSummary() {
+  const s = S.logs.summary, el = $('log-summary');
+  el.hidden = !s;
+  if (!s) return;
+  const item = (label, value, level, title) => `<div class="item" title="${esc(title)}"><span class="label">${label}</span>
+    <span class="value${level ? ` speed-${level}` : ''}">${esc(value)}</span></div>`;
+  el.innerHTML = [
+    item('当前筛选', `${fmtNum(S.logs.total)} 条`, null, '当前时间范围和筛选条件下的全部请求，不只是这一页'),
+    item('平均首字', fmtLatency(s.avgFirstTokenMs), speedLevel(s.avgFirstTokenMs, FIRST_TOKEN_FAST_MS),
+      `从收到请求到模型开始输出的平均时间，统计记到首字的 ${fmtNum(s.firstTokenCount)} 条（升级前的旧日志、API 上游的非流式请求没有首字）`),
+    item('平均总耗时', fmtLatency(s.avgDurationMs), speedLevel(s.avgDurationMs, DURATION_FAST_MS),
+      `统计 ${fmtNum(s.durationCount)} 条，包含失败和中断的请求；只看成功的请把状态选成「成功」`),
+    item('平均输出 TPS', fmtTps(s.avgTps), null,
+      `每条请求的输出 Tokens ÷（总耗时 − 首字），再取平均；统计有输出 Tokens 的 ${fmtNum(s.tpsCount)} 条`),
+  ].join('');
 }
 
 function renderLogStats() {
@@ -2455,6 +2507,7 @@ function logStatus(row) {
 
 function renderLogRows() {
   const rows = S.logs.data;
+  renderLogSummary();
   $('logs-updated').textContent = S.logs.loadedAt ? `更新于 ${new Date(S.logs.loadedAt).toLocaleTimeString('zh-CN', { hour12: false })} · 每 20 秒自动刷新` : '';
   $('log-rows').innerHTML = rows.length ? rows.map((r) => {
     const open = S.logs.open === r.id;
@@ -2465,7 +2518,7 @@ function renderLogRows() {
       <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
       <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${failoverChip(r)}</td>
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
-      <td class="num">${esc(fmtMs(r.duration_ms))}</td>
+      <td>${latencyCell(r)}</td>
       <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
       <td class="num" title="${esc(`${COST_SCOPE}\n${costCoverage(r.costSummary)}`)}">${costSummaryHtml(r.costSummary)}${r.costSummary?.unpricedAttempts || r.costSummary?.partialAttempts ? '<div class="small muted">已计价小计</div>' : ''}</td>
       <td class="err-cell" title="${esc(r.error_message || '')}"><div>${esc(r.error_message || '')}</div></td>
@@ -2497,7 +2550,8 @@ function logDetail(r) {
         ? `已转换 ${esc(r.system_messages_converted)} 条 system→developer`
         : `${esc(r.system_messages_converted)} 条`],
     ['状态', `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`],
-    ['耗时', esc(fmtMs(r.duration_ms))],
+    ['耗时', `首字 ${esc(fmtLatency(r.first_token_ms))} · 总耗时 ${esc(fmtLatency(r.duration_ms))} · 输出 TPS ${esc(fmtTps(r.tps))}
+      <div class="small muted">首字从收到请求算到模型开始输出（推理、回答或工具调用），包含之前失败重试的时间；输出 TPS = 输出 Tokens ÷（总耗时 − 首字），没记到首字时除以总耗时</div>`],
     ['Tokens', r.input_tokens == null ? '—'
       : `输入 ${fmtNum(r.input_tokens)}（缓存 ${fmtNum(r.cached_tokens)}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
     ['本次费用估算', costDetails(r.cost)],

@@ -217,7 +217,10 @@ export class CodexResponsesProxy {
         tracker.feed(chunk);
         const actualTier = tracker.response?.service_tier ?? tracker.initial.service_tier;
         if (actualTier != null) req.log?.request({ model: payload.model, stream: body.stream, serviceTier: actualTier });
-        if (tracker.output) diag.firstOutputMs ??= ms();
+        if (tracker.output && diag.firstOutputMs == null) {
+          diag.firstOutputMs = ms();
+          req.log?.firstToken?.();
+        }
         // A bare `error` event is terminal even without response.failed. Keep
         // response.failed on the normal terminal path so usage/output metadata
         // is still assembled before the failure is surfaced to failover.
@@ -500,7 +503,7 @@ class ResponsesTracker {
   }
 }
 
-function isOutputEvent(event) {
+export function isOutputEvent(event) {
   const type = event?.type;
   if (!type || PREAMBLE_EVENTS.has(type)) return false;
   if (OUTPUT_EVENT_TYPES.has(type)) return true;

@@ -97,6 +97,7 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
     ...turnArgs,
     onEvent: (event) => {
       if (event.type === 'started') req.log?.resolvedModel(event.model);
+      if (event.type === 'output_started') req.log?.firstToken?.();
       if (event.type === 'usage') req.log?.usage(event.usage);
     },
   }).catch((err) => {
@@ -165,6 +166,8 @@ async function streamCompletion(res, client, turnArgs, { id, created, model, bod
           log?.resolvedModel(event.model);
           if (model !== IMAGE_MODEL_ID) responseModel = event.model || model;
           enqueue(() => stream.hold(data(chunk({ role: 'assistant', content: '' }))));
+        } else if (event.type === 'output_started') {
+          log?.firstToken?.();
         } else if (event.type === 'usage') {
           log?.usage(event.usage);
         } else if (event.type === 'text') {

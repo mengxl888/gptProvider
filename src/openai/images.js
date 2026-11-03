@@ -107,6 +107,7 @@ async function generateImages(req, res, ctx, { prompt, n = 1, size, background, 
     try {
       return await runTurn(trackedClient, { ...turnArgs, onEvent: (event) => {
         if (event.type === 'started') observed.model = event.model;
+        if (event.type === 'output_started') req.log?.firstToken?.();
         if (event.type === 'image') observed.images.push(event.image);
         if (event.type === 'item_done' && event.kind === 'text' && event.text) {
           observed.messages.push({ text: event.text, phase: 'final_answer' });

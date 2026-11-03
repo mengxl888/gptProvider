@@ -27,6 +27,7 @@ const COLUMNS = [
   'upstream_user_agent', 'user_agent_rewritten', 'system_messages_converted',
   'status', 'http_status', 'error_code', 'error_message', 'fallback_error',
   'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'detail', 'service_tier',
+  'first_token_ms',
 ];
 const ATTEMPT_COLUMNS = [
   'request_id', 'seq', 'ts', 'duration_ms', 'account_id', 'account_email',
@@ -39,6 +40,14 @@ const COST_USAGE_COLUMNS = [
 ];
 // 换账号最多 3 个、上游之间还能再切换，留足余量；超出的只影响日志展示，不影响请求
 const MAX_ATTEMPTS_PER_REQUEST = 12;
+// 输出 TPS 的分母：首字之后的生成时长；没记到首字（旧日志、非流式上游）时用总耗时
+const GENERATION_MS_SQL = `CASE WHEN first_token_ms IS NOT NULL AND duration_ms > first_token_ms
+  THEN duration_ms - first_token_ms ELSE duration_ms END`;
+
+export function outputTps({ output_tokens: tokens, duration_ms: duration, first_token_ms: first }) {
+  const ms = first != null && duration > first ? duration - first : duration;
+  return tokens > 0 && ms > 0 ? (tokens * 1000) / ms : null;
+}
 
 export async function openRequestLog(dataDir, options) {
   let DatabaseSync;
@@ -123,6 +132,7 @@ export function initializeRequestLogSchema(db) {
     ['fallback_error', 'TEXT'],
     ['detail', 'TEXT'],
     ['service_tier', 'TEXT'],
+    ['first_token_ms', 'INTEGER'],
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
   }
@@ -263,18 +273,31 @@ export class RequestLog {
       }
     }
     const sql = where.join(' AND ');
-    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM requests WHERE ${sql}`).get(...args).n;
+    // 整个筛选结果（不只是这一页）的平均首字、平均耗时和平均输出速度；每项只统计有这项数据的请求
+    const agg = this.db.prepare(`
+      SELECT COUNT(*) AS n,
+             AVG(first_token_ms) AS ft, COUNT(first_token_ms) AS ftn,
+             AVG(duration_ms) AS d, COUNT(duration_ms) AS dn,
+             AVG(CASE WHEN output_tokens > 0 AND gen_ms > 0 THEN output_tokens * 1000.0 / gen_ms END) AS tps,
+             COUNT(CASE WHEN output_tokens > 0 AND gen_ms > 0 THEN 1 END) AS tpsn
+      FROM (SELECT first_token_ms, duration_ms, output_tokens, ${GENERATION_MS_SQL} AS gen_ms FROM requests WHERE ${sql})
+    `).get(...args);
+    const summary = {
+      avgFirstTokenMs: agg.ft == null ? null : Math.round(agg.ft), firstTokenCount: agg.ftn,
+      avgDurationMs: agg.d == null ? null : Math.round(agg.d), durationCount: agg.dn,
+      avgTps: agg.tps, tpsCount: agg.tpsn,
+    };
     const data = this.db
       .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
       .all(...args, Math.min(Number(limit) || 50, maxLimit), Number(offset) || 0);
     const attempts = this.attemptsFor(data.map((row) => row.id));
     const pricing = this.getPricing();
-    return { total, data: data.map((row) => {
+    return { total: agg.n, summary, data: data.map((row) => {
       const cost = estimateCost(row, pricing);
       const previous = (attempts.get(row.id) || []).map((attempt) => ({ ...attempt, cost: estimateCost(attempt, pricing) }));
       const costSummary = emptyCostSummary();
       for (const item of [...previous, { cost }]) addCost(costSummary, item.cost);
-      return { ...row, cost, costSummary, attempts: previous };
+      return { ...row, tps: outputTps(row), cost, costSummary, attempts: previous };
     }) };
   }
 
@@ -520,7 +543,7 @@ class LogEntry {
   // 每次选定账号或上游时调用，也是这次尝试的开始
   account(account) {
     // A new upstream attempt must not inherit already-observed usage from its predecessor.
-    for (const name of ['resolved_model', 'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images']) {
+    for (const name of ['resolved_model', 'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'first_token_ms']) {
       this.row[name] = null;
     }
     this.row.account_id = account.id;
@@ -530,6 +553,11 @@ class LogEntry {
 
   resolvedModel(model) {
     if (model) this.row.resolved_model = model;
+  }
+
+  // 模型开始输出（推理、回答或工具调用）的时间，从收到请求算起，含之前失败尝试的耗时；只记第一次
+  firstToken() {
+    this.row.first_token_ms ??= this.elapsed();
   }
 
   // Codex 的 TokenUsageBreakdown
@@ -584,7 +612,7 @@ class LogEntry {
     this.row.status = 'success';
     // 账号也清掉：下一次尝试还没选到账号就失败时，不能记到上一个账号头上
     for (const key of ['account_id', 'account_email', 'http_status', 'error_code', 'error_message', 'resolved_model',
-      'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'service_tier']) {
+      'input_tokens', 'cached_tokens', 'output_tokens', 'reasoning_tokens', 'images', 'service_tier', 'first_token_ms']) {
       this.row[key] = null;
     }
   }
