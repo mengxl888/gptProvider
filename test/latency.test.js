@@ -5,8 +5,11 @@ import { Writable } from 'node:stream';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { EventEmitter } from 'node:events';
+
+import { CodexResponsesProxy } from '../src/codex/responsesProxy.js';
 import { runTurn } from '../src/codex/turn.js';
-import { RequestLog, outputTps } from '../src/requestLog.js';
+import { RequestLog, outputTps, withLog } from '../src/requestLog.js';
 import { UpstreamManager } from '../src/upstreams.js';
 
 // In-memory SQLite, synthetic app-server events and loopback HTTP only.
@@ -108,6 +111,45 @@ test('runTurn reports output_started once, when the model starts its first outpu
   const events = [];
   await runTurn(client, { thread: {}, input: [], turn: {}, onEvent: (event) => events.push(event.type) });
   assert.deepEqual(events, ['started', 'output_started']);
+});
+
+test('native Responses forwarding stores the first token and output TPS in the log row', async (t) => {
+  const log = memoryLog(t);
+  const sse = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  const chunks = [
+    sse('response.created', { response: { id: 'resp_1', status: 'in_progress' } }),
+    sse('response.output_item.added', { output_index: 0, item: { type: 'reasoning', id: 'rs_1' } }),
+    sse('response.completed', { response: { id: 'resp_1', status: 'completed', output: [], usage: { input_tokens: 4, output_tokens: 40 } } }),
+  ];
+  const fetchImpl = async () => new Response(new ReadableStream({
+    async pull(controller) {
+      await delay(40);
+      if (chunks.length) controller.enqueue(Buffer.from(chunks.shift()));
+      else controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const proxy = new CodexResponsesProxy({
+    accounts: {
+      pickAccount: () => ({ id: 'synthetic-account', label: 'Synthetic', status: 'ready' }),
+      responsesAuth: async () => ({ accessToken: 'synthetic-token', accountId: 'synthetic-workspace' }),
+    },
+    store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } },
+    codex: { version: '0.165.0' },
+    fetchImpl,
+  });
+  const req = new EventEmitter();
+  req.headers = { authorization: 'Bearer synthetic-downstream-key' };
+  const res = new Sink();
+  const entry = log.begin({ endpoint: 'responses', source: 'api' });
+  const tools = [{ type: 'function', name: 'shell', parameters: { type: 'object', properties: {} } }];
+  await withLog(req, res, entry, () => proxy.handle(req, res, { model: 'gpt-6.1-sol', stream: true, input: 'Hello', tools }));
+
+  const [row] = log.list().data;
+  assert.equal(row.status, 'success');
+  assert.ok(row.first_token_ms >= 70, `first token after the reasoning item, got ${row.first_token_ms}`);
+  assert.ok(row.duration_ms > row.first_token_ms);
+  assert.equal(row.tps, outputTps(row));
+  assert.equal(JSON.parse(row.detail).upstream.firstOutputMs > 0, true);
 });
 
 test('API upstream streams record the first token at the first content event, JSON responses never do', async (t) => {

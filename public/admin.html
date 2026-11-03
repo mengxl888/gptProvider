@@ -68,6 +68,7 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .foot-row { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; padding: 0 4px; }
 
 .main { min-width: 0; padding: 28px 36px 56px; max-width: 1240px; width: 100%; }
+.main.wide { max-width: none; }
 .page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
 .page-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
 .page-head p { margin: 4px 0 0; color: var(--text-2); }
@@ -264,8 +265,9 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .log-table tr.log-row { cursor: pointer; }
 .log-table tr.open td { background: var(--surface-2); }
 .log-table .clip { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
-.log-table td.err-cell { white-space: normal; min-width: 150px; max-width: 320px; color: var(--danger); font-size: 12.5px; }
-.log-table td.err-cell div { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+/* 错误列吃掉表格剩余的宽度，最多显示 3 行（和三行的耗时列同高），完整内容看悬停或展开 */
+.log-table td.err-cell { white-space: normal; width: 100%; min-width: 200px; color: var(--danger); font-size: 12.5px; line-height: 1.5; }
+.log-table td.err-cell div { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .log-detail td { background: var(--surface-2); white-space: normal; padding: 4px 16px 16px; }
 .log-detail .kv { padding: 10px 0 0; grid-template-columns: 110px 1fr; }
 .log-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; color: var(--danger); }
@@ -1209,6 +1211,8 @@ function route() {
   S.page = TITLES[page] ? page : 'overview';
   document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== S.page; });
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === S.page));
+  // 日志表格列多，占满整个宽度，错误信息才显示得开
+  document.querySelector('.main').classList.toggle('wide', S.page === 'logs');
   renderInstance();
   ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, alerts: renderAlerts, models: renderModels, images: loadImages,
      playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
