@@ -391,6 +391,16 @@ details.think div { white-space: pre-wrap; padding: 6px 0 2px 10px; border-left:
 .setting .desc b { display: block; font-weight: 600; margin-bottom: 2px; }
 .setting .desc span { color: var(--text-2); font-size: 13px; }
 .setting .control { flex: none; min-width: 220px; display: flex; justify-content: flex-end; }
+.backup-models { margin-top: 10px; gap: 6px; }
+.backup-models .chip { height: 26px; gap: 6px; padding: 0 4px 0 8px; color: var(--text); font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace; }
+.backup-models .chip .n { color: var(--muted); font-family: inherit; }
+.backup-models .chip.missing { border-color: var(--warn); }
+.backup-models .chip button { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 13px; line-height: 1; }
+.backup-models .chip button:hover { color: var(--text); }
+.backup-models .chip button:disabled { opacity: .35; cursor: default; }
+.backup-models .empty-note { color: var(--muted); font-size: 12.5px; }
+.backup-add { gap: 8px; align-items: center; }
+.backup-add .input { width: 200px; max-width: 100%; }
 .setting .desc .inline-num { display: inline-block; width: 68px; height: 26px; padding: 0 6px; margin: 0 3px; text-align: center; font-size: 13px; color: var(--text); }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; padding: 18px 20px; margin: 0; font-size: 13px; }
 
@@ -824,6 +834,14 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="setting">
             <div class="desc"><b>失败时换账号重试</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，先换一个还没试过的账号再试（已登录、权重大于 0 的账号，一个请求最多用 3 个账号）；内容安全拒绝、请求体错误不重试。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-account-retry"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>过载时切换备用模型</b><span>Codex 账号渠道的对话 / Responses 请求遇到模型过载（<span class="mono">server_is_overloaded</span>，「Our servers are currently overloaded」）、还没向客户端输出内容时，先按下面的顺序换用备用模型再试，账号不变；备用模型都过载了才换账号、改用 API 上游，这两步用回请求的模型。请求的模型本身在列表里时会跳过它。<span id="set-model-fallback-hint"></span></span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="set-model-fallback"><span></span></label></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>备用模型</b><span>从上到下依次尝试，最多 5 个；点 ↑ 调整顺序。</span><div class="chips backup-models" id="set-backup-models"></div></div>
+            <div class="control backup-add"><input id="set-backup-input" class="input" list="set-backup-options" placeholder="选择或输入模型 ID" maxlength="100" autocomplete="off"><datalist id="set-backup-options"></datalist><button class="btn sm" id="set-backup-add">添加</button></div>
           </div>
           <div class="setting">
             <div class="desc"><b>失败时改用 API 上游</b><span>换账号也失败（或没有别的账号）后，用「API 上游」里的 Key 再试一次，多个上游按优先级依次尝试，按 API 用量计费。<span id="set-fallback-hint"></span></span></div>
@@ -2140,6 +2158,32 @@ function fillModelSelects() {
   setSel($('set-model'), `<option value="">Codex 默认</option>${opts}`, def);
   const pgVal = $('pg-model').value || def;
   setSel($('pg-model'), `<option value="">Codex 默认</option>${opts}${activeAccount()?.planType !== 'free' ? imageOpts : ''}`, pgVal);
+  renderBackupModels();
+}
+
+// 设置页的备用模型：按尝试顺序排的标签，可上移、移除；输入框可从模型列表里选，也可以直接输入模型 ID。
+const MAX_BACKUP_MODELS = 5;
+const BACKUP_MODEL_ID = /^[\w.:/-]{1,100}$/;
+function renderBackupModels() {
+  const s = S.state.settings;
+  const list = s.fallbackModels || [];
+  const catalog = S.models?.data || [];
+  const known = new Set(catalog.map((m) => m.id.toLowerCase()));
+  $('set-backup-models').innerHTML = list.length ? list.map((id, i) => {
+    const missing = catalog.length && !known.has(id.toLowerCase());
+    return `<span class="chip ${missing ? 'missing' : ''}" title="${missing ? '当前账号的模型列表里没有这个模型，请求可能会失败' : ''}"><span class="n">${i + 1}</span>${esc(id)}<button data-backup-up="${i}" title="上移" ${i ? '' : 'disabled'}>↑</button><button data-backup-remove="${i}" title="移除">×</button></span>`;
+  }).join('') : '<span class="empty-note">还没有添加备用模型</span>';
+  const added = new Set(list.map((id) => id.toLowerCase()));
+  $('set-backup-options').innerHTML = catalog.filter((m) => !added.has(m.id.toLowerCase()))
+    .map((m) => `<option value="${esc(m.id)}">${esc(m.displayName && m.displayName !== m.id ? m.displayName : '')}</option>`).join('');
+  const input = $('set-backup-input');
+  const full = list.length >= MAX_BACKUP_MODELS;
+  input.disabled = full;
+  input.placeholder = full ? `最多 ${MAX_BACKUP_MODELS} 个` : '选择或输入模型 ID';
+  $('set-backup-add').disabled = full || !input.value.trim();
+  $('set-model-fallback').checked = Boolean(s.modelFallback);
+  $('set-model-fallback-hint').innerHTML = s.modelFallback && !list.length
+    ? ' <b style="color:var(--danger)">还没有添加备用模型，暂不生效，请在下面添加。</b>' : '';
 }
 
 // ============ 生图 ============
@@ -2455,15 +2499,21 @@ function renderLogStats() {
 // 失败后重试过的请求：最后落在 API 上游（id 以 oa- 开头）还是换了账号
 const failoverToUpstream = (r) => String(r.account_id || '').startsWith('oa-');
 const targetKind = (id) => (!id ? '未分配账号' : String(id).startsWith('oa-') ? 'API 上游' : 'Codex 账号');
+// 第一次尝试用的是请求的模型。modelSwitched：最后是备用模型给出的结果；
+// mixedModels：请求过程里用过不止一个模型（备用模型都失败、换账号后又用回请求的模型时也算），过程里标出每次的模型。
+const requestedModel = (r) => r.attempts?.[0]?.model || r.model;
+const modelSwitched = (r) => Boolean(r.attempts?.length && r.model && requestedModel(r) !== r.model);
+const mixedModels = (r) => new Set([...(r.attempts || []).map((a) => a.model), r.model].filter(Boolean)).size > 1;
 function failoverChip(r) {
   const tried = r.attempts || [];
   if (!tried.length) {
     return r.fallback_error ? ` <span class="chip" title="${esc(r.fallback_error)}">${failoverToUpstream(r) ? '已切换上游' : '已换账号'}</span>` : '';
   }
-  // 悬停看完整链路：每次失败的账号 / 上游和错误，最后是这一行的结果
+  // 悬停看完整链路：每次失败的账号 / 上游和错误，最后是这一行的结果；换过模型时带上每次的模型
+  const withModel = mixedModels(r) ? (m) => (m ? ` · ${m}` : '') : () => '';
   const steps = [
-    ...tried.map((a, i) => `${i + 1}. ${a.account_email || targetKind(a.account_id)}：失败 ${a.http_status ?? ''}${a.error_code ? ` ${a.error_code}` : ''}`),
-    `${tried.length + 1}. ${r.account_email || targetKind(r.account_id)}：${{ success: '成功', aborted: '中断' }[r.status] || '失败'} ${r.http_status ?? ''}`,
+    ...tried.map((a, i) => `${i + 1}. ${a.account_email || targetKind(a.account_id)}${withModel(a.model)}：失败 ${a.http_status ?? ''}${a.error_code ? ` ${a.error_code}` : ''}`),
+    `${tried.length + 1}. ${r.account_email || targetKind(r.account_id)}${withModel(r.model)}：${{ success: '成功', aborted: '中断' }[r.status] || '失败'} ${r.http_status ?? ''}`,
   ];
   return ` <span class="chip warn" title="${esc(steps.join('\n'))}">重试 ${tried.length} 次</span>`;
 }
@@ -2476,18 +2526,19 @@ function attemptChain(r) {
   }
   const last = tried[tried.length - 1];
   const finalStart = last.ts + (last.duration_ms ?? 0);
-  const step = (n, cls, id, label, status, extra, startMs, ms) => `<div class="attempt"><span class="attempt-no ${cls}">${n}</span><div class="attempt-body">
+  const switched = mixedModels(r);
+  const step = (n, cls, id, label, status, extra, startMs, ms, model) => `<div class="attempt"><span class="attempt-no ${cls}">${n}</span><div class="attempt-body">
       <div class="attempt-head"><span class="chip">${esc(targetKind(id))}</span><b>${esc(label || (id ? id : '还没选到账号'))}</b>${status}</div>
-      <div class="small muted">${joinDot([`第 ${esc(fmtMs(Math.max(0, startMs)))} 开始`, ms != null && `耗时 ${esc(fmtMs(ms))}`])}</div>${extra}</div></div>`;
+      <div class="small muted">${joinDot([switched && model && `模型 <span class="mono">${esc(model)}</span>`, `第 ${esc(fmtMs(Math.max(0, startMs)))} 开始`, ms != null && `耗时 ${esc(fmtMs(ms))}`])}</div>${extra}</div></div>`;
   const failed = tried.map((a, i) => step(i + 1, '', a.account_id, a.account_email,
     `<span class="badge danger"><span class="dot"></span>失败 ${esc(a.http_status ?? '')}</span>${a.error_code ? ` <span class="mono small">${esc(a.error_code)}</span>` : ''}`,
     `<div class="small">本次估算 ${attemptCostHtml(a.cost)}</div>${a.error_message ? `<div class="small" style="color:var(--danger);white-space:pre-wrap">${esc(a.error_message)}</div>` : ''}`,
-    a.ts - r.ts, a.duration_ms));
+    a.ts - r.ts, a.duration_ms, a.model));
   const finalCls = r.status === 'success' ? 'ok' : r.status === 'aborted' ? 'mid' : '';
   const final = step(tried.length + 1, finalCls, r.account_id, r.account_email,
     `${logStatus(r)}${r.error_code ? ` <span class="mono small">${esc(r.error_code)}</span>` : ''}`,
     `<div class="small">本次估算 ${attemptCostHtml(r.cost)}</div><div class="small muted">最后一次尝试，就是这条日志的结果；下面的状态、Tokens 和错误信息都是它的</div>`,
-    finalStart - r.ts, r.duration_ms == null ? null : r.ts + r.duration_ms - finalStart);
+    finalStart - r.ts, r.duration_ms == null ? null : r.ts + r.duration_ms - finalStart, r.model);
   return [['请求过程', `<div class="attempts">${failed.join('')}${final}</div>`]];
 }
 
@@ -2531,7 +2582,7 @@ function renderLogRows() {
       <td class="mono small" title="${esc(fmtTime(r.ts))}">${esc(fmtShortTime(r.ts))}</td>
       <td>${logStatus(r)}</td>
       <td>${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}${r.stream ? ' <span class="chip">流式</span>' : ''}${r.images ? ` <span class="chip">${r.images} 张图</span>` : ''}</td>
-      <td class="mono small clip" title="${esc(r.model || r.resolved_model || '')}">${esc(r.model || r.resolved_model || '默认')}</td>
+      <td class="mono small clip" title="${esc(modelSwitched(r) ? `请求 ${requestedModel(r)}，过载后改用备用模型 ${r.model}` : r.model || r.resolved_model || '')}">${modelSwitched(r) ? '<span class="chip warn">备用</span> ' : ''}${esc(r.model || r.resolved_model || '默认')}</td>
       <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${failoverChip(r)}</td>
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td>${latencyCell(r)}</td>
@@ -2554,7 +2605,7 @@ function logDetail(r) {
     ['请求 ID', `<span class="mono">${esc(r.id)}</span>`],
     ['时间', `${esc(fmtTime(r.ts))}.${ms}`],
     ['接口', `${esc(ENDPOINT_NAME[r.endpoint] || r.endpoint)}（${esc(r.endpoint)}）${r.stream ? ' · 流式' : ''}`],
-    ['模型', `${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
+    ['模型', `${modelSwitched(r) ? `请求 ${esc(requestedModel(r))}，过载后改用备用模型 ` : ''}${esc(r.model || '未指定（用默认模型）')}${r.resolved_model && r.resolved_model !== r.model ? ` → 实际 ${esc(r.resolved_model)}` : ''}`],
     ['账号 / 上游', esc(r.account_email || '未分配（请求在到达账号或上游前就结束了）')],
     ...attemptChain(r),
     ['来源', `${r.source === 'playground' ? '后台调试台' : 'API'}${r.api_key_name ? ` · Key：${esc(r.api_key_name)}` : ''}`],
@@ -3058,6 +3109,30 @@ $('set-model').addEventListener('change', (e) => saveSettings({ defaultModel: e.
 $('set-chat-image').addEventListener('change', (e) => saveSettings({ chatImageGeneration: e.target.checked }));
 $('set-account-retry').addEventListener('change', (e) => saveSettings({ accountRetry: e.target.checked }));
 $('set-fallback').addEventListener('change', (e) => saveSettings({ upstreamFallback: e.target.checked }));
+$('set-model-fallback').addEventListener('change', (e) => saveSettings({ modelFallback: e.target.checked }));
+$('set-backup-input').addEventListener('input', (e) => { $('set-backup-add').disabled = !e.target.value.trim(); });
+const addBackupModel = run(async () => {
+  const input = $('set-backup-input');
+  const id = input.value.trim();
+  const list = S.state.settings.fallbackModels || [];
+  if (!id) return;
+  if (!BACKUP_MODEL_ID.test(id)) return toast('模型 ID 只能包含字母、数字和 . _ : / -', 'error');
+  if (list.some((m) => m.toLowerCase() === id.toLowerCase())) return toast('这个模型已经在备用列表里了', 'error');
+  await saveSettings({ fallbackModels: [...list, id] });
+  // 保存失败时（已经提示过）保留输入，方便改了再加
+  if ((S.state.settings.fallbackModels || []).some((m) => m.toLowerCase() === id.toLowerCase())) input.value = '';
+  renderBackupModels();
+});
+$('set-backup-add').addEventListener('click', addBackupModel);
+$('set-backup-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addBackupModel(); } });
+$('set-backup-models').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  const list = [...(S.state.settings.fallbackModels || [])];
+  if (b.dataset.backupRemove != null) list.splice(Number(b.dataset.backupRemove), 1);
+  else if (b.dataset.backupUp != null) { const i = Number(b.dataset.backupUp); [list[i - 1], list[i]] = [list[i], list[i - 1]]; }
+  saveSettings({ fallbackModels: list });
+});
 $('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
 $('set-service-tier').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ serviceTierMode: b.dataset.v }); });
 

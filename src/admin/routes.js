@@ -8,6 +8,7 @@ import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../open
 import { MAX_EXPORT_ROWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 import { config } from '../config.js';
+import { MAX_BACKUP_MODELS, normalizeBackupModels } from '../failover.js';
 import { pricingInfo, validatePrices } from '../pricing.js';
 import { resolveTimeRange } from '../timeRange.js';
 
@@ -217,7 +218,8 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, accountStrategy, autoDisableOnQuota, serviceTierMode}
+  // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
+  //                          accountStrategy, autoDisableOnQuota, serviceTierMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -230,6 +232,16 @@ export async function handleAdmin(req, res, url, body, ctx) {
     if ('chatImageGeneration' in body) settings.chatImageGeneration = Boolean(body.chatImageGeneration);
     if ('accountRetry' in body) settings.accountRetry = Boolean(body.accountRetry);
     if ('upstreamFallback' in body) settings.upstreamFallback = Boolean(body.upstreamFallback);
+    if ('modelFallback' in body) settings.modelFallback = Boolean(body.modelFallback);
+    if ('fallbackModels' in body) {
+      if (!Array.isArray(body.fallbackModels) || body.fallbackModels.some((m) => typeof m !== 'string')) {
+        throw httpError(400, 'fallbackModels 必须是模型 ID 列表');
+      }
+      const ids = body.fallbackModels.map((m) => m.trim()).filter(Boolean);
+      if (ids.some((m) => m.length > 100 || !/^[\w.:/-]+$/.test(m))) throw httpError(400, '备用模型 ID 只能包含字母、数字和 . _ : / -');
+      if (new Set(ids.map((m) => m.toLowerCase())).size > MAX_BACKUP_MODELS) throw httpError(400, `备用模型最多 ${MAX_BACKUP_MODELS} 个`);
+      settings.fallbackModels = normalizeBackupModels(ids);
+    }
     if ('autoDisableOnQuota' in body) settings.autoDisableOnQuota = Boolean(body.autoDisableOnQuota);
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');

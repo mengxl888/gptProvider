@@ -13,6 +13,9 @@ const DEFAULT_SETTINGS = {
   // Codex 账号渠道失败时先换其他账号重试（不额外计费，默认开启），再改用 API 上游（按 API 用量计费，默认关闭）
   accountRetry: true,
   upstreamFallback: false,
+  // 模型过载（server_is_overloaded）时依次换用的备用模型，账号不变；请求的模型本身在列表里时跳过它（见 failover.js）
+  modelFallback: false,
+  fallbackModels: [],
   // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
   accountStrategy: 'active',
   // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复

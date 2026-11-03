@@ -12,13 +12,13 @@ import { sendJson } from './http.js';
 import { ImageLibrary } from './images.js';
 import { startLoginCallbackForward } from './loginForward.js';
 import { handleChatCompletions } from './openai/chat.js';
-import { IMAGE_MODEL_IDS, handleImageEdits, handleImageGenerations } from './openai/images.js';
+import { IMAGE_MODEL_IDS, handleImageEdits, handleImageGenerations, isImageModel } from './openai/images.js';
 import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
 import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
-import { clearHeaders, fallbackBody, runWithFailover } from './failover.js';
+import { DEFAULT_MODEL, backupModelsFor, clearHeaders, fallbackBody, runWithFailover } from './failover.js';
 import { modelIdsForApi } from './modelCatalog.js';
 import { UpstreamManager, endpointName } from './upstreams.js';
 
@@ -46,16 +46,27 @@ requestLog.onAttempt = (event) => {
 };
 const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, alerts, restart };
 
+// 对话类请求：model 是过载后换用的备用模型（null 用请求里的）。第一次解析时记下请求实际要用的模型，
+// 换备用模型时排除它；生图模型不换。
+function dialogRequest(req, raw, model) {
+  const body = parseJson(raw);
+  if (req.backupModels === undefined) {
+    const requested = body.model || store.data.settings.defaultModel || DEFAULT_MODEL;
+    req.backupModels = isImageModel(body.model) ? [] : backupModelsFor(store.data.settings, requested);
+  }
+  return model ? { ...body, model } : body;
+}
+
 // Codex 账号渠道记日志的 /v1 接口（/v1/models 调用频繁且不经过账号，不记）。
 // raw 是原始请求体，失败后改用 API 上游时原样（或稍作调整）再发一次。
 const LOGGED_ENDPOINTS = {
   'POST /v1/chat/completions': {
     name: 'chat.completions',
-    handle: (req, res, raw) => handleChatCompletions(req, res, parseJson(raw), ctx),
+    handle: (req, res, raw, model) => handleChatCompletions(req, res, dialogRequest(req, raw, model), ctx),
   },
   'POST /v1/responses': {
     name: 'responses',
-    handle: (req, res, raw) => handleResponses(req, res, parseJson(raw), ctx),
+    handle: (req, res, raw, model) => handleResponses(req, res, dialogRequest(req, raw, model), ctx),
   },
   'POST /v1/images/generations': {
     name: 'images.generations',
@@ -138,15 +149,16 @@ async function route(req, res) {
         checkQuota(keyRecord);
         const raw = await readBody(req);
         entry.diag({ request: { bodyBytes: raw.length, bodyReadMs: entry.elapsed() } });
-        // 失败后先换账号重试，再交给 API 上游，见 failover.js
+        // 过载先换备用模型，失败后再换账号重试，最后交给 API 上游，见 failover.js
         await runWithFailover({
           req,
           res,
-          handle: () => endpoint.handle(req, res, raw),
+          handle: (model) => endpoint.handle(req, res, raw, model),
           accounts,
           settings: store.data.settings,
           upstreams: upstreams.records,
           upstream: (err) => fallbackToUpstream(req, res, url, raw, endpoint.name, err),
+          backupModels: () => req.backupModels || [],
         });
       });
     }
