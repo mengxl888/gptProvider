@@ -3,7 +3,8 @@
 // requests 一行描述最后一次尝试（客户端实际拿到的结果）；失败后换了账号或上游的那些尝试另记在 failed_attempts，
 // 两张表合起来就是这个请求依次落到了哪些账号 / 上游。
 // 健康度：把统计窗口等分成 20 段，每段统计成功/失败数；中断（客户端断开）不计入成功率。
-// 每个账号 / 上游有两套：最终结果（只看 requests）和实际请求（再加上它被换掉的失败尝试）。
+// 每个账号 / 上游有三套：在它上面结束的（只看 requests）、实际请求（再加上它被换掉的失败尝试），
+// 以及最终结果 outcome（它经手的每个请求客户端最后拿到什么，包括在它上面失败、转走后在别处结束的）。
 
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -422,7 +423,40 @@ export class RequestLog {
       }
     }
     actualOf(result.overall);
-    for (const stats of Object.values(result.accounts)) actualOf(stats);
+
+    // 最终结果：在这个账号 / 上游上结束的请求，加上在它上面失败、转给别的账号或 API 上游的请求最后的结果，
+    // 后者按那次失败尝试的开始时间归段，和实际请求对得上。一个请求在同一个账号 / 上游上最多试一次，
+    // 所以每个账号 / 上游的最终结果和实际请求是同一批请求。整体不加这部分，每个请求只算一次。
+    const outcomeOf = (stats) => (stats.outcome ||= {
+      success: stats.success,
+      failure: stats.failure,
+      aborted: stats.aborted,
+      series: stats.series.map((b) => ({ ...b })),
+      transferred: { success: 0, failure: 0, aborted: 0 },
+    });
+    const transferred = this.db
+      .prepare(
+        `SELECT f.account_id, CAST((f.ts - ?) / ? AS INTEGER) AS b, r.status, COUNT(*) AS n
+         FROM failed_attempts f JOIN requests r ON r.id = f.request_id
+         WHERE f.ts >= ? AND f.ts < ? AND f.account_id IS NOT NULL AND f.account_id <> ''
+         GROUP BY f.account_id, b, r.status`,
+      )
+      .all(since, bucketMs, since, until);
+    const OUTCOME_KEYS = { success: 'success', error: 'failure', aborted: 'aborted' };
+    for (const row of transferred) {
+      const key = OUTCOME_KEYS[row.status];
+      if (!key) continue;
+      const outcome = outcomeOf((result.accounts[row.account_id] ||= emptyStats()));
+      outcome[key] += row.n;
+      outcome.transferred[key] += row.n;
+      const b = Math.min(Math.max(row.b, 0), BUCKETS - 1);
+      if (key === 'success') outcome.series[b].s += row.n;
+      if (key === 'failure') outcome.series[b].f += row.n;
+    }
+    for (const stats of Object.values(result.accounts)) {
+      actualOf(stats);
+      outcomeOf(stats);
+    }
     const pricing = this.getPricing();
     for (const row of [...this.costGroups('requests', since, 'account_id', until), ...this.costGroups('failed_attempts', since, 'account_id', until)]) {
       const cost = estimateCost(row, pricing);

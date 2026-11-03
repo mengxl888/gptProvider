@@ -107,6 +107,42 @@ test('per-account stats count actual attempts separately from final results', (t
   assert.deepEqual(sum(overall.actual.series), { s: 3, f: 4 });
 });
 
+test('the final result of an account includes what happened after its failed requests were transferred', (t) => {
+  const { log } = memoryLog(t);
+  request(log, [A, B]);                                  // A 失败 → B 成功
+  request(log, [A, B], { final: 'error' });              // A 失败 → B 也失败
+  request(log, [A]);                                     // A 直接成功
+  request(log, [A, API]);                                // A 失败 → API 上游成功
+  request(log, [B, API]);                                // B 失败 → API 上游成功（只转走一次的账号）
+  const aborted = begin(log);                            // A 失败 → B，客户端在 B 上断开
+  aborted.account(A);
+  aborted.fallback(err(503, 'server_is_overloaded'));
+  aborted.account(B);
+  aborted.fail(Object.assign(new Error('client closed'), { aborted: true }));
+  aborted.end({ statusCode: 499 });
+  const { accounts, overall } = log.stats('1h');
+  const pick = (s) => ({ success: s.success, failure: s.failure, aborted: s.aborted });
+
+  assert.deepEqual(pick(accounts['acct-a'].outcome), { success: 3, failure: 1, aborted: 1 });
+  assert.deepEqual(accounts['acct-a'].outcome.transferred, { success: 2, failure: 1, aborted: 1 });
+  assert.deepEqual(pick(accounts['acct-b'].outcome), { success: 2, failure: 1, aborted: 1 });
+  assert.deepEqual(accounts['acct-b'].outcome.transferred, { success: 1, failure: 0, aborted: 0 });
+  assert.deepEqual(pick(accounts['oa-1'].outcome), { success: 2, failure: 0, aborted: 0 });
+  // 在 B 上失败、转给 API 上游的那次：B 上结束的结果里没有，最终结果里算成功
+  assert.deepEqual(pick(accounts['acct-b']), { success: 1, failure: 1, aborted: 1 });
+  // 最终结果和实际请求是同一批请求；结束在这里的那份不变，整体每个请求只算一次
+  for (const stats of Object.values(accounts)) {
+    const { outcome, actual } = stats;
+    assert.equal(outcome.success + outcome.failure + outcome.aborted, actual.success + actual.failure + actual.aborted);
+  }
+  assert.deepEqual(pick(accounts['acct-a']), { success: 1, failure: 0, aborted: 0 });
+  assert.deepEqual(pick(overall), { success: 4, failure: 1, aborted: 1 });
+  assert.equal(overall.outcome, undefined);
+  const sum = (series) => series.reduce((n, b) => ({ s: n.s + b.s, f: n.f + b.f }), { s: 0, f: 0 });
+  assert.deepEqual(sum(accounts['acct-a'].outcome.series), { s: 3, f: 1 });
+  assert.deepEqual(sum(accounts['acct-a'].series), { s: 1, f: 0 });
+});
+
 test('an account that only ever failed over still shows up with its failures', (t) => {
   const { log } = memoryLog(t);
   request(log, [A, B]);

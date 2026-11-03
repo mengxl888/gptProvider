@@ -1349,8 +1349,19 @@ function transferSummary(stat) {
     ? `<span class="unknown" title="缺少后续目标记录，无法确认转给账号还是 API 上游；旧版统计的转走总数也计入此项">去向未确认 <b>${fmtNum(counts.unknown)}</b></span>` : ''}</div>`;
 }
 
+// 最终结果拆成没转走（在这里结束）和转走之后在别的账号 / API 上游结束的两部分。
+function outcomeSummary(outcome) {
+  const t = outcome?.transferred;
+  const value = (n) => !S.stats || !t ? '—' : fmtNum(n);
+  const kept = t ? outcome.success - t.success + outcome.failure - t.failure : 0;
+  const tip = '未转走：在这里结束、直接返回给客户端的请求。转走后成功 / 失败：在这里失败后转给别的账号或 API 上游，客户端最后拿到的结果。';
+  return `<div class="transfer-counts" title="${esc(tip)}"><span>未转走 <b>${value(kept)}</b></span><span>转走后成功 <b>${value(t?.success)}</b></span><span>转走后失败 <b>${value(t?.failure)}</b></span>${t?.aborted
+    ? `<span class="unknown" title="转走后客户端断开，不计入成功率">转走后中断 <b>${fmtNum(t.aborted)}</b></span>` : ''}</div>`;
+}
+
 // 账号 / 上游卡片的两条健康条。失败后会换账号或改用 API 上游，只看最终结果会把这个账号自己的失败藏起来，
-// 所以先列「实际请求」（它收到的每一次请求，含失败后被换掉的），再列「最终结果」（在它上面结束、客户端拿到的）。
+// 所以先列「实际请求」（它收到的每一次请求，含失败后被换掉的），再列「最终结果」（这些请求客户端最后拿到的结果，
+// 转走的按转走之后的结果算）。
 function requestBlock(stat) {
   const line = (label, tip, o) => {
     const s = o?.success ?? 0, f = o?.failure ?? 0, r = rateInfo(s, f);
@@ -1361,7 +1372,8 @@ function requestBlock(stat) {
   return line(`实际请求 · ${windowLabel()}`, '这个账号 / 上游收到的每一次请求，包括失败后又换了账号或改用 API 上游的那次', stat?.actual || stat)
     + transferSummary(stat)
     + '<div class="req-gap"></div>'
-    + line('最终结果', '在这个账号 / 上游上结束的请求，也就是客户端实际拿到的结果', stat)
+    + line('最终结果', '这个账号 / 上游收到的请求，客户端最后拿到的结果：在这里结束的，加上在这里失败、转给别的账号或 API 上游之后的结果', stat?.outcome || stat)
+    + outcomeSummary(stat?.outcome)
     + `<div class="cost-note">${costSummaryLabel(stat)} ${costSummaryHtml(stat)} <span class="muted">· ${esc(costCoverage(stat))}</span></div>`;
 }
 
