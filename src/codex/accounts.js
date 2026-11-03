@@ -66,6 +66,9 @@ export class AccountManager {
     this.loggedWarnings = new Set();
     this.responsesAuthRefreshes = new Map();
     this.limitRefreshedAt = new Map();
+    this.rateLimitResetRequests = new Map();
+    this.rateLimitResetVersions = new Map();
+    this.accountChanges = new Set();
     this.picker = new AccountPicker();
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });
@@ -268,6 +271,11 @@ export class AccountManager {
       planType: null,
       error: null,
       rateLimits: null,
+      rateLimitResetCredits: null,
+      rateLimitResetCreditsCheckedAt: null,
+      rateLimitResetCreditsError: null,
+      rateLimitResetSupported: null,
+      rateLimitResetPending: null,
       createdAt: new Date().toISOString(),
       lastCheckedAt: null,
     });
@@ -275,27 +283,37 @@ export class AccountManager {
 
   // method: 'browser' 走本机浏览器 OAuth 回调；'device' 走设备码。
   async startLogin(id, method) {
-    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
-    await this.cancelLogin(id);
-
-    const client = await this.getClient(id);
-    const result = await client.request('account/login/start', {
-      type: method === 'device' ? 'chatgptDeviceCode' : 'chatgpt',
+    return this.#changeAccount(id, async () => {
+      await this.cancelLogin(id);
+      const client = await this.getClient(id);
+      const result = await client.request('account/login/start', {
+        type: method === 'device' ? 'chatgptDeviceCode' : 'chatgpt',
+      });
+      const login = {
+        loginId: result.loginId,
+        method,
+        authUrl: result.authUrl || null,
+        verificationUrl: result.verificationUrl || null,
+        userCode: result.userCode || null,
+        startedAt: new Date().toISOString(),
+      };
+      this.logins.set(id, login);
+      // 已登录的账号重新登录时保持可用，登录完成后再刷新信息。
+      if (this.store.getAccount(id).status !== 'ready') {
+        this.store.upsertAccount({ id, status: 'pending', error: null });
+      }
+      return login;
     });
-    const login = {
-      loginId: result.loginId,
-      method,
-      authUrl: result.authUrl || null,
-      verificationUrl: result.verificationUrl || null,
-      userCode: result.userCode || null,
-      startedAt: new Date().toISOString(),
-    };
-    this.logins.set(id, login);
-    // 已登录的账号重新登录时保持可用，登录完成后再刷新信息。
-    if (this.store.getAccount(id).status !== 'ready') {
-      this.store.upsertAccount({ id, status: 'pending', error: null });
+  }
+
+  async #changeAccount(id, change) {
+    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
+    if (this.rateLimitResetRequests.has(id)) {
+      throw httpError(409, '该账号正在兑换额度重置，请等待操作完成后再登录或删除', 'reset_in_progress');
     }
-    return login;
+    if (this.accountChanges.has(id)) throw httpError(409, '该账号正在登录或删除，请稍后重试', 'account_busy');
+    this.accountChanges.add(id);
+    try { return await change(); } finally { this.accountChanges.delete(id); }
   }
 
   async cancelLogin(id) {
@@ -314,31 +332,121 @@ export class AccountManager {
   // ---- 状态 ----
 
   async refreshStatus(id) {
+    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
     const client = await this.getClient(id);
     const { account } = await client.request('account/read', { refreshToken: false });
     const patch = { id, lastCheckedAt: new Date().toISOString() };
 
     if (account?.type === 'chatgpt') {
       Object.assign(patch, { status: 'ready', email: account.email, planType: account.planType, error: null });
+      const resetVersion = this.rateLimitResetVersions.get(id);
       try {
         const limits = await client.request('account/rateLimits/read', {});
-        patch.rateLimits = limits.rateLimits;
-        patch.rateLimitsByLimitId = limits.rateLimitsByLimitId || null;
+        // 兑换前发出的读取不能在兑换后覆盖新的额度信息。
+        if (resetVersion === this.rateLimitResetVersions.get(id)) Object.assign(patch, rateLimitsPatch(limits));
       } catch (err) {
-        patch.error = `读取额度失败：${err.message}`;
+        if (resetVersion === this.rateLimitResetVersions.get(id)) {
+          patch.error = `读取额度失败：${err.message}`;
+          patch.rateLimitResetCreditsError = patch.error;
+        }
       }
     } else if (!this.logins.has(id)) {
       Object.assign(patch, {
         status: account ? 'failed' : 'expired',
         error: account ? `不是 ChatGPT 登录（${account.type}）` : '未登录或登录已失效，请重新登录',
+        rateLimitResetCredits: null,
+        rateLimitResetCreditsCheckedAt: null,
+        rateLimitResetSupported: null,
+        rateLimitResetCreditsError: null,
       });
     }
 
+    // 读取期间账号可能已被删除，不能通过 upsert 将其重新创建。
+    if (!this.store.getAccount(id)) throw httpError(404, '账号已删除');
     const saved = this.store.upsertAccount(patch);
     if (saved.status === 'ready' && !this.store.data.activeAccountId) {
       this.setActive(id);
     }
     return saved;
+  }
+
+  // 仅由后台按钮主动兑换。一次逻辑操作始终沿用调用方的 key；未知结果保留待确认记录，
+  // 即使超时、刷新页面或网关重启，也不能换一个 key 再消耗一张重置券。
+  async consumeRateLimitReset(id, input = {}) {
+    const account = this.store.getAccount(id);
+    if (!account) throw httpError(404, '账号不存在');
+    if (account.status !== 'ready') throw httpError(409, '账号尚未登录成功，请先登录或刷新账号状态', 'account_not_ready');
+    if (this.accountChanges.has(id) || this.logins.has(id)) {
+      throw httpError(409, '该账号正在登录或删除，请完成当前操作后再兑换额度重置', 'account_busy');
+    }
+    const { idempotencyKey, creditId } = input || {};
+    if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 200) {
+      throw httpError(400, 'idempotencyKey 必须是非空字符串（最多 200 字符）', 'invalid_parameter');
+    }
+    if (creditId !== undefined && (typeof creditId !== 'string' || !creditId.trim() || creditId.length > 500)) {
+      throw httpError(400, 'creditId 必须是非空字符串（最多 500 字符）', 'invalid_parameter');
+    }
+    const matches = (pending) => pending.idempotencyKey === idempotencyKey && pending.creditId === creditId;
+    const running = this.rateLimitResetRequests.get(id);
+    if (running) {
+      if (!matches(running)) throw httpError(409, '该账号正在兑换额度重置，请等待当前操作完成', 'reset_in_progress');
+      return running.promise;
+    }
+    if (account.rateLimitResetPending && !matches(account.rateLimitResetPending)) {
+      throw httpError(409, '上一次额度重置结果尚未确认，请沿用原操作重试查询结果', 'reset_pending');
+    }
+    const run = (async () => {
+      const client = await this.getClient(id);
+      const current = await client.request('account/read', { refreshToken: false });
+      if (current?.account?.type !== 'chatgpt') {
+        throw httpError(409, '额度重置需要有效的 ChatGPT 账号登录，请先重新登录', 'account_not_ready');
+      }
+      // account/read 只含邮箱/套餐，不能区分同邮箱下的不同工作区。
+      // 优先使用官方额度快照的 accountId；旧服务没提供时只临时读取已有认证中的 ID。
+      let identityLimits;
+      try { identityLimits = await client.request('account/rateLimits/read', {}); } catch {}
+      const snapshotId = identityLimits?.accountId;
+      const accountId = typeof snapshotId === 'string' && snapshotId.trim()
+        ? snapshotId : (await this.responsesAuth(id)).accountId;
+      const identity = resetAccountIdentity(current.account, accountId);
+      if (!identity.email || !identity.accountId) throw httpError(502, 'Codex 未返回账号身份，无法安全兑换额度重置', 'reset_identity_unavailable');
+      const prior = account.rateLimitResetPending;
+      if (prior && !sameResetAccount(prior.accountIdentity, identity)) {
+        throw httpError(409, '待确认的重置操作属于另一个账号，请重新登录原账号后确认；如需更换账号，请删除此账号记录后重新添加', 'reset_account_changed');
+      }
+      const pending = prior || { idempotencyKey, ...(creditId !== undefined ? { creditId } : {}), accountIdentity: identity, startedAt: new Date().toISOString() };
+      this.store.upsertAccount({ id, rateLimitResetPending: pending });
+      this.rateLimitResetVersions.set(id, (this.rateLimitResetVersions.get(id) || 0) + 1);
+      let result;
+      try {
+        result = await client.request('account/rateLimitResetCredit/consume', { idempotencyKey, ...(creditId !== undefined ? { creditId } : {}) });
+      } catch (err) {
+        if (err.rpcError?.code === -32601) {
+          const message = '当前 Codex 不支持兑换额度重置，请在后台升级 Codex 后重试';
+          this.store.upsertAccount({ id, rateLimitResetPending: null, rateLimitResetSupported: false, rateLimitResetCreditsError: message });
+          throw httpError(501, message, 'reset_unsupported');
+        }
+        this.store.upsertAccount({ id, rateLimitResetCreditsError: '重置结果尚未确认，请沿用原操作重试，避免重复消耗重置次数' });
+        throw err;
+      }
+      if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(result?.outcome)) {
+        this.store.upsertAccount({ id, rateLimitResetCreditsError: 'Codex 返回了未知重置结果，请沿用原操作重试确认' });
+        throw httpError(502, 'Codex 返回了未知的额度重置结果', 'invalid_reset_response');
+      }
+      this.rateLimitResetVersions.set(id, (this.rateLimitResetVersions.get(id) || 0) + 1);
+      this.store.upsertAccount({ id, rateLimitResetPending: null, rateLimitResetSupported: true });
+      let refreshError = null;
+      try {
+        const limits = await client.request('account/rateLimits/read', {});
+        this.store.upsertAccount({ id, ...rateLimitsPatch(limits) });
+      } catch (err) {
+        refreshError = `重置结果已确认，但刷新额度失败：${err.message}`;
+        this.store.upsertAccount({ id, rateLimitResetCreditsError: refreshError });
+      }
+      return { outcome: result.outcome, account: this.store.getAccount(id), refreshError };
+    })().finally(() => this.rateLimitResetRequests.delete(id));
+    this.rateLimitResetRequests.set(id, { idempotencyKey, creditId, promise: run });
+    return run;
   }
 
   setActive(id) {
@@ -351,19 +459,20 @@ export class AccountManager {
   }
 
   async remove(id) {
-    if (!this.store.getAccount(id)) throw httpError(404, '账号不存在');
-    await this.cancelLogin(id);
-    const client = this.clients.get(id);
-    if (client && !client.exited) {
-      await client.request('account/logout', {}).catch(() => {});
-      client.close();
-    }
-    this.clients.delete(id);
-    this.store.removeAccount(id);
-    // 等子进程退出后再删目录，Windows 上文件被占用时删除会失败。
-    setTimeout(() => {
-      fs.rm(this.paths(id).root, { recursive: true, force: true }, () => {});
-    }, 4000).unref();
+    return this.#changeAccount(id, async () => {
+      await this.cancelLogin(id);
+      const client = this.clients.get(id);
+      if (client && !client.exited) {
+        await client.request('account/logout', {}).catch(() => {});
+        client.close();
+      }
+      this.clients.delete(id);
+      this.store.removeAccount(id);
+      // 等子进程退出后再删目录，Windows 上文件被占用时删除会失败。
+      setTimeout(() => {
+        fs.rm(this.paths(id).root, { recursive: true, force: true }, () => {});
+      }, 4000).unref();
+    });
   }
 
   // ---- 对外服务使用 ----
@@ -534,6 +643,53 @@ export class AccountManager {
   supportsImageGeneration(account) {
     return account.planType !== 'free';
   }
+}
+
+function resetAccountIdentity(account, accountId) {
+  return {
+    email: typeof account.email === 'string' ? account.email.trim().toLowerCase() : null,
+    ...(typeof accountId === 'string' && accountId ? { accountId } : {}),
+    ...(typeof account.planType === 'string' ? { planType: account.planType } : {}),
+  };
+}
+
+function sameResetAccount(previous, current) {
+  return previous?.email === current.email && typeof previous.accountId === 'string' && previous.accountId === current.accountId;
+}
+
+function rateLimitsPatch(limits) {
+  const supported = Object.hasOwn(limits || {}, 'rateLimitResetCredits');
+  const snapshot = limits?.rateLimitResetCredits;
+  let credits = null;
+  let error = supported ? null : '当前 Codex 未返回额度重置次数，请升级 Codex 后重新查询';
+  if (snapshot != null) {
+    if (!Number.isSafeInteger(snapshot.availableCount) || snapshot.availableCount < 0
+      || (snapshot.credits != null && !Array.isArray(snapshot.credits))) {
+      error = 'Codex 返回的额度重置次数格式不正确，请重新查询';
+    } else {
+      credits = {
+        availableCount: snapshot.availableCount,
+        // 数量来自官方 availableCount；明细可能为 null 或被截断，不能用明细长度代替。
+        credits: snapshot.credits == null ? null : snapshot.credits.map((row) => ({
+          id: typeof row?.id === 'string' ? row.id : null,
+          resetType: typeof row?.resetType === 'string' ? row.resetType : null,
+          status: typeof row?.status === 'string' ? row.status : null,
+          grantedAt: Number.isFinite(row?.grantedAt) ? row.grantedAt : null,
+          expiresAt: Number.isFinite(row?.expiresAt) ? row.expiresAt : null,
+          title: typeof row?.title === 'string' ? row.title : null,
+          description: typeof row?.description === 'string' ? row.description : null,
+        })),
+      };
+    }
+  }
+  return {
+    rateLimits: limits?.rateLimits ?? null,
+    rateLimitsByLimitId: limits?.rateLimitsByLimitId || null,
+    rateLimitResetCredits: credits,
+    rateLimitResetCreditsCheckedAt: new Date().toISOString(),
+    rateLimitResetCreditsError: error,
+    rateLimitResetSupported: supported,
+  };
 }
 
 export function httpError(status, message, code) {

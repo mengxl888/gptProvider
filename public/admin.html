@@ -289,6 +289,17 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .limit-row .top b { color: var(--text); font-weight: 600; }
 .limit-row .reset { font-size: 12px; color: var(--muted); margin-top: 5px; }
 .account-error { margin: 0 20px 14px; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.quota-reset { margin: 0 20px 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 12.5px; }
+.quota-reset-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.quota-reset-head b { color: var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
+.quota-reset-note { margin-top: 6px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.quota-reset-note.warn { color: var(--warn); }
+.quota-reset-details { margin-top: 8px; }
+.quota-reset-details summary { cursor: pointer; color: var(--text-2); overflow-wrap: anywhere; }
+.quota-reset-list { max-height: 220px; overflow-y: auto; }
+.quota-reset-credit { display: flex; flex-direction: column; gap: 3px; padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.quota-reset-credit:last-child { border-bottom: 0; }
+.quota-reset-credit span { color: var(--text-2); }
 .account-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 14px 12px 20px; border-top: 1px solid var(--border); }
 .account-foot .when { color: var(--muted); font-size: 12px; margin-right: auto; }
 .account-card.disabled { opacity: .62; }
@@ -1031,7 +1042,7 @@ async function api(method, path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) { showGate('口令无效，请重新输入'); throw new Error('口令无效'); }
-  if (!res.ok) throw new Error(data.error?.message || `请求失败 (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || `请求失败 (${res.status})`), { status: res.status, code: data.error?.code });
   return data;
 }
 
@@ -1611,6 +1622,108 @@ $('copy-code').addEventListener('click', () => copyText($('code-sample').textCon
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-copy-from]'); if (b) copyText($(b.dataset.copyFrom).textContent); });
 
 // ============ 账号 ============
+const quotaResetBusy = new Set();
+const quotaResetNotices = new Map();
+const quotaResetDetailsOpen = new Set();
+const quotaResetPending = (() => {
+  try {
+    return new Map(Object.entries(JSON.parse(readPref('quota-reset-pending')) || {}).filter(([, p]) => typeof p?.idempotencyKey === 'string' && p.idempotencyKey));
+  } catch { return new Map(); }
+})();
+const pendingQuotaReset = (a) => a.rateLimitResetPending || quotaResetPending.get(a.id);
+const saveQuotaResetPending = () => writePref('quota-reset-pending', JSON.stringify(Object.fromEntries(quotaResetPending)));
+function quotaResetKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  // 公网 HTTP 页面也能生成同一次兑换重试用的 UUID。
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function quotaResetPanel(a) {
+  const summary = a.rateLimitResetCredits;
+  const count = Number.isSafeInteger(summary?.availableCount) && summary.availableCount >= 0 ? summary.availableCount : null;
+  const ready = a.status === 'ready', busy = quotaResetBusy.has(a.id), pending = pendingQuotaReset(a);
+  const credits = (Array.isArray(summary?.credits) ? summary.credits : []).filter((c) => c?.status === 'available')
+    .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity)).slice(0, count ?? 0);
+  const expiry = (c) => c.expiresAt == null ? '无到期时间' : `${fmtTime(c.expiresAt * 1000)}${c.expiresAt * 1000 <= Date.now() ? '（已到期）' : ''}`;
+  const note = !ready ? '登录成功后可查询官方重置次数。'
+    : a.rateLimitResetSupported === false ? '当前 Codex 未提供重置信息，请在概览升级 Codex 后重新查询。'
+    : count == null ? '官方暂未提供重置次数，可点击查询。'
+    : count === 0 ? '当前没有可用的官方重置次数。'
+    : '每次兑换消耗 1 次重置，适用的额度窗口由官方判定。';
+  const error = quotaResetNotices.get(a.id) || a.rateLimitResetCreditsError;
+  return `<div class="quota-reset">
+    <div class="quota-reset-head"><strong>官方额度重置</strong><span>${count == null ? '次数未知' : `<b>${fmtNum(count)}</b> 次可用`}</span></div>
+    <div class="quota-reset-note">${esc(note)}</div>
+    ${credits.length ? `<details class="quota-reset-details" data-quota-reset="${esc(a.id)}" ${quotaResetDetailsOpen.has(a.id) ? 'open' : ''}><summary>到期明细${credits[0].expiresAt != null ? ` · 最近 ${esc(expiry(credits[0]))}` : ''}</summary><div class="quota-reset-list">${credits.map((c) => `<div class="quota-reset-credit"><strong>${esc(c.title || '额度重置')}</strong><span>到期：${esc(expiry(c))}</span>${c.description ? `<span>${esc(c.description)}</span>` : ''}</div>`).join('')}</div></details>` : ''}
+    ${count > credits.length ? `<div class="quota-reset-note">${summary.credits == null ? '官方仅返回次数，暂未提供到期明细。' : `官方返回 ${fmtNum(credits.length)} 条可用明细，完整次数以官方总数为准。`}</div>` : ''}
+    ${a.rateLimitResetCreditsCheckedAt ? `<div class="quota-reset-note">上次查询：${esc(fmtTime(a.rateLimitResetCreditsCheckedAt))}</div>` : ''}
+    ${pending ? '<div class="quota-reset-note warn">上次重置结果尚未确认，请重试确认同一次操作。</div>' : ''}
+    ${error ? `<div class="quota-reset-note warn" role="status">${esc(error)}</div>` : ''}
+    <div class="inline-actions">
+      <button class="btn sm" data-acc="query-reset" data-id="${esc(a.id)}" ${!ready || busy ? 'disabled' : ''}>${icon('refresh', busy ? 'spin' : '')}查询重置额度</button>
+      <button class="btn sm primary" data-acc="consume-reset" data-id="${esc(a.id)}" ${!ready || busy || (!pending && (a.rateLimitResetSupported === false || !(count > 0))) ? 'disabled' : ''}>${icon('rotate')}${busy ? '处理中…' : pending ? '重试确认上次重置' : '使用一次重置'}</button>
+    </div>
+  </div>`;
+}
+async function accountQuotaReset(a, consume) {
+  if (!a || quotaResetBusy.has(a.id)) return;
+  let pending = pendingQuotaReset(a);
+  if (consume) {
+    const text = pending ? `确认账号「${a.email || a.label}」上次重置的结果？\n将沿用同一次操作重试。`
+      : `为账号「${a.email || a.label}」使用一次官方额度重置？\n会消耗该账号 1 次可用重置；可重置哪些额度窗口由官方判定。`;
+    if (!confirm(text)) return;
+    pending ||= { idempotencyKey: quotaResetKey(), startedAt: new Date().toISOString() };
+    quotaResetPending.set(a.id, pending); saveQuotaResetPending();
+  }
+  quotaResetNotices.delete(a.id);
+  quotaResetBusy.add(a.id); renderAccounts();
+  try {
+    const result = consume
+      ? await api('POST', `/accounts/${a.id}/rate-limit-reset`, { idempotencyKey: pending.idempotencyKey, ...(pending.creditId ? { creditId: pending.creditId } : {}) })
+      : await api('POST', `/accounts/${a.id}/refresh`);
+    if (consume) {
+      const messages = { reset: '已使用 1 次官方额度重置', alreadyRedeemed: '这次重置已完成，未重复兑换', nothingToReset: '当前没有符合条件的额度窗口需要重置', noCredit: '官方返回没有可用的重置次数' };
+      if (!Object.hasOwn(messages, result.outcome)) throw new Error('官方未返回明确的重置结果，请重试确认同一次操作');
+      quotaResetPending.delete(a.id); saveQuotaResetPending();
+      const current = S.state.accounts.find((x) => x.id === a.id);
+      if (current) current.rateLimitResetPending = null;
+      toast(messages[result.outcome]);
+      if (result.refreshError) quotaResetNotices.set(a.id, `${result.refreshError}。请点击查询。`);
+    } else if (result.account?.rateLimitResetCreditsError) {
+      quotaResetNotices.set(a.id, result.account.rateLimitResetCreditsError);
+    } else {
+      toast('官方重置额度已查询');
+    }
+    if (result.account) {
+      const current = S.state.accounts.find((x) => x.id === a.id);
+      if (current) Object.assign(current, result.account);
+    }
+    try {
+      await refreshState();
+    } catch (e) {
+      quotaResetNotices.set(a.id, consume ? '重置结果已确认，页面状态刷新失败，请点击查询。' : '查询已完成，页面状态刷新失败，请稍后重新查询。');
+    }
+  } catch (e) {
+    if (e.code === 'reset_unsupported') {
+      quotaResetPending.delete(a.id); saveQuotaResetPending();
+      const current = S.state.accounts.find((x) => x.id === a.id);
+      if (current) Object.assign(current, { rateLimitResetPending: null, rateLimitResetSupported: false });
+    }
+    if (e.code === 'reset_pending' || e.code === 'reset_in_progress') {
+      // 这个 key 已被网关明确拒绝；恢复服务端真正待确认的操作。
+      quotaResetPending.delete(a.id); saveQuotaResetPending();
+      await refreshState().catch(() => {});
+    }
+    quotaResetNotices.set(a.id, e.message);
+    // 结果不明确时保留同一次操作的 key，包括刷新页面之后的重试。
+    throw e;
+  } finally {
+    quotaResetBusy.delete(a.id); renderAccounts();
+  }
+}
+
 function limitBuckets(a) {
   const byId = a.rateLimitsByLimitId && Object.keys(a.rateLimitsByLimitId).length ? a.rateLimitsByLimitId : (a.rateLimits ? { codex: a.rateLimits } : {});
   const rows = [];
@@ -1649,6 +1762,7 @@ function renderAccounts() {
   $('set-auto-disable').checked = Boolean(st.settings.autoDisableOnQuota);
   const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
+    const quotaBusy = quotaResetBusy.has(a.id);
     const active = a.id === st.activeAccountId;
     const limits = limitBuckets(a);
     const ident = `codex-${a.id}-${a.email || 'unknown'}-${a.planType || 'unknown'}`;
@@ -1678,17 +1792,18 @@ function renderAccounts() {
           <div class="progress ${l.pct >= 90 ? 'danger' : l.pct >= 70 ? 'warn' : ''}"><i style="width:${Math.min(l.pct, 100)}%"></i></div>
           ${l.resetsAt ? `<div class="reset">${until(l.resetsAt)}</div>` : ''}
         </div>`).join('')}</div>` : ''}
+      ${quotaResetPanel(a)}
       ${a.error ? `<div class="account-error">${esc(a.error)}</div>` : ''}
       <div class="account-foot">
         <span class="when mono" title="凭据 auth.json 的大小和最近写入时间（Codex 刷新令牌时会更新）&#10;额度 ${esc(a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '尚未检查')}">${a.credentials
           ? `${fmtBytes(a.credentials.bytes)} · ${esc(fmtTime(a.credentials.updatedAt))}`
           : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
         ${!active && a.status === 'ready' ? `<button class="btn sm ${rotating ? '' : 'primary'}" data-acc="activate" data-id="${a.id}">${icon('zap')}${rotating ? '设为默认' : '设为当前'}</button>` : ''}
-        <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}">${icon('refresh')}</button>
+        <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('refresh')}</button>
         <button class="btn sm ghost icon" title="${disabled ? '启用' : '停用'}" data-acc="toggle" data-id="${a.id}">${icon(disabled ? 'play' : 'pause')}</button>
-        <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}">${icon('login')}</button>
+        <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
-        <button class="btn sm ghost icon danger" title="删除" data-acc="delete" data-id="${a.id}">${icon('trash')}</button>
+        <button class="btn sm ghost icon danger" title="删除" data-acc="delete" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('trash')}</button>
       </div>
     </div>`;
   });
@@ -1697,11 +1812,16 @@ function renderAccounts() {
   renderWindowSwitches();
 }
 
+$('account-grid').addEventListener('toggle', (e) => {
+  const id = e.target.dataset?.quotaReset;
+  if (id) e.target.open ? quotaResetDetailsOpen.add(id) : quotaResetDetailsOpen.delete(id);
+}, true);
 $('account-grid').addEventListener('click', run(async (e) => {
   const btn = e.target.closest('[data-acc]');
   if (!btn) return;
   const id = btn.dataset.id, a = S.state.accounts.find((x) => x.id === id);
   const act = btn.dataset.acc;
+  if (act === 'query-reset' || act === 'consume-reset') return accountQuotaReset(a, act === 'consume-reset');
   if (act === 'login') return openLogin(a);
   if (act === 'activate') { await api('POST', `/accounts/${id}/activate`); toast(S.state.settings.accountStrategy === 'active' ? '已切换当前账号' : '已设为默认账号'); }
   if (act === 'weight') {

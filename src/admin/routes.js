@@ -140,6 +140,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       return ok();
     }
     if (method === 'POST' && action === 'refresh') return ok({ account: await accounts.refreshStatus(id) });
+    if (method === 'POST' && action === 'rate-limit-reset') return ok(await accounts.consumeRateLimitReset(id, body));
     if (method === 'POST' && action === 'activate') {
       accounts.setActive(id);
       return ok();
