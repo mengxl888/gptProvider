@@ -30,6 +30,8 @@ export async function handleChatCompletions(req, res, body, ctx, source = 'chat'
     needsImage: isImageModel(body.model),
     affinityKey: affinityKey(body, req.headers),
     retry: req.accountRetry,
+    req,
+    res,
   });
   req.log?.account(account);
   const { developerInstructions, input } = buildPrompt(body);

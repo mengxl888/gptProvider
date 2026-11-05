@@ -191,7 +191,7 @@ test('native Responses forwarding sends the backup model upstream after an overl
   const account = { id: 'synthetic-account', email: 'synthetic@example.invalid', status: 'ready' };
   const proxy = new CodexResponsesProxy({
     accounts: {
-      pickAccount: ({ retry }) => { if (retry) retry.current = account.id; return account; },
+      reserveAccount: async ({ retry }) => { if (retry) retry.current = account.id; return account; },
       responsesAuth: async () => ({ accessToken: 'synthetic-token', accountId: 'synthetic-workspace' }),
     },
     store: { data: { settings: {} } },

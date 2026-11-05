@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_PER_MINUTE } from './codex/accountQueue.js';
 import { DEFAULT_SERVICE_TIER_MODE } from './codex/serviceTier.js';
 
 const DEFAULT_SETTINGS = {
@@ -20,6 +21,9 @@ const DEFAULT_SETTINGS = {
   accountStrategy: 'active',
   // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复
   autoDisableOnQuota: true,
+  // 账号排队：每个账号同时处理的请求数、任意 60 秒内开始的请求数上限，0 不限；超出的排队（见 codex/accountQueue.js）
+  accountMaxConcurrent: DEFAULT_MAX_CONCURRENT,
+  accountMaxPerMinute: DEFAULT_MAX_PER_MINUTE,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
   // Exact model ids; USD per 1M tokens, optional USD per generated image.

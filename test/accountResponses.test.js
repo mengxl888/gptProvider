@@ -83,7 +83,7 @@ function harness(fetchImpl = async () => upstream()) {
   const authCalls = [];
   const fetchCalls = [];
   const accounts = {
-    pickAccount: () => account,
+    reserveAccount: async () => account,
     responsesAuth: async (id, options) => {
       authCalls.push({ id, options });
       return { accessToken: options?.rejectedToken ? 'synthetic-refreshed' : 'synthetic-initial', accountId: 'synthetic-workspace' };
@@ -739,7 +739,7 @@ test('401 refreshes once before output and retries the originally selected accou
   let attempts = 0;
   const h = harness(async () => ++attempts === 1 ? new Response('{"error":{"message":"Expired synthetic token"}}', { status: 401 }) : upstream());
   let selections = 0;
-  h.accounts.pickAccount = () => { selections++; return selections === 1 ? h.account : { id: 'other-account' }; };
+  h.accounts.reserveAccount = async () => { selections++; return selections === 1 ? h.account : { id: 'other-account' }; };
   const res = new ResponseSink();
   await h.proxy.handle(request(), res, toolBody({ stream: true }));
   assert.equal(selections, 1);

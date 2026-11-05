@@ -581,6 +581,9 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="desc"><b>额度用完自动停用</b><span>账号的 Codex 额度用满时自动停用、不再分配请求（「当前账号」策略下改用其他可用账号），额度重置后自动恢复。关闭时额度用满的账号只在轮询中暂时跳过，没有别的账号时仍会用它。账号卡片底部的暂停按钮可以手动停用 / 启用。</span></div>
           <div class="control"><label class="switch"><input type="checkbox" id="set-auto-disable"><span></span></label></div>
         </div>
+        <div class="setting">
+          <div class="desc"><b>账号排队</b><span>每个账号同时最多处理<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="同时处理上限">个请求，每分钟最多开始<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-per-minute" aria-label="每分钟上限">个请求（任意 60 秒内），超出的按到达顺序排队，前面的请求结束或满 60 秒后放行；填 0 表示不限。换账号重试、换备用模型时重新排队；客户端断开时离开队列，排队超过 10 分钟返回 503（开了「失败时换账号重试」会换账号）。账号卡片上显示正在处理和排队的请求数。</span></div>
+        </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
     </section>
@@ -1799,6 +1802,16 @@ function accountShares(st) {
   return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
 }
 
+// 账号排队：正在处理 / 上限，有排队时标黄；都为 0 时不显示
+function queueChip(a, settings) {
+  const q = a.queue;
+  if (!q || (!q.active && !q.queued)) return '';
+  const max = settings.accountMaxConcurrent;
+  const perMinute = settings.accountMaxPerMinute;
+  const title = `正在处理 ${q.active} 个${max ? `（上限 ${max}）` : ''}，排队 ${q.queued} 个，最近 60 秒开始 ${q.recent} 个${perMinute ? `（上限 ${perMinute}）` : ''}`;
+  return `<span class="chip ${q.queued ? 'warn' : 'on'}" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}${q.queued ? ` · 排队 ${q.queued}` : ''}</span>`;
+}
+
 function renderAccounts() {
   const st = S.state;
   const strategy = st.settings.accountStrategy || 'active';
@@ -1808,6 +1821,9 @@ function renderAccounts() {
     ? `停用的账号不参与；${st.settings.autoDisableOnQuota ? '' : '额度用满的账号在还有其他账号可用时暂时跳过；'}没有可轮询的账号时用「默认」账号。`
     : '当前账号停用、额度用完自动停用或登录失效时，请求改用其他可用账号。'}`;
   $('set-auto-disable').checked = Boolean(st.settings.autoDisableOnQuota);
+  for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
+    if (document.activeElement !== $(id)) $(id).value = st.settings[key] ?? 0;
+  }
   const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
     const quotaBusy = quotaResetBusy.has(a.id);
@@ -1832,6 +1848,7 @@ function renderAccounts() {
         <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(ident)}">${esc(ident)}</span>
         <span class="chip" style="flex:none" title="备注名">${esc(a.label)}</span>
         ${weightChip}
+        ${queueChip(a, st.settings)}
       </div>
       <div class="account-section">${requestBlock(S.stats?.accounts[a.id])}</div>
       ${limits.length ? `<div class="limits">${limits.map((l) => `
@@ -1913,6 +1930,19 @@ $('set-auto-disable').addEventListener('change', run(async (e) => {
   toast(e.target.checked ? '已开启：额度用完自动停用' : '已关闭：额度用完自动停用');
   await refreshState();
 }));
+for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  $(id).addEventListener('change', run(async (e) => {
+    const value = Number(e.target.value);
+    if (e.target.value.trim() === '' || !Number.isInteger(value) || value < 0 || value > 100) {
+      e.target.value = S.state.settings[key] ?? 0;
+      return toast('请填 0–100 的整数，0 表示不限', 'error');
+    }
+    await api('PUT', '/settings', { [key]: value });
+    toast('账号排队设置已保存');
+    await refreshState();
+  }));
+}
 
 // ============ API 上游 ============
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';

@@ -43,7 +43,7 @@ function fixture(send) {
   const res = new Sink();
   const proxy = new CodexResponsesProxy({
     accounts: {
-      pickAccount: () => ({ id: 'selected-account' }),
+      reserveAccount: async () => ({ id: 'selected-account' }),
       responsesAuth: async (id, options) => {
         authCalls.push({ id, options });
         return { accessToken: options ? 'synthetic-new' : 'synthetic-old', accountId: 'synthetic-workspace' };

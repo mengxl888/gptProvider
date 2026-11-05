@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { AccountPicker, accountUsable, accountWeight, limitExhausted } from './accountPicker.js';
+import { AccountQueue } from './accountQueue.js';
 import { AppServerClient } from './appServer.js';
 import { configServiceTier } from './serviceTier.js';
 
@@ -70,6 +71,12 @@ export class AccountManager {
     this.rateLimitResetVersions = new Map();
     this.accountChanges = new Set();
     this.picker = new AccountPicker();
+    this.queue = new AccountQueue({
+      limits: () => ({
+        maxConcurrent: this.store.data.settings.accountMaxConcurrent,
+        perMinute: this.store.data.settings.accountMaxPerMinute,
+      }),
+    });
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });
   }
@@ -129,6 +136,7 @@ export class AccountManager {
       login: this.logins.get(a.id) || null,
       loginResult: this.loginResults.get(a.id) || null,
       running: this.clients.has(a.id),
+      queue: this.queue.snapshot(a.id),
       credentials: this.#credentialsInfo(a.id),
     }));
   }
@@ -555,8 +563,41 @@ export class AccountManager {
       && (!retry.needsImage || this.supportsImageGeneration(a)));
   }
 
-  async pickClient(options) {
+  // 选好账号后按「账号排队」等它空出位置再开始处理，客户端断开时放弃排队。
+  // 空位在这次尝试结束时归还：runWithFailover 换账号、换备用模型前调用 retry.release()，响应关闭时也会归还。
+  async reserveAccount({ req, res, ...options }) {
     const account = this.pickAccount(options);
+    const closed = new AbortController();
+    const onClose = () => closed.abort();
+    if (res.destroyed) closed.abort();
+    else res.once('close', onClose);
+    const waitStarted = Date.now();
+    let slot;
+    try {
+      slot = await this.queue.acquire(account.id, { signal: closed.signal });
+    } catch (err) {
+      req.log?.account?.(account);
+      req.log?.diag?.({ queue: { waitMs: Date.now() - waitStarted, result: err.aborted ? 'client_closed' : 'timeout' } });
+      throw err;
+    } finally {
+      res.off('close', onClose);
+    }
+    const release = () => {
+      res.off('close', release);
+      slot.release();
+    };
+    if (res.destroyed) {
+      release();
+      throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
+    }
+    res.once('close', release);
+    if (options.retry) options.retry.release = release;
+    if (slot.waitedMs) req.log?.diag?.({ queue: { waitMs: slot.waitedMs, ahead: slot.ahead } });
+    return account;
+  }
+
+  async pickClient(options) {
+    const account = await this.reserveAccount(options);
     return { account, client: await this.getClient(account.id) };
   }
 

@@ -41,6 +41,8 @@ export async function handleResponses(req, res, body, ctx) {
     needsImage: imageGeneration,
     affinityKey: affinityKey(body, req.headers),
     retry: req.accountRetry,
+    req,
+    res,
   });
   req.log?.account(account);
   if (imageGeneration && !accounts.supportsImageGeneration(account)) {

@@ -92,7 +92,7 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = this.accounts.pickAccount({ affinityKey: affinityKey(body, req.headers), retry: req.accountRetry });
+    const account = await this.accounts.reserveAccount({ affinityKey: affinityKey(body, req.headers), retry: req.accountRetry, req, res });
     req.log?.account(account);
 
     // 时间都从收到请求头算起（没有日志条目时从这里算起）

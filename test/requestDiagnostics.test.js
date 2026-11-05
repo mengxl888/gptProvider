@@ -40,7 +40,7 @@ function memoryLog(t) {
 function proxy(fetchImpl) {
   return new CodexResponsesProxy({
     accounts: {
-      pickAccount: () => ({ id: 'synthetic-account', label: 'Synthetic', status: 'ready' }),
+      reserveAccount: async () => ({ id: 'synthetic-account', label: 'Synthetic', status: 'ready' }),
       responsesAuth: async () => ({ accessToken: 'synthetic-token', accountId: 'synthetic-workspace' }),
     },
     store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } },

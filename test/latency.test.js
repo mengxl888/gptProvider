@@ -130,7 +130,7 @@ test('native Responses forwarding stores the first token and output TPS in the l
   }), { headers: { 'content-type': 'text/event-stream' } });
   const proxy = new CodexResponsesProxy({
     accounts: {
-      pickAccount: () => ({ id: 'synthetic-account', label: 'Synthetic', status: 'ready' }),
+      reserveAccount: async () => ({ id: 'synthetic-account', label: 'Synthetic', status: 'ready' }),
       responsesAuth: async () => ({ accessToken: 'synthetic-token', accountId: 'synthetic-workspace' }),
     },
     store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } },

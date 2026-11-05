@@ -1,6 +1,7 @@
 // 管理后台 API：/admin/api/*，需要 Authorization: Bearer <adminToken>。
 
 import { MAX_WEIGHT, STRATEGIES } from '../codex/accountPicker.js';
+import { MAX_QUEUE_LIMIT } from '../codex/accountQueue.js';
 import { BACKGROUND_REFRESH_MS, httpError } from '../codex/accounts.js';
 import { sendJson } from '../http.js';
 import { handleChatCompletions } from '../openai/chat.js';
@@ -219,7 +220,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
   }
 
   // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
-  //                          accountStrategy, autoDisableOnQuota, serviceTierMode}
+  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -243,6 +244,14 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.fallbackModels = normalizeBackupModels(ids);
     }
     if ('autoDisableOnQuota' in body) settings.autoDisableOnQuota = Boolean(body.autoDisableOnQuota);
+    for (const [name, label] of [['accountMaxConcurrent', '同时处理上限'], ['accountMaxPerMinute', '每分钟上限']]) {
+      if (!(name in body)) continue;
+      const n = body[name];
+      if (!Number.isInteger(n) || n < 0 || n > MAX_QUEUE_LIMIT) {
+        throw httpError(400, `${label}必须是 0–${MAX_QUEUE_LIMIT} 的整数，0 表示不限`, 'invalid_parameter');
+      }
+      settings[name] = n;
+    }
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');
       settings.accountStrategy = body.accountStrategy;
@@ -252,6 +261,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.serviceTierMode = body.serviceTierMode;
     }
     store.save();
+    accounts.queue.drainAll();
     // web_search 和 service_tier 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before || settings.serviceTierMode !== beforeServiceTier) accounts.restartAll();
     return ok({ settings });

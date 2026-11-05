@@ -62,14 +62,15 @@ export function backupModelsFor(settings, requestedModel) {
   return normalizeBackupModels(settings.fallbackModels).filter((id) => id.toLowerCase() !== requested);
 }
 
-// 处理一个 Codex 账号渠道请求。handle(model) 里选账号时带上 req.accountRetry，记下这次用的账号；
+// 处理一个 Codex 账号渠道请求。handle(model) 里选账号时带上 req.accountRetry，记下这次用的账号和归还排队空位的 release；
+// 每次尝试结束都先归还空位，换备用模型、换账号时重新排队。
 // model 为 null 时用请求里的模型，否则改用这个备用模型。
 // 过载时先换没试过的备用模型（账号不算失败：同一会话照样落在它固定的账号上），
 // 其他失败（或备用模型用完）换没试过的账号、换回请求的模型再调 handle()，账号都失败再调 upstream(err) 交给 API 上游，
 // 都不行就抛出最后的错误。在选账号之前就失败（参数校验等）说明和账号、模型无关，不重试。
 // backupModels() 只在第一次过载时调用一次，返回这个请求可用的备用模型。
 export async function runWithFailover({ req, res, handle, accounts, settings, upstreams, upstream, backupModels = () => [] }) {
-  const retry = (req.accountRetry = { tried: new Set(), current: null, needsImage: false });
+  const retry = (req.accountRetry = { tried: new Set(), current: null, needsImage: false, release: null });
   let models = null;
   let model = null;
   for (;;) {
@@ -96,6 +97,9 @@ export async function runWithFailover({ req, res, handle, accounts, settings, up
       }
       if (!shouldFallback(err, { res, settings, upstreams })) throw err;
       return upstream(err);
+    } finally {
+      retry.release?.();
+      retry.release = null;
     }
   }
 }
