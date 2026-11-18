@@ -12,9 +12,10 @@ const STDERR_TAIL_LINES = 40;
 
 export class AppServerClient extends EventEmitter {
   // clientInfo 决定这个 app-server 对上游的身份（originator 和 User-Agent 都由它的 name、version 生成），默认是网关自己的名字。
-  constructor({ cmd, codexHome, cwd, label, clientInfo = null }) {
+  constructor({ cmd, codexHome, cwd, label, clientInfo = null, configOverrides = [] }) {
     super();
     this.clientInfo = clientInfo || { name: CLIENT_NAME, title: 'Codex Local Gateway', version: CLIENT_VERSION };
+    this.configOverrides = [...configOverrides];
     this.cmd = cmd;
     this.codexHome = codexHome;
     this.cwd = cwd;
@@ -35,7 +36,8 @@ export class AppServerClient extends EventEmitter {
   }
 
   async #spawnAndInitialize() {
-    const child = spawn(this.cmd.command, [...this.cmd.prefixArgs, 'app-server'], {
+    const configArgs = this.configOverrides.flatMap((value) => ['-c', value]);
+    const child = spawn(this.cmd.command, [...this.cmd.prefixArgs, ...configArgs, 'app-server'], {
       cwd: this.cwd,
       env: { ...process.env, CODEX_HOME: this.codexHome },
       stdio: ['pipe', 'pipe', 'pipe'],

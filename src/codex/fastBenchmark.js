@@ -99,6 +99,11 @@ export class FastBenchmark {
     const client = new this.AppServerClient({
       cmd: this.accounts.cmd, codexHome: home, cwd: workspace, label: `${account.id}-fast-benchmark`,
       clientInfo: { name: 'codex_exec', title: 'Codex Exec', version: this.codex?.version || '0.0.0' },
+      // 测速必须独立于后台当前档位：标准组明确关闭 Fast，Fast 组明确打开 Fast。
+      // 否则后台设置为 Fast 时，标准组会继承 fast_mode，导致对照失真。
+      configOverrides: spec.tier === 'priority'
+        ? ['service_tier=fast', 'features.fast_mode=true']
+        : ['service_tier=default', 'features.fast_mode=false'],
     });
     try {
       const identity = (await client.start())?.userAgent ?? null;

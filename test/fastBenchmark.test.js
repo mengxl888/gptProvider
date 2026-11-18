@@ -223,6 +223,9 @@ test('the official variants run a turn on a dedicated app-server with the offici
     assert.deepEqual(client.options.clientInfo, { name: 'codex_exec', title: 'Codex Exec', version: '0.170.0' });
     assert.equal(client.options.codexHome, '/synthetic/synthetic-account/home');
     assert.deepEqual(client.options.cmd, { command: 'synthetic-codex', prefixArgs: [] });
+    assert.deepEqual(client.options.configOverrides, expectedTier === 'priority'
+      ? ['service_tier=fast', 'features.fast_mode=true']
+      : ['service_tier=default', 'features.fast_mode=false']);
     assert.equal(client.closed, true);
     // 先读模型目录，再开回合
     assert.deepEqual(client.calls.map((call) => call.method).slice(0, 3), ['model/list', 'thread/start', 'turn/start']);
