@@ -566,8 +566,12 @@ export class AccountManager {
 
   // 选好账号后按「账号排队」等它空出位置再开始处理，客户端断开时放弃排队。
   // 空位在这次尝试结束时归还：runWithFailover 换账号、换备用模型前调用 retry.release()，响应关闭时也会归还。
-  async reserveAccount({ req, res, ...options }) {
-    const account = this.pickAccount(options);
+  async reserveAccount({ req, res, accountId, ...options }) {
+    const account = accountId == null ? this.pickAccount(options) : this.store.getAccount(accountId);
+    if (!account) throw httpError(404, '账号不存在', 'account_not_found');
+    if (accountId != null && !this.usable(account)) {
+      throw httpError(503, '指定账号当前不可用', 'account_not_ready');
+    }
     const closed = new AbortController();
     const onClose = () => closed.abort();
     if (res.destroyed) closed.abort();

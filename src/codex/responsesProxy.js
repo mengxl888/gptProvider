@@ -1,5 +1,6 @@
 // 外部 Codex 的客户端工具由外部客户端执行。保留原生 Responses 协议，
 // 不经过 runTurn/buildPrompt，也不在网关主机运行这些工具。
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -38,6 +39,7 @@ const RESPONSE_HEADERS = [
   'x-codex-secondary-used-percent', 'x-codex-secondary-window-minutes', 'x-codex-secondary-reset-at',
 ];
 const IDLE_TIMEOUT_MS = 10 * 60_000;
+const FAST_CHECK_TIMEOUT_MS = 30_000;
 const KEEP_ALIVE_MS = 5_000;
 const MAX_EVENT_BYTES = 50 * 1024 * 1024;
 // 回合开头不含内容的事件：流式时先攒着，等第一段输出再一起发（见 DeferredStream）
@@ -81,13 +83,32 @@ export class CodexResponsesProxy {
     this.routingCookies = new RoutingCookies();
   }
 
-  async handle(req, res, body) {
+  checkFast(req, res, accountId, model) {
+    if (typeof model !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(model)) {
+      throw httpError(400, '请填写要检测的模型 ID', 'invalid_model');
+    }
+    return this.handle(req, res, {
+      model,
+      instructions: 'Reply only with OK.',
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'OK?' }] }],
+      tools: [],
+      service_tier: 'priority',
+      stream: false,
+    }, { fastCheckAccount: accountId });
+  }
+
+  async handle(req, res, body, { fastCheckAccount } = {}) {
+    const fastCheck = fastCheckAccount != null;
+    const checkSession = fastCheck ? randomUUID() : null;
+    const clientHeaders = checkSession
+      ? { 'session-id': checkSession, 'thread-id': checkSession, 'x-client-request-id': checkSession }
+      : req.headers;
     // 参数校验失败也要记录请求模型，避免日志一律显示“默认”。
     req.log?.request({ model: body.model || this.store.data.settings.defaultModel || 'gpt-6.1-sol', stream: body.stream });
     const { input, systemMessagesConverted } = normalizeSystemMessages(body.input);
     const payload = applyServiceTierPolicy(
       this.#payload(systemMessagesConverted ? { ...body, input } : body),
-      this.store.data.settings.serviceTierMode,
+      fastCheck ? 'fast' : this.store.data.settings.serviceTierMode,
     );
     req.log?.request({ model: payload.model, stream: body.stream });
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode, codexCliUserAgent(this.codex.version));
@@ -96,20 +117,21 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = await this.accounts.reserveAccount({ affinityKey: affinityKey(body, req.headers), retry: req.accountRetry, req, res });
+    const account = await this.accounts.reserveAccount({ accountId: fastCheckAccount, affinityKey: affinityKey(body, clientHeaders), retry: req.accountRetry, req, res });
     req.log?.account(account);
 
     // 时间都从收到请求头算起（没有日志条目时从这里算起）
     const startedAt = Date.now() - (req.log?.elapsed?.() ?? 0);
     const ms = () => Date.now() - startedAt;
-    const client = codexClientMeta(req.headers, body);
-    const threadKey = client.threadId || affinityKey(body, req.headers);
+    const client = codexClientMeta(clientHeaders, body);
+    const threadKey = client.threadId || affinityKey(body, clientHeaders);
     const inputItems = typeof body.input === 'string' ? [{ type: 'message', role: 'user' }] : body.input;
     client.concurrent = threadKey ? inflightThreads.get(threadKey) || 0 : null;
     if (threadKey) inflightThreads.set(threadKey, client.concurrent + 1);
     req.log?.diag?.({ client, input: inputSummary(body, inputItems) });
     linkFollowUp(req.log, threadKey, startedAt, client.turnId, inputItems);
     const diag = { phase: 'auth', handlerMs: ms(), attempts: 0, events: 0, items: 0, bytes: 0 };
+    if (fastCheck) diag.fastCheck = true;
     diag.tier = { requested: clip(body.service_tier, 20), sent: clip(payload.service_tier, 20), early: null, actual: null };
     if (payload.service_tier === 'priority') {
       diag.tier.accountSupports = this.accounts.supportsServiceTier?.(account.id, payload.model, 'priority') ?? null;
@@ -136,8 +158,9 @@ export class CodexResponsesProxy {
     }
     let idleTimer;
     const resetIdle = () => {
+      if (fastCheck && idleTimer) return;
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => abort.abort(new Error('Codex Responses 上游响应超时')), IDLE_TIMEOUT_MS);
+      idleTimer = setTimeout(() => abort.abort(new Error('Codex Responses 上游响应超时')), fastCheck ? FAST_CHECK_TIMEOUT_MS : IDLE_TIMEOUT_MS);
       idleTimer.unref();
     };
     resetIdle();
@@ -159,8 +182,8 @@ export class CodexResponsesProxy {
         diag.attempts++;
         diag.requestMs ??= ms();
         // 带上这个账号上次拿到的路由 Cookie，让请求落回同一组后端（提示词缓存才能命中），见 routingCookies.js
-        const routing = this.routingCookies.get(account.id, RESPONSES_URL);
-        const headers = this.#headers(req, auth, userAgent, payload, routing.header);
+        const routing = fastCheck ? { names: [] } : this.routingCookies.get(account.id, RESPONSES_URL);
+        const headers = this.#headers(clientHeaders, auth, userAgent, payload, routing.header);
         diag.wire = {
           originator: headers.originator,
           version: clip(headers.version, 40),
@@ -179,10 +202,10 @@ export class CodexResponsesProxy {
         // 只记 Cookie 名字，不记值；cf-ray 末尾是 Cloudflare 接入点，用来看请求是不是每次落在不同地方
         diag.routing = {
           sent: routing.names,
-          received: this.routingCookies.store(account.id, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
+          received: fastCheck ? [] : this.routingCookies.store(account.id, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
           cfRay: clip(upstream.headers.get('cf-ray'), 40),
         };
-        if (upstream.status === 401 && !refreshedAuth) {
+        if (!fastCheck && upstream.status === 401 && !refreshedAuth) {
           refreshedAuth = true;
           await upstream.body?.cancel();
           auth = await this.accounts.responsesAuth(account.id, { rejectedToken: auth.accessToken });
@@ -191,7 +214,7 @@ export class CodexResponsesProxy {
         }
         if (!upstream.ok) {
           upstreamError = await readResponseError(upstream, { secrets });
-          if (isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
+          if (!fastCheck && isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
             retriedOverload = true;
             if (await waitForOverloadRetry(upstream.headers, abort.signal)) continue;
           }
@@ -294,7 +317,16 @@ export class CodexResponsesProxy {
         if (!body.stream) throw failure;
         req.log?.fail(failure);
       }
-      if (body.stream) {
+      if (fastCheck) {
+        sendJson(res, 200, {
+          model: response.model,
+          requested: diag.tier.sent,
+          actual: clip(tracker.terminalTier, 20),
+          status: response.status,
+          responseId: clip(response.id, 80),
+          requestId: diag.requestId,
+        });
+      } else if (body.stream) {
         stream.commit();
         res.end();
       } else {
@@ -398,7 +430,7 @@ export class CodexResponsesProxy {
     return payload;
   }
 
-  #headers(req, auth, userAgent, payload, cookie) {
+  #headers(clientHeaders, auth, userAgent, payload, cookie) {
     const { originator, version } = codexIdentityForUserAgent(userAgent);
     const headers = {
       'content-type': 'application/json',
@@ -415,7 +447,7 @@ export class CodexResponsesProxy {
     const routingHint = payload.service_tier ? `model=${payload.model};tier=${payload.service_tier}` : `model=${payload.model}`;
     if (/^[\x21-\x7e]+$/.test(routingHint)) headers['x-codex-routing-hint'] = routingHint;
     for (const name of REQUEST_HEADERS) {
-      if (typeof req.headers[name] === 'string') headers[name] = req.headers[name];
+      if (typeof clientHeaders[name] === 'string') headers[name] = clientHeaders[name];
     }
     return headers;
   }

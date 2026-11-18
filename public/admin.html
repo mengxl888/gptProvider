@@ -1825,6 +1825,8 @@ function queueChip(a, settings) {
   return `<span class="chip ${q.queued ? 'warn' : 'on'}" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}${q.queued ? ` · 排队 ${q.queued}` : ''}</span>`;
 }
 
+const fastCheckBusy = new Set();
+
 function renderAccounts() {
   const st = S.state;
   const strategy = st.settings.accountStrategy || 'active';
@@ -1878,6 +1880,7 @@ function renderAccounts() {
           : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
         ${!active && a.status === 'ready' ? `<button class="btn sm ${rotating ? '' : 'primary'}" data-acc="activate" data-id="${a.id}">${icon('zap')}${rotating ? '设为默认' : '设为当前'}</button>` : ''}
         <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('refresh')}</button>
+        ${a.status === 'ready' && !disabled ? `<button class="btn sm ghost icon" title="检测 Fast 档位" aria-label="检测 Fast 档位" data-acc="fast-check" data-id="${a.id}" ${fastCheckBusy.has(a.id) ? 'disabled' : ''}>${icon('zap')}</button>` : ''}
         <button class="btn sm ghost icon" title="${disabled ? '启用' : '停用'}" data-acc="toggle" data-id="${a.id}">${icon(disabled ? 'play' : 'pause')}</button>
         <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
@@ -1901,6 +1904,19 @@ $('account-grid').addEventListener('click', run(async (e) => {
   const act = btn.dataset.acc;
   if (act === 'query-reset' || act === 'consume-reset') return accountQuotaReset(a, act === 'consume-reset');
   if (act === 'login') return openLogin(a);
+  if (act === 'fast-check') {
+    if (fastCheckBusy.has(id)) return;
+    const model = prompt('用这个账号发送一条短请求检测 Fast，会消耗少量额度。请输入模型 ID：', S.state.settings.defaultModel || 'gpt-6.1-sol')?.trim();
+    if (!model) return;
+    fastCheckBusy.add(id);
+    btn.disabled = true;
+    try {
+      const result = await api('POST', `/accounts/${id}/fast-check`, { model });
+      const actual = result.actual === 'default' ? 'default（标准档）' : result.actual || '未回报，无法确认';
+      alert(`${result.model}\n请求档位：${result.requested}\n上游终态档位：${actual}\n响应 ID：${result.responseId || '未回报'}`);
+    } finally { fastCheckBusy.delete(id); renderAccounts(); }
+    return;
+  }
   if (act === 'activate') { await api('POST', `/accounts/${id}/activate`); toast(S.state.settings.accountStrategy === 'active' ? '已切换当前账号' : '已设为默认账号'); }
   if (act === 'weight') {
     const input = prompt(`「${a.email || a.label}」的调用权重（0–100 的整数，0 表示不参与轮询）`, accountWeight(a));

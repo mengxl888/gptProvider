@@ -144,6 +144,10 @@ export async function handleAdmin(req, res, url, body, ctx) {
       return ok();
     }
     if (method === 'POST' && action === 'refresh') return ok({ account: await accounts.refreshStatus(id) });
+    if (method === 'POST' && action === 'fast-check') {
+      const entry = requestLog.begin({ endpoint: 'responses', source: 'playground', userAgent: req.headers['user-agent'] });
+      return withLog(req, res, entry, () => ctx.accountResponses.checkFast(req, res, id, body?.model));
+    }
     if (method === 'POST' && action === 'rate-limit-reset') return ok(await accounts.consumeRateLimitReset(id, body));
     if (method === 'POST' && action === 'activate') {
       accounts.setActive(id);

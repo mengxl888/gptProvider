@@ -1095,3 +1095,43 @@ test('Fast requests record whether the account model catalog offers the priority
     assert.deepEqual(diag.tier, { requested: 'priority', sent: 'priority', early: null, actual: 'default', accountSupports: expected, plan: 'plus' });
   }
 });
+
+test('Fast check pins the account and isolates session and cookies in one request', async () => {
+  const h = harness(async () => upstream(terminalSse(response('completed', { model: 'gpt-6.2-sol', service_tier: 'default' })), {
+    headers: { 'x-request-id': 'req_probe', 'set-cookie': '__oailb=synthetic-probe; Path=/' },
+  }), { serviceTierMode: 'standard' });
+  const req = request();
+  req.headers['x-codex-turn-state'] = 'other-turn';
+  req.headers['thread-id'] = 'other-thread';
+  req.headers['x-openai-internal-codex-responses-lite'] = 'true';
+  req.log.diag = (value) => req.events.push({ name: 'diag', value });
+  h.accounts.reserveAccount = async (options) => {
+    assert.equal(options.accountId, 'synthetic-account');
+    return h.account;
+  };
+  const url = 'https://chatgpt.com/backend-api/codex/responses';
+  h.proxy.routingCookies.store(h.account.id, url, ['__oailb=synthetic-normal; Path=/']);
+  const res = new ResponseSink();
+  await h.proxy.checkFast(req, res, h.account.id, 'gpt-6.2-sol');
+  assert.deepEqual(res.json, { model: 'gpt-6.2-sol', requested: 'priority', actual: 'default', status: 'completed', responseId: 'resp_synthetic', requestId: 'req_probe' });
+  assert.equal(h.fetchCalls.length, 1);
+  const [destination, sent] = h.fetchCalls[0];
+  assert.equal(destination, url);
+  assert.equal(sent.headers.cookie, undefined);
+  assert.equal(sent.headers['x-codex-turn-state'], undefined);
+  assert.equal(sent.headers['x-openai-internal-codex-responses-lite'], undefined);
+  assert.notEqual(sent.headers['thread-id'], 'other-thread');
+  assert.equal(sent.headers['thread-id'], sent.headers['session-id']);
+  assert.equal(sent.headers['x-codex-routing-hint'], 'model=gpt-6.2-sol;tier=priority');
+  assert.equal(JSON.parse(sent.body).service_tier, 'priority');
+  assert.equal(h.proxy.routingCookies.get(h.account.id, url).header, '__oailb=synthetic-normal');
+  assert.equal(req.events.findLast((entry) => entry.value?.upstream)?.value.upstream.fastCheck, true);
+});
+
+test('Fast check never retries a failed probe', async () => {
+  const h = harness(async () => new Response('{}', { status: 401 }));
+  await assert.rejects(h.proxy.checkFast(request(), new ResponseSink(), h.account.id, 'gpt-6.2-sol'), { status: 503 });
+  assert.equal(h.fetchCalls.length, 1);
+  assert.equal(h.authCalls.length, 1);
+  assert.throws(() => h.proxy.checkFast(request(), new ResponseSink(), h.account.id, 'bad model'), { status: 400 });
+});

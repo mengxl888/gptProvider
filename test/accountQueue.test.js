@@ -133,6 +133,21 @@ function request() {
   return { req, res, diag };
 }
 
+test('an explicitly selected account is queued without falling back to the active account', async (t) => {
+  const { manager, data } = setup(t);
+  const first = request();
+  const second = request();
+  assert.equal((await manager.reserveAccount({ ...first, accountId: 'b' })).id, 'b');
+  const waiting = manager.reserveAccount({ ...second, accountId: 'b' });
+  assert.equal(await settled(waiting), false);
+  first.res.emit('close');
+  assert.equal((await waiting).id, 'b');
+  second.res.emit('close');
+  await assert.rejects(manager.reserveAccount({ ...request(), accountId: 'missing' }), { code: 'account_not_found' });
+  data.accounts.find((account) => account.id === 'b').enabled = false;
+  await assert.rejects(manager.reserveAccount({ ...request(), accountId: 'b' }), { code: 'account_not_ready' });
+});
+
 test('a second request on the same account waits until the first one finishes', async (t) => {
   const { manager } = setup(t);
   const one = request();
