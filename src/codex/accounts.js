@@ -54,6 +54,9 @@ export const BACKGROUND_REFRESH_MS = 5 * 60_000;
 const LIMIT_REFRESH_MS = 60_000;
 // 目录请求包含隐藏模型；旧版本缓存只含选择器可见模型，不能继续复用。
 const MODEL_CATALOG_VERSION = 2;
+export const ACCOUNT_EXPORT_FORMAT = 'gptprovider-codex-account';
+export const ACCOUNT_EXPORT_VERSION = 1;
+const MAX_ACCOUNT_EXPORT_BYTES = 2 * 1024 * 1024;
 
 export class AccountManager {
   constructor({ store, dataDir, cmd, featureNames }) {
@@ -149,6 +152,69 @@ export class AccountManager {
       return { bytes: stat.size, updatedAt: stat.mtime.toISOString() };
     } catch {
       return null;
+    }
+  }
+
+  // 导出可迁移的账号包。auth.json 是 Codex 官方凭据，不能放进普通账号列表或日志。
+  exportAccount(id) {
+    const account = this.store.getAccount(id);
+    if (!account) throw httpError(404, '账号不存在', 'account_not_found');
+    const authPath = path.join(this.paths(id).home, 'auth.json');
+    let auth;
+    try {
+      const raw = fs.readFileSync(authPath, 'utf8');
+      if (Buffer.byteLength(raw, 'utf8') > MAX_ACCOUNT_EXPORT_BYTES) {
+        throw httpError(413, '账号凭据文件过大，无法导出', 'account_export_too_large');
+      }
+      auth = JSON.parse(raw);
+    } catch (err) {
+      if (err.status) throw err;
+      throw httpError(409, '账号没有可导出的登录凭据，请先登录成功', 'account_credentials_unavailable');
+    }
+    if (!auth || typeof auth !== 'object' || Array.isArray(auth)) {
+      throw httpError(409, '账号登录凭据格式无效，请重新登录', 'account_credentials_invalid');
+    }
+    return {
+      format: ACCOUNT_EXPORT_FORMAT,
+      version: ACCOUNT_EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      account: {
+        label: account.label || account.email || '导入账号',
+        email: account.email || null,
+        planType: account.planType || null,
+        enabled: account.enabled !== false,
+        weight: Number.isInteger(account.weight) ? account.weight : 1,
+      },
+      auth,
+    };
+  }
+
+  // 导入时始终生成新的内部账号 ID，避免覆盖本机已有账号或写入可控路径。
+  async importAccount(bundle) {
+    const parsed = validateAccountExport(bundle);
+    const account = this.createAccount(parsed.account.label);
+    const id = account.id;
+    const { home, workspace } = this.paths(id);
+    try {
+      this.store.upsertAccount({ id, enabled: parsed.account.enabled, weight: parsed.account.weight });
+      fs.mkdirSync(home, { recursive: true });
+      fs.mkdirSync(workspace, { recursive: true });
+      fs.writeFileSync(path.join(home, 'auth.json'), `${JSON.stringify(parsed.auth, null, 2)}\n`, { mode: 0o600 });
+
+      const refreshed = await this.refreshStatus(id);
+      if (refreshed.status !== 'ready') {
+        throw httpError(400, '导入的账号凭据已失效，请重新登录', 'account_credentials_invalid');
+      }
+      // 模型目录刷新失败不影响凭据导入，后台会按正常周期再次刷新。
+      this.refreshModels(id).catch(() => {});
+      return refreshed;
+    } catch (err) {
+      const client = this.clients.get(id);
+      if (client && !client.exited) client.close();
+      this.clients.delete(id);
+      this.store.removeAccount(id);
+      fs.rmSync(this.paths(id).root, { recursive: true, force: true });
+      throw err;
     }
   }
 
@@ -712,6 +778,34 @@ function resetAccountIdentity(account, accountId) {
 
 function sameResetAccount(previous, current) {
   return previous?.email === current.email && typeof previous.accountId === 'string' && previous.accountId === current.accountId;
+}
+
+function validateAccountExport(bundle) {
+  if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)
+    || bundle.format !== ACCOUNT_EXPORT_FORMAT || bundle.version !== ACCOUNT_EXPORT_VERSION) {
+    throw httpError(400, `账号 JSON 格式无效，需要 ${ACCOUNT_EXPORT_FORMAT} v${ACCOUNT_EXPORT_VERSION}`, 'invalid_account_export');
+  }
+  if (!bundle.auth || typeof bundle.auth !== 'object' || Array.isArray(bundle.auth)) {
+    throw httpError(400, '账号 JSON 缺少有效的登录凭据', 'invalid_account_export');
+  }
+  const authBytes = Buffer.byteLength(JSON.stringify(bundle.auth), 'utf8');
+  if (authBytes > MAX_ACCOUNT_EXPORT_BYTES) {
+    throw httpError(413, '账号凭据文件过大，无法导入', 'account_export_too_large');
+  }
+  const source = bundle.account && typeof bundle.account === 'object' && !Array.isArray(bundle.account) ? bundle.account : {};
+  const label = typeof source.label === 'string' ? source.label.trim().slice(0, 200) : '';
+  const weight = source.weight === undefined ? 1 : Number(source.weight);
+  if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
+    throw httpError(400, '账号 JSON 的权重必须是 0–100 的整数', 'invalid_account_export');
+  }
+  return {
+    account: {
+      label: label || '导入账号',
+      enabled: source.enabled !== false,
+      weight,
+    },
+    auth: bundle.auth,
+  };
 }
 
 function rateLimitsPatch(limits) {

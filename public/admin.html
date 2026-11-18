@@ -576,12 +576,14 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <!-- ---------- 账号 ---------- -->
     <section data-view="accounts" hidden>
       <div class="page-head">
-        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，按下面的调用策略分配 API 请求</p></div>
+        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，按下面的调用策略分配 API 请求；支持导出 / 导入账号 JSON 进行本地测试</p></div>
         <div class="actions">
           <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
+          <button class="btn" data-action="import-account" title="导入包含登录凭据的账号 JSON"><svg class="i" data-icon="upload"></svg>导入 JSON</button>
           <button class="btn primary" data-action="add-account"><svg class="i" data-icon="plus"></svg>添加账号</button>
         </div>
       </div>
+      <input id="account-import-file" type="file" accept=".json,application/json" hidden>
       <div class="card" style="margin-bottom:16px">
         <div class="setting">
           <div class="desc"><b>调用策略</b><span id="strategy-desc"></span></div>
@@ -1032,6 +1034,7 @@ const ICONS = {
   login: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/>',
   zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
@@ -1096,6 +1099,26 @@ async function api(method, path, body) {
   if (res.status === 401) { showGate('口令无效，请重新输入'); throw new Error('口令无效'); }
   if (!res.ok) throw Object.assign(new Error(data.error?.message || `请求失败 (${res.status})`), { status: res.status, code: data.error?.code });
   return data;
+}
+
+async function downloadAccount(id) {
+  const res = await fetch(`/admin/api/accounts/${encodeURIComponent(id)}/export`, {
+    headers: { authorization: `Bearer ${S.token}` },
+  });
+  if (res.status === 401) { showGate('口令无效，请重新输入'); throw new Error('口令无效'); }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error?.message || `导出失败 (${res.status})`);
+  }
+  const blob = await res.blob();
+  const account = S.state.accounts.find((a) => a.id === id);
+  const stem = String(account?.email || account?.label || id).replace(/[^a-z0-9._-]+/gi, '_').replace(/^\.+|\.+$/g, '').slice(0, 80) || 'account';
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `codex-account-${stem}.json`;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  toast('账号 JSON 已导出，请妥善保管文件');
 }
 
 function toast(msg, type = '') {
@@ -1975,6 +1998,7 @@ function renderAccounts() {
         <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('refresh')}</button>
         ${a.status === 'ready' && !disabled ? `<button class="btn sm ghost icon" title="检测 Fast 档位" aria-label="检测 Fast 档位" data-acc="fast-check" data-id="${a.id}" ${fastCheckBusy.has(a.id) ? 'disabled' : ''}>${icon('zap')}</button>
         <button class="btn sm ghost icon" title="Fast 对照测速：和官方 Codex 程序比速度，判断 Fast 有没有真的生效" aria-label="Fast 对照测速" data-acc="fast-bench" data-id="${a.id}" ${fastBench.get(a.id)?.running ? 'disabled' : ''}>${icon('activity')}</button>` : ''}
+        <button class="btn sm ghost icon" title="导出账号 JSON（包含登录凭据）" aria-label="导出账号 JSON" data-acc="export" data-id="${a.id}">${icon('download')}</button>
         <button class="btn sm ghost icon" title="${disabled ? '启用' : '停用'}" data-acc="toggle" data-id="${a.id}">${icon(disabled ? 'play' : 'pause')}</button>
         <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
@@ -1997,6 +2021,7 @@ $('account-grid').addEventListener('click', run(async (e) => {
   const id = btn.dataset.id, a = S.state.accounts.find((x) => x.id === id);
   const act = btn.dataset.acc;
   if (act === 'query-reset' || act === 'consume-reset') return accountQuotaReset(a, act === 'consume-reset');
+  if (act === 'export') return downloadAccount(id);
   if (act === 'login') return openLogin(a);
   if (act === 'fast-bench-close') { fastBench.delete(id); return renderAccounts(); }
   if (act === 'fast-bench') {
@@ -2048,6 +2073,23 @@ $('account-grid').addEventListener('click', run(async (e) => {
   await refreshState();
 }));
 document.addEventListener('click', (e) => { if (e.target.closest('[data-action="add-account"]')) openLogin(null); });
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-action="import-account"]')) $('account-import-file').click();
+});
+$('account-import-file').addEventListener('change', run(async (e) => {
+  const input = e.currentTarget, file = input.files?.[0];
+  if (!file) return;
+  try {
+    let bundle;
+    try { bundle = JSON.parse(await file.text()); } catch { throw new Error('账号 JSON 解析失败'); }
+    if (!confirm('导入文件包含账号登录凭据，将写入当前网关并创建一个新账号。确定继续吗？')) return;
+    const result = await api('POST', '/accounts/import', bundle);
+    toast(`账号已导入：${result.account.email || result.account.label}`);
+    await refreshState();
+  } finally {
+    input.value = '';
+  }
+}));
 $('set-strategy').addEventListener('click', run(async (e) => {
   const b = e.target.closest('button');
   if (!b || b.classList.contains('on')) return;

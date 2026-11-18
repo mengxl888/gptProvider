@@ -136,6 +136,10 @@ export async function handleAdmin(req, res, url, body, ctx) {
         throw err;
       }
     }
+    // POST /admin/api/accounts/import  导入一个账号 JSON（包含 Codex 官方登录凭据）
+    if (method === 'POST' && id === 'import') {
+      return ok({ account: await accounts.importAccount(body) });
+    }
     if (!id) throw httpError(404, '未知接口');
 
     if (method === 'POST' && action === 'login') return ok({ login: await accounts.startLogin(id, body.method) });
@@ -152,6 +156,18 @@ export async function handleAdmin(req, res, url, body, ctx) {
     if (method === 'POST' && action === 'fast-benchmark') {
       const entry = requestLog.begin({ endpoint: 'responses', source: 'playground', userAgent: req.headers['user-agent'] });
       return withLog(req, res, entry, () => ctx.fastBenchmark.run(req, res, id, body));
+    }
+    // GET /admin/api/accounts/:id/export  导出一个可在其他网关导入的账号 JSON
+    if (method === 'GET' && action === 'export') {
+      const payload = accounts.exportAccount(id);
+      const filename = `codex-account-${safeDownloadName(payload.account.email || payload.account.label || id)}.json`;
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-disposition': `attachment; filename="${filename}"`,
+        'cache-control': 'no-store',
+      });
+      res.end(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
     }
     if (method === 'POST' && action === 'rate-limit-reset') return ok(await accounts.consumeRateLimitReset(id, body));
     if (method === 'POST' && action === 'activate') {
@@ -366,6 +382,11 @@ function parseDetail(text) {
   } catch {
     return text;
   }
+}
+
+function safeDownloadName(value) {
+  const name = String(value).replace(/[^a-z0-9._-]+/gi, '_').replace(/^\.+|\.+$/g, '').slice(0, 80);
+  return name || 'account';
 }
 
 // 本自然月的请求数和 token 数，和额度检查用的是同一个口径
