@@ -170,7 +170,6 @@ async function route(req, res) {
 // 用「API 上游」把请求再发一次；上游也失败就返回上游的错误。
 async function fallbackToUpstream(req, res, url, raw, name, err) {
   req.log?.fallback(err);
-  req.log?.upstreamRequest({ userAgent: req.headers['user-agent'] ?? null, userAgentRewritten: false, systemMessagesConverted: 0 });
   clearHeaders(res);
   const body = fallbackBody(raw, {
     contentType: req.headers['content-type'],

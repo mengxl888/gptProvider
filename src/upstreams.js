@@ -10,6 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './codex/accounts.js';
 import { isOutputEvent } from './codex/responsesProxy.js';
+import { responsesUserAgent } from './codex/clientCompatibility.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
@@ -148,6 +149,10 @@ export class UpstreamManager {
     }
     const json = parseJsonRequest(req, body);
     req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: json?.service_tier ?? 'default' });
+    // 和 Codex 账号渠道的原生转发一样，按设置页「User-Agent 改写」处理发给上游的 UA
+    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings?.userAgentMode);
+    req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted: 0 });
+    const headers = { ...req.headers, 'user-agent': userAgent };
 
     // 流式对话默认不带用量，补上 include_usage 才能记 token、算额度；客户端没要的话把用量块过滤掉再回给它
     let stripUsageChunk = false;
@@ -164,7 +169,7 @@ export class UpstreamManager {
       req.log?.request({ serviceTier: json?.service_tier ?? 'default' });
       let upstreamRes;
       try {
-        upstreamRes = await send(upstream, req.method, subPath + (search || ''), body, req.headers, res);
+        upstreamRes = await send(upstream, req.method, subPath + (search || ''), body, headers, res);
       } catch (err) {
         if (err.aborted) throw err;
         this.#fail(upstream, 0, `连接失败：${err.message}`);

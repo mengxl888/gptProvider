@@ -8,6 +8,7 @@ import { handleChatCompletions } from '../openai/chat.js';
 import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../openai/images.js';
 import { MAX_EXPORT_ROWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
+import { CODEX_DESKTOP_USER_AGENT, USER_AGENT_MODES } from '../codex/clientCompatibility.js';
 import { config } from '../config.js';
 import { MAX_BACKUP_MODELS, normalizeBackupModels } from '../failover.js';
 import { pricingInfo, validatePrices } from '../pricing.js';
@@ -33,6 +34,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       upstreams: upstreams.list(),
       apiKeys: apiKeysWithUsage(store, requestLog),
       settings: store.data.settings,
+      codexUserAgent: CODEX_DESKTOP_USER_AGENT,
       pricing: pricingInfo(store.data.settings.modelPrices),
       stats: {
         images: store.data.images.length,
@@ -220,7 +222,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
   }
 
   // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
-  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode}
+  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode, userAgentMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = store.data.settings;
     const before = settings.webSearch;
@@ -259,6 +261,10 @@ export async function handleAdmin(req, res, url, body, ctx) {
     if ('serviceTierMode' in body) {
       if (!SERVICE_TIER_MODES.includes(body.serviceTierMode)) throw httpError(400, 'serviceTierMode 取值无效');
       settings.serviceTierMode = body.serviceTierMode;
+    }
+    if ('userAgentMode' in body) {
+      if (!USER_AGENT_MODES.includes(body.userAgentMode)) throw httpError(400, 'userAgentMode 取值无效');
+      settings.userAgentMode = body.userAgentMode;
     }
     store.save();
     accounts.queue.drainAll();

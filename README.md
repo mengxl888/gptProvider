@@ -393,7 +393,11 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 **客户端工具调用**：请求带有 `function`、`custom`、`namespace` 等客户端工具，或 `function_call` / `function_call_output`、`custom_tool_call` / `custom_tool_call_output` 等历史项时，自动改用原生 Responses 转发（账号按[调用策略](#多账号调用策略)选择）。工具定义、调用 ID、工具结果和加密推理项保留原始结构，工具在客户端执行；Codex CLI 可直接使用「Codex 账号」渠道的 Key。
 
 - `input` 含 `additional_tools` 项，或客户端明确发送 `x-openai-internal-codex-responses-lite: true` 时，也走原生转发。客户端提供的 Lite 头会原样透传，缺失时不会自动添加。
-- 原生转发保留 Codex 客户端的 User-Agent；其他客户端使用官方桌面版的 UA `Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)`（Codex 桌面版 26.1111.21308）。不走原生转发的对话请求由 codex app-server 发出，日志记录它实际使用的 UA。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道保持原有转发行为。
+- 原生转发的 User-Agent 按设置页「User-Agent 改写」处理，改写后的值是官方桌面版的 UA `Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)`（Codex 桌面版 26.1111.21308）：
+  - **统一改写**（默认）：不管客户端发来什么 UA，都改成上面的值。
+  - **只改写异常 UA**：只有官方 Codex 客户端的 UA 原样保留，其余一律改写。官方 UA 必须以 `codex_cli_rs`、`codex_exec`、`codex-tui`、`codex_vscode`、`codex_atlas`、`codex_chatgpt_desktop` 或 `Codex Desktop` 开头并紧跟 `/版本号`，区分大小写；只是包含 codex 字样或自称 codex 的第三方客户端不算。
+  - 管理接口：`PUT /admin/api/settings {"userAgentMode": "always" | "non_codex"}`，改了立即生效。
+  - 这个设置只管原生转发。不走原生转发的对话请求由 codex app-server 发出，UA 由 app-server 决定，日志记录它实际使用的 UA。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道（包括失败后改用 API 上游）转发给上游的 User-Agent 也按这个设置改写。
 - 原生转发将 `input` 中 `system` 消息的角色按原位置转换为 `developer`，保留消息顺序和内容；工具调用、工具结果及其他历史项保持原样。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
@@ -414,7 +418,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 ```
 
 - **所有官方接口都能用**：Responses 和 Chat 的函数调用、`function_call_output` 回传、结构化输出、`previous_response_id`、Embeddings、音频、图片、文件、`DELETE`/`GET` 等，跟直接调官方一样。multipart 和二进制响应也原样转发。
-- **转发的请求头**：`Content-Type`、`Accept`、`OpenAI-Beta`、`User-Agent`、`Idempotency-Key`。`Authorization` 换成上游的 Key，上游配了 Organization / Project 时带上对应的头。响应会去掉 `openai-organization`、`openai-project`、`set-cookie` 等头，不把上游账户信息透露给下游。
+- **转发的请求头**：`Content-Type`、`Accept`、`OpenAI-Beta`、`User-Agent`、`Idempotency-Key`。其中 `User-Agent` 按设置页「User-Agent 改写」处理：默认统一改成官方 Codex 桌面版的 UA，也可以选只改写非 Codex 客户端的 UA。`Authorization` 换成上游的 Key，上游配了 Organization / Project 时带上对应的头。响应会去掉 `openai-organization`、`openai-project`、`set-cookie` 等头，不把上游账户信息透露给下游。
 - **多个上游**：按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个；出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
 - **用量和额度**：从响应的 `usage` 里记 token，流式响应边转发边解析。流式 Chat 请求没带 `stream_options.include_usage` 时，网关会替客户端加上，再把多出来的用量块从回给客户端的流里去掉，所以 token 照样能记上。下游 Key 可以设置**每月 Token 上限**（本自然月的输入 + 输出），到了上限返回 429 `insufficient_quota`，Codex CLI 遇到这个错误会直接停止，不会反复重试。
 - **日志**：每个请求记一条，「账号 / 上游」列是实际使用的上游，`GET /v1/models` 不记。上游卡片上的健康条只统计最终落到这个上游的请求。

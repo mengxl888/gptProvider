@@ -86,7 +86,7 @@ export class CodexResponsesProxy {
       this.store.data.settings.serviceTierMode,
     );
     req.log?.request({ model: payload.model, stream: body.stream, serviceTier: payload.service_tier ?? 'default' });
-    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent']);
+    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode);
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');

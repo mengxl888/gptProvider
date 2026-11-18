@@ -78,7 +78,7 @@ function upstream(bytes = terminalSse(), { chunks, headers = {} } = {}) {
   }), { headers: { 'content-type': 'text/event-stream', ...headers } });
 }
 
-function harness(fetchImpl = async () => upstream()) {
+function harness(fetchImpl = async () => upstream(), settings = {}) {
   const account = { id: 'synthetic-account', label: 'Synthetic', status: 'ready' };
   const authCalls = [];
   const fetchCalls = [];
@@ -90,7 +90,7 @@ function harness(fetchImpl = async () => upstream()) {
     },
   };
   const proxy = new CodexResponsesProxy({
-    accounts, store: { data: { settings: { defaultModel: 'gpt-6.1-sol' } } }, codex: { version: '0.165.0' },
+    accounts, store: { data: { settings: { defaultModel: 'gpt-6.1-sol', ...settings } } }, codex: { version: '0.165.0' },
     fetchImpl: async (...args) => { fetchCalls.push(args); return fetchImpl(...args); },
   });
   return { proxy, accounts, account, authCalls, fetchCalls };
@@ -115,27 +115,56 @@ test('non-Codex clients use the exact requested Desktop User-Agent and retain th
   }
 });
 
-test('Codex product User-Agents retain their original complete values case-insensitively', async () => {
+const CODEX_PRODUCT_USER_AGENTS = [
+  'codex_cli_rs/0.165.0 (Windows 10.0.22631; x86_64) unknown',
+  'codex_vscode/0.165.0 (Linux; x86_64)',
+  'codex_exec/0.145.0 (Mac OS 15.1.0; arm64) iTerm.app/3.5',
+  'Codex Desktop/0.165.0-alpha.1.2 (Windows 10.0.22631; x86_64) unknown (Codex Desktop; 26.1023.51421)',
+  'codex-tui/0.165.0', 'codex_atlas/0.165.0', 'codex_chatgpt_desktop/1.2025.100',
+];
+
+test('non_codex mode rewrites everything that is not an official Codex client User-Agent', () => {
   for (const original of [
-    CODEX_DESKTOP_USER_AGENT,
-    'codex_cli_rs/0.165.0 (Windows 10.0.22631; x86_64) unknown',
-    'codex_vscode/0.165.0 (Linux; x86_64)',
-    'codex_local_gateway/0.165.0',
-    'CODEX_CLI_RS/0.165.0 (Windows; x86_64)',
-    'cOdEx DeSkToP/0.165.0-alpha.1.2 custom-build',
-    'Codex/0.165.0', 'codex-tui/0.165.0', 'codex_atlas/0.165.0',
+    undefined, '', 'Python-urllib/3.11', 'OpenAI/Python 2.0.0',
+    'codex_local_gateway/0.165.0', 'CODEX_CLI_RS/0.165.0 (Windows; x86_64)', 'cOdEx DeSkToP/0.165.0-alpha.1.2 custom-build',
+    'Codex/0.165.0', 'codex_cli_rs', 'codex_cli_rs/abc', 'my codex_cli_rs/0.165.0', 'Mozilla/5.0 (codex_cli_rs/0.165.0)',
+    'Codex Desktopx/0.165.0', 'codex_cli_rs/0.165.0/extra',
   ]) {
+    assert.deepEqual(responsesUserAgent(original, 'non_codex'), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: true }, String(original));
+  }
+});
+
+test('non_codex mode keeps Codex product User-Agents with their original complete values case-insensitively', async () => {
+  for (const original of [CODEX_DESKTOP_USER_AGENT, ...CODEX_PRODUCT_USER_AGENTS]) {
     const req = request();
     req.headers['user-agent'] = original;
-    const h = harness();
+    const h = harness(undefined, { userAgentMode: 'non_codex' });
     await h.proxy.handle(req, new ResponseSink(), toolBody());
     assert.equal(h.fetchCalls[0][1].headers['user-agent'], original);
     assert.equal(req.headers['user-agent'], original);
     assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
       userAgent: original, userAgentRewritten: false, systemMessagesConverted: 0,
     });
-    assert.deepEqual(responsesUserAgent(original), { userAgent: original, userAgentRewritten: false });
+    assert.deepEqual(responsesUserAgent(original, 'non_codex'), { userAgent: original, userAgentRewritten: false });
   }
+});
+
+test('always mode (the default) rewrites every User-Agent, Codex clients included, to the Desktop User-Agent', async () => {
+  for (const settings of [{}, { userAgentMode: 'always' }]) {
+    for (const original of [undefined, 'OpenAI/Python 2.0.0', 'Python-urllib/3.11', ...CODEX_PRODUCT_USER_AGENTS]) {
+      const req = request();
+      if (original !== undefined) req.headers['user-agent'] = original;
+      const h = harness(undefined, settings);
+      await h.proxy.handle(req, new ResponseSink(), toolBody());
+      assert.equal(h.fetchCalls[0][1].headers['user-agent'], CODEX_DESKTOP_USER_AGENT, String(original));
+      assert.equal(req.headers['user-agent'], original);
+      assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {
+        userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: true, systemMessagesConverted: 0,
+      });
+    }
+  }
+  // 已经是这个 UA 的请求不算改写
+  assert.deepEqual(responsesUserAgent(CODEX_DESKTOP_USER_AGENT), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: false });
 });
 
 test('native system messages become developer messages without mutating content, tools, typed history or ordering', async () => {
@@ -192,7 +221,7 @@ test('developer-only input is not duplicated and typed tool items with role-like
   assert.equal(normalized.systemMessagesConverted, 0);
   const req = request();
   req.headers['user-agent'] = 'codex_vscode/0.165.0';
-  const h = harness();
+  const h = harness(undefined, { userAgentMode: 'non_codex' });
   await h.proxy.handle(req, new ResponseSink(), toolBody({ input }));
   assert.deepEqual(JSON.parse(h.fetchCalls[0][1].body).input, input);
   assert.deepEqual(req.events.find((entry) => entry.name === 'upstreamRequest')?.value, {

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_PER_MINUTE } from './codex/accountQueue.js';
+import { DEFAULT_USER_AGENT_MODE, USER_AGENT_MODES } from './codex/clientCompatibility.js';
 import { DEFAULT_SERVICE_TIER_MODE } from './codex/serviceTier.js';
 
 const DEFAULT_SETTINGS = {
@@ -26,6 +27,8 @@ const DEFAULT_SETTINGS = {
   accountMaxPerMinute: DEFAULT_MAX_PER_MINUTE,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
+  // 原生 Responses 转发的 User-Agent：always 统一改成官方桌面版 UA，non_codex 只改写非 Codex 客户端（见 codex/clientCompatibility.js）
+  userAgentMode: DEFAULT_USER_AGENT_MODE,
   // Exact model ids; USD per 1M tokens, optional USD per generated image.
   modelPrices: {},
 };
@@ -52,6 +55,7 @@ export class Store {
     if (!['client', 'fast', 'standard'].includes(data.settings.serviceTierMode)) {
       data.settings.serviceTierMode = DEFAULT_SERVICE_TIER_MODE;
     }
+    if (!USER_AGENT_MODES.includes(data.settings.userAgentMode)) data.settings.userAgentMode = DEFAULT_USER_AGENT_MODE;
     data.modelCatalog ||= {};
     data.images ||= [];
     data.upstreams ||= [];

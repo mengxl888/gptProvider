@@ -831,6 +831,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
               <button data-v="client">按客户端决定</button><button data-v="fast">Fast（加速）</button><button data-v="standard">关闭 Fast</button></div></div>
           </div>
           <div class="setting">
+            <div class="desc"><b>User-Agent 改写</b><span>网关发给上游的 User-Agent，对 API 上游的所有请求和 Codex 账号渠道的原生转发（带工具调用的 Responses 请求）生效。统一改写：不管客户端发什么都改成官方 Codex 桌面版的 UA；只改写异常 UA：只有官方 Codex 客户端的 UA 原样保留，其余一律改写（如 Python、Node SDK，或只是带 codex 字样的第三方客户端）。改写后的值：<code class="mono small" id="set-ua-value" style="word-break:break-all"></code></span></div>
+            <div class="control"><div class="segmented" id="set-ua-mode">
+              <button data-v="always">统一改写</button><button data-v="non_codex">只改写异常 UA</button></div></div>
+          </div>
+          <div class="setting">
             <div class="desc"><b>对话中允许生图</b><span>开启后，普通对话里用户要求画图时 Codex 会调用生图工具，图片以 Markdown 链接返回</span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
@@ -3090,6 +3095,8 @@ function renderSettings() {
   $('set-chat-image').checked = s.chatImageGeneration;
   $('set-chat-image').disabled = activeAccount()?.planType === 'free';
   document.querySelectorAll('#set-service-tier button').forEach((b) => b.classList.toggle('on', b.dataset.v === (s.serviceTierMode || 'client')));
+  document.querySelectorAll('#set-ua-mode button').forEach((b) => b.classList.toggle('on', b.dataset.v === (s.userAgentMode || 'always')));
+  $('set-ua-value').textContent = S.state.codexUserAgent || '';
   document.querySelectorAll('#set-web button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.webSearch));
   $('set-account-retry').checked = s.accountRetry;
   $('set-fallback').checked = s.upstreamFallback;
@@ -3165,6 +3172,7 @@ $('set-backup-models').addEventListener('click', (e) => {
 });
 $('set-web').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ webSearch: b.dataset.v }); });
 $('set-service-tier').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ serviceTierMode: b.dataset.v }); });
+$('set-ua-mode').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.classList.contains('on')) saveSettings({ userAgentMode: b.dataset.v }); });
 
 // ============ 入口 ============
 hydrateIcons();
