@@ -403,13 +403,13 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
   - **客户端标识**：`originator` 请求头跟着实际发出的 User-Agent 走（改写后是 `codex_cli_rs`，保留官方客户端的 UA 时用它自己的标识），两者保持一致。
   - **路由提示和会话标识**：补发 `x-codex-routing-hint`（按实际发给上游的模型和速度档位生成），并原样转发客户端带来的 `x-codex-window-id`、`x-codex-turn-metadata`、`x-codex-parent-thread-id`、`x-openai-subagent`。
   - 日志详情的「上游时间线」会显示这次请求带回了哪些路由 Cookie（只显示名字）、上游下发了哪些，以及 `cf-ray`（末尾是 Cloudflare 接入点）。
-- **Fast 是否生效**：日志详情的「速度档位」并排显示客户端请求、发给上游、上游实际执行的档位，以及这个账号的模型目录里该模型有没有 Fast 档。账号不支持 Fast 时，上游一定按标准速度执行，网关改不了；这时需要让请求落到支持 Fast 的账号上。
+- **Fast 是否生效**：日志详情的「速度档位」区分客户端请求、网关发送、上游开场和上游终态。发送 `priority` 只代表请求了 Fast；以终态 `service_tier` 为准，终态未回报就标为未确认，费用估算不会把请求档位当实际档位。账号的模型目录只表示有没有列出 Fast，不代表当次请求的额度或降档原因。旧日志没有记录档位来自哪个事件，不能据此确认终态。
 - 原生转发将 `input` 中 `system` 消息的角色按原位置转换为 `developer`，保留消息顺序和内容；工具调用、工具结果及其他历史项保持原样。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
 - 原生转发兼容接受正整数 `max_output_tokens`，但账号上游不支持该参数，转发时会忽略它，并通过响应头 `x-gptprovider-ignored-parameters: max_output_tokens` 提示；该参数无法保证输出 Token 的硬上限。非法值返回 400。
 - `temperature`、`top_p`、`conversation` 等其他不支持的参数仍返回 400。
-- 「设置 → Codex 速度档位」有三种选择：**按客户端决定**（默认，保留请求里的速度选择）、**Fast（加速）**（强制使用 Fast，按模型规则消耗更多额度）、**关闭 Fast**（强制标准速度并清除请求里的 Fast 选择）。切换后会重启账号 app-server，使普通对话和 Responses 请求立即使用新策略。
+- 「设置 → Codex 速度档位」有三种选择：**按客户端决定**（默认，保留请求里的速度选择）、**Fast（加速）**（强制向上游请求 Fast，实际档位由上游决定）、**关闭 Fast**（清除原生转发请求里的 Fast 选择，并在 app-server 请求标准档）。切换后会重启账号 app-server，使普通对话和 Responses 请求立即使用新策略。
 - 工具是否可用仍取决于当前账号、模型和账号上游的支持范围。`/v1/chat/completions` 的工具调用保持不支持。
 - 不支持 `background`、WebSocket 和 `GET /v1/responses/{id}`。普通对话转换路径也不支持 `input_file` / `file_id`。
 

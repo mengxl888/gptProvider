@@ -89,7 +89,7 @@ export class CodexResponsesProxy {
       this.#payload(systemMessagesConverted ? { ...body, input } : body),
       this.store.data.settings.serviceTierMode,
     );
-    req.log?.request({ model: payload.model, stream: body.stream, serviceTier: payload.service_tier ?? 'default' });
+    req.log?.request({ model: payload.model, stream: body.stream });
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode, codexCliUserAgent(this.codex.version));
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
@@ -110,10 +110,7 @@ export class CodexResponsesProxy {
     req.log?.diag?.({ client, input: inputSummary(body, inputItems) });
     linkFollowUp(req.log, threadKey, startedAt, client.turnId, inputItems);
     const diag = { phase: 'auth', handlerMs: ms(), attempts: 0, events: 0, items: 0, bytes: 0 };
-    // 速度档位：客户端要的、按网关设置实际发给上游的、上游回报实际执行的（见下面 actualTier）。
-    // Fast 没生效（发了 priority、上游按 default 跑）时首字会明显变慢，日志里要能直接看出来。
-    diag.tier = { requested: clip(body.service_tier, 20) ?? null, sent: clip(payload.service_tier, 20) ?? null, actual: null };
-    // 发了 Fast 时记下这个账号本身有没有 Fast：账号的模型目录里该模型不带 priority 档，上游一定会降档，换什么请求头都没用。
+    diag.tier = { requested: clip(body.service_tier, 20), sent: clip(payload.service_tier, 20), early: null, actual: null };
     if (payload.service_tier === 'priority') {
       diag.tier.accountSupports = this.accounts.supportsServiceTier?.(account.id, payload.model, 'priority') ?? null;
       diag.tier.plan = clip(account.planType, 20);
@@ -235,11 +232,6 @@ export class CodexResponsesProxy {
         diag.bytes += chunk.length;
         diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
-        const actualTier = tracker.response?.service_tier ?? tracker.initial.service_tier;
-        if (actualTier != null) {
-          req.log?.request({ model: payload.model, stream: body.stream, serviceTier: actualTier });
-          diag.tier.actual = clip(actualTier, 20);
-        }
         if (tracker.output && diag.firstOutputMs == null) {
           diag.firstOutputMs = ms();
           req.log?.firstToken?.();
@@ -351,6 +343,9 @@ export class CodexResponsesProxy {
         else inflightThreads.delete(threadKey);
       }
       if (tracker) {
+        diag.tier.early = clip(tracker.initial.service_tier, 20);
+        diag.tier.actual = clip(tracker.terminalTier, 20);
+        req.log?.request({ serviceTier: tracker.terminalTier });
         Object.assign(diag, {
           events: tracker.events, items: tracker.itemsDone, itemKinds: [...tracker.itemKinds],
           openItem: tracker.openItem, lastEvent: tracker.lastEvent, responseId: tracker.responseId,
@@ -426,6 +421,7 @@ class ResponsesTracker {
     this.decoder = new StringDecoder('utf8');
     this.buffer = '';
     this.response = null;
+    this.terminalTier = null;
     this.error = null;
     // 收到过有语义内容的事件，即客户端会看到的输出
     this.output = false;
@@ -502,6 +498,7 @@ class ResponsesTracker {
       }
       const output = event.response.output?.length ? event.response.output
         : [...this.items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+      this.terminalTier = event.response.service_tier ?? null;
       this.response = { object: 'response', ...this.initial, ...event.response, status, output };
     }
   }

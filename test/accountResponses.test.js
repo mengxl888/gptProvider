@@ -550,14 +550,29 @@ test('nonstream failed is thrown as an error, keeping its usage, so failover can
   assert.equal(req.events.filter((e) => e.name === 'usage').length, 1);
 });
 
-test('cost telemetry uses the response service tier instead of the requested tier', async () => {
-  const h = harness(async () => upstream(terminalSse(response('completed', { service_tier: 'default' }))));
-  const req = request();
-  await h.proxy.handle(req, new ResponseSink(), toolBody({ stream: true, service_tier: 'priority' }));
-  const tiers = req.events.filter((e) => e.name === 'request' && e.value.serviceTier != null).map((e) => e.value.serviceTier);
-  assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier, 'priority');
-  assert.equal(tiers[0], 'priority');
-  assert.equal(tiers.at(-1), 'default');
+test('native Fast diagnostics and estimated costs use only the explicit terminal service tier', async () => {
+  for (const [early, terminal, expected, delimited] of [
+    ['priority', 'default', 'default', true],
+    ['default', 'priority', 'priority', false],
+    ['default', undefined, null, true],
+    ['priority', null, null, true],
+    [undefined, undefined, null, true],
+  ]) {
+    const req = request();
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    const preamble = Buffer.from(event('response.created', { response: { id: 'resp_synthetic', service_tier: early } }));
+    const completed = terminalSse(response('completed', { service_tier: terminal }));
+    const chunks = [preamble, delimited ? completed : completed.subarray(0, -2)];
+    const h = harness(async () => upstream(undefined, { chunks }));
+    const res = new ResponseSink();
+    await h.proxy.handle(req, res, toolBody({ stream: true, service_tier: 'priority' }));
+    const tiers = req.events.filter((entry) => entry.name === 'request' && Object.hasOwn(entry.value, 'serviceTier'));
+    const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream;
+    assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier, 'priority');
+    assert.deepEqual(tiers.map((entry) => entry.value.serviceTier), [expected]);
+    assert.deepEqual(diag.tier, { requested: 'priority', sent: 'priority', early: early ?? null, actual: expected, accountSupports: null, plan: null });
+    assert.deepEqual(res.body, Buffer.concat(chunks));
+  }
 });
 
 test('streamed failure usage and resolved model are recorded before control returns to failover', async () => {
@@ -991,7 +1006,7 @@ test('native requests carry the official routing hint and record requested, sent
     assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier ?? null, sent);
     const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream)?.value.upstream;
     // 发了 Fast 时还会记下账号本身支不支持 Fast（这个测试里的账号没有模型目录，所以是未知）
-    assert.deepEqual(diag.tier, { requested: requested ?? null, sent, actual: 'default', ...(sent === 'priority' ? { accountSupports: null, plan: null } : {}) });
+    assert.deepEqual(diag.tier, { requested: requested ?? null, sent, early: null, actual: 'default', ...(sent === 'priority' ? { accountSupports: null, plan: null } : {}) });
   }
 });
 
@@ -1043,6 +1058,6 @@ test('Fast requests record whether the account model catalog offers the priority
     if (supports !== undefined) h.accounts.supportsServiceTier = (id, model, tier) => (id === 'synthetic-account' && model === 'gpt-6.1-sol' && tier === 'priority' ? supports : null);
     await h.proxy.handle(req, new ResponseSink(), toolBody({ service_tier: 'priority' }));
     const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream;
-    assert.deepEqual(diag.tier, { requested: 'priority', sent: 'priority', actual: 'default', accountSupports: expected, plan: 'plus' });
+    assert.deepEqual(diag.tier, { requested: 'priority', sent: 'priority', early: null, actual: 'default', accountSupports: expected, plan: 'plus' });
   }
 });
