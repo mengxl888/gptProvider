@@ -404,6 +404,13 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
   - **路由提示和会话标识**：补发 `x-codex-routing-hint`（按实际发给上游的模型和速度档位生成），并原样转发客户端带来的 `x-codex-window-id`、`x-codex-turn-metadata`、`x-codex-parent-thread-id`、`x-openai-subagent`。
   - 日志详情的「上游时间线」会显示这次请求带回了哪些路由 Cookie（只显示名字）、上游下发了哪些，以及 `cf-ray`（末尾是 Cloudflare 接入点）。
 - **Fast 是否生效**：日志详情的「速度档位」区分客户端请求、网关发送、上游开场和上游终态。发送 `priority` 只代表请求了 Fast；以终态 `service_tier` 为准，终态未回报就标为未确认，费用估算不会把请求档位当实际档位。账号的模型目录只表示有没有列出 Fast，不代表当次请求的额度或降档原因。旧日志没有记录档位来自哪个事件，不能据此确认终态。
+- **Fast 对照测速**：上游回报的 `service_tier` 是否能说明 Fast 有没有生效，网关无法从字段本身确认；Fast 的实际效果是速度，所以用速度判断。账号卡片底部的「Fast 对照测速」按钮（折线图标）会用这个账号依次发 5 次真实请求，同样的提示词、推理强度 low，量出首字和输出速度：
+  - **官方 Codex 程序 · 标准 / Fast**：对照组。让这个账号的 codex app-server 自己发请求，和官方客户端完全一样。
+  - **网关转发（HTTP）· 标准 / Fast**：网关平时的转发方式。
+  - **网关转发（WebSocket）· Fast**：官方客户端默认用 WebSocket，网关用 HTTP，所以另测一次。
+  - 结论按开 Fast 后的输出速度是否达到标准的 1.25 倍判断：官方程序开 Fast 也不变快，说明上游没有给这个账号（或这个模型）实际的加速，不是网关的问题；官方程序和网关转发都变快，说明 Fast 已经生效，回报的 `default` 不能当成没生效；只有 WebSocket 变快，说明需要把转发改成 WebSocket。
+  - 全程约 1–2 分钟，会消耗这个账号的额度（Fast 的几次按 Fast 计），记入调用日志（来源是调试台）。单次测速有波动，拿不准时再测一次。管理接口：`POST /admin/api/accounts/:id/fast-benchmark {"model": "...", "variant": "official-standard" | "official-fast" | "native-standard" | "native-fast" | "native-fast-ws"}`，一次跑一种。
+- 原生转发的请求体把 `model`、`stream`、`service_tier` 放在最前面（官方客户端的字段顺序：上游网关会在读完整个 `input` 之前先看这几个路由字段），包括网关按设置强制 Fast 时后加的 `service_tier`。
 - **Fast 账号检测**：在「账号」页点对应账号的闪电图标，输入模型 ID。网关用指定账号发送一次短原生 Responses 请求，不带会话历史、Lite 头或已有路由 Cookie，不换账号、不重试，也不改全局设置。检测会用少量 Codex 额度，并记录在「调试台」来源的日志中。若终态仍为 `default`，说明在网关当前账号和上游连接上，短请求也复现了标准档；上游并未提供降档原因。
 - 原生转发将 `input` 中 `system` 消息的角色按原位置转换为 `developer`，保留消息顺序和内容；工具调用、工具结果及其他历史项保持原样。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。

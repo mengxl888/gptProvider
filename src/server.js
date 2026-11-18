@@ -7,6 +7,7 @@ import { AlertMonitor } from './alerts.js';
 import { AccountManager, httpError } from './codex/accounts.js';
 import { CodexRuntime } from './codex/runtime.js';
 import { CodexResponsesProxy } from './codex/responsesProxy.js';
+import { FastBenchmark } from './codex/fastBenchmark.js';
 import { config, exposedBeyondLoopback, hostFromHeader, isAllowedHostHeader } from './config.js';
 import { sendJson } from './http.js';
 import { ImageLibrary } from './images.js';
@@ -44,7 +45,8 @@ requestLog.onAttempt = (event) => {
   alerts.record(event);
   if (!event.ok && event.status === 429 && store.getAccount(event.id)) accounts.refreshAfterLimit(event.id);
 };
-const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, alerts, restart };
+const fastBenchmark = new FastBenchmark({ accounts, proxy: accountResponses });
+const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, fastBenchmark, alerts, restart };
 
 // 对话类请求：model 是过载后换用的备用模型（null 用请求里的）。第一次解析时记下请求实际要用的模型，
 // 换备用模型时排除它；生图模型不换。

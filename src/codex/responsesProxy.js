@@ -106,10 +106,10 @@ export class CodexResponsesProxy {
     // 参数校验失败也要记录请求模型，避免日志一律显示“默认”。
     req.log?.request({ model: body.model || this.store.data.settings.defaultModel || 'gpt-6.1-sol', stream: body.stream });
     const { input, systemMessagesConverted } = normalizeSystemMessages(body.input);
-    const payload = applyServiceTierPolicy(
+    const payload = routingFieldsFirst(applyServiceTierPolicy(
       this.#payload(systemMessagesConverted ? { ...body, input } : body),
       fastCheck ? 'fast' : this.store.data.settings.serviceTierMode,
-    );
+    ));
     req.log?.request({ model: payload.model, stream: body.stream });
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode, codexCliUserAgent(this.codex.version));
     if (body.max_output_tokens != null) {
@@ -467,9 +467,22 @@ export class CodexResponsesProxy {
     return headers;
   }
 
+  // 给 Fast 对照测速用：和平时转发完全一样的请求头，不带路由 Cookie（测速用的是全新会话）。
+  upstreamHeaders(clientHeaders, auth, payload) {
+    return this.#headers(clientHeaders, auth, codexCliUserAgent(this.codex.version), payload, null);
+  }
+
   #routingScope(accountId, serviceTier) {
     return `${accountId}\0${serviceTier || 'auto'}`;
   }
+}
+
+// 官方客户端把 model、stream、service_tier 放在请求体最前面（codex-rs/codex-api/src/common.rs ResponsesApiRequest）：
+// 上游网关会在读完可能有几 MB 的 input 之前，先看这几个路由字段。网关按设置强制 Fast 时 service_tier 是后加的，
+// 第三方客户端的字段顺序也不固定，所以统一挪到最前。
+function routingFieldsFirst(payload) {
+  const { model, stream, service_tier: serviceTier, ...rest } = payload;
+  return { model, stream, ...(serviceTier === undefined ? {} : { service_tier: serviceTier }), ...rest };
 }
 
 // 旁路解析只用于用量和非流式汇总，流式原始字节直接写回客户端。

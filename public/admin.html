@@ -305,6 +305,16 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .limit-row .reset { font-size: 12px; color: var(--muted); margin-top: 5px; }
 .account-error { margin: 0 20px 14px; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .quota-reset { margin: 0 20px 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 12.5px; }
+.fast-bench { margin: 0 20px 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 12.5px; }
+.fast-bench-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.fast-bench table { width: 100%; border-collapse: collapse; }
+.fast-bench th, .fast-bench td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.fast-bench th { color: var(--muted); font-weight: 550; }
+.fast-bench td.num, .fast-bench th:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+.fast-bench td.bad { color: var(--danger); white-space: normal; }
+.fast-bench-verdict { margin-top: 10px; padding: 9px 12px; border-radius: 8px; line-height: 1.6; font-weight: 550; border: 1px solid var(--border); background: var(--surface); }
+.fast-bench-verdict.ok { border-color: var(--success); }
+.fast-bench-verdict.warn { border-color: var(--warn); }
 .quota-reset-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .quota-reset-head b { color: var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
 .quota-reset-note { margin-top: 6px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
@@ -1827,6 +1837,81 @@ function queueChip(a, settings) {
 
 const fastCheckBusy = new Set();
 
+// Fast 对照测速：同一个账号依次用几种方式各发一次真实请求，比较输出速度（见 src/codex/fastBenchmark.js）。
+const FAST_BENCH_VARIANTS = [
+  ['official-standard', '官方 Codex 程序 · 标准'], ['official-fast', '官方 Codex 程序 · Fast'],
+  ['native-standard', '网关转发（HTTP）· 标准'], ['native-fast', '网关转发（HTTP）· Fast'],
+  ['native-fast-ws', '网关转发（WebSocket）· Fast'],
+];
+// 开 Fast 后的速度至少要到标准的这么多倍，才算明显变快（单次测速有波动，低于它不下结论）
+const FAST_BENCH_SPEEDUP = 1.25;
+const fastBench = new Map();
+
+async function runFastBench(id, model) {
+  const state = { model, running: true, rows: FAST_BENCH_VARIANTS.map(([variant, label]) => ({ variant, label, status: 'pending' })) };
+  fastBench.set(id, state);
+  renderAccounts();
+  for (const row of state.rows) {
+    row.status = 'running';
+    renderAccounts();
+    try {
+      row.result = await api('POST', `/accounts/${id}/fast-benchmark`, { model, variant: row.variant });
+      row.status = 'done';
+    } catch (err) {
+      row.status = 'error';
+      row.error = err.message;
+    }
+    renderAccounts();
+  }
+  state.running = false;
+  renderAccounts();
+}
+
+// 按速度下结论：官方程序是对照组，它开 Fast 都不变快，就不是网关转发的问题。
+function fastBenchVerdict(rows) {
+  const tps = Object.fromEntries(rows.map((row) => [row.variant, row.result?.tps || null]));
+  const ratio = (fast, standard) => (tps[fast] && tps[standard] ? tps[fast] / tps[standard] : null);
+  const official = ratio('official-fast', 'official-standard');
+  const http = ratio('native-fast', 'native-standard');
+  const ws = ratio('native-fast-ws', 'native-standard');
+  const times = (r) => (r == null ? '没测出来' : r.toFixed(2) + ' 倍');
+  if (official == null) return ['warn', '官方 Codex 程序的两次测速没有都成功，缺少对照，无法下结论。请重新测一次。'];
+  if (official < FAST_BENCH_SPEEDUP) {
+    return ['warn', '官方 Codex 程序开 Fast 后的速度是标准的 ' + times(official) + '，没有明显变快：上游没有给这个账号（或这个模型）实际的 Fast 加速。这不是网关转发的问题，改请求也没有用。'];
+  }
+  if (http != null && http >= FAST_BENCH_SPEEDUP) {
+    return ['ok', '官方 Codex 程序开 Fast 快到 ' + times(official) + '，网关转发开 Fast 也快到 ' + times(http) + '：Fast 实际已经生效。上游回报的 default 不能当成没生效的依据。'];
+  }
+  if (ws != null && ws >= FAST_BENCH_SPEEDUP) {
+    return ['warn', '官方 Codex 程序开 Fast 快到 ' + times(official) + '，网关用 HTTP 转发是 ' + times(http) + '（没有变快），用 WebSocket 是 ' + times(ws) + '（变快了）：Fast 只在 WebSocket 下生效，需要把转发改成 WebSocket。'];
+  }
+  return ['warn', '官方 Codex 程序开 Fast 快到 ' + times(official) + '，但网关转发没有跟着变快（HTTP ' + times(http) + '，WebSocket ' + times(ws) + '）：转发方式还有缺失，请把这张表发给开发者。'];
+}
+
+function fastBenchPanel(a) {
+  const state = fastBench.get(a.id);
+  if (!state) return '';
+  const tier = (r) => (r.transport === 'app-server' ? '<span class="muted">不可见</span>'
+    : esc(r.earlyTier || '未回报') + ' → <b>' + esc(r.actualTier || '未回报') + '</b>');
+  const rows = state.rows.map((row) => {
+    const r = row.result;
+    if (!r) {
+      const note = row.status === 'error' ? esc(row.error) : row.status === 'running' ? '测速中…' : '等待';
+      return '<tr><td>' + esc(row.label) + '</td><td colspan="5" class="' + (row.status === 'error' ? 'bad' : 'muted') + '">' + note + '</td></tr>';
+    }
+    return '<tr><td>' + esc(row.label) + '</td><td>' + tier(r) + '</td><td class="num">' + esc(fmtLatency(r.firstOutputMs)) + '</td><td class="num">' + esc(fmtLatency(r.totalMs))
+      + '</td><td class="num">' + fmtNum(r.outputTokens) + '</td><td class="num"><b>' + esc(fmtTps(r.tps)) + '</b></td></tr>';
+  }).join('');
+  const verdict = state.running ? null : fastBenchVerdict(state.rows);
+  return '<div class="fast-bench">'
+    + '<div class="fast-bench-head"><b>Fast 对照测速 · ' + esc(state.model) + '</b>' + (state.running ? '<span class="muted">进行中，约 1–2 分钟</span>'
+      : '<button class="btn sm ghost" data-acc="fast-bench-close" data-id="' + a.id + '">收起</button>') + '</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>方式</th><th title="上游在开场（response.created）和终态（response.completed）回报的 service_tier；官方程序不把它交给调用方">上游回报的档位</th><th>首字</th><th>总耗时</th><th>输出 Tokens</th><th title="输出 Tokens（含推理）÷ 从开始输出到结束的时间">输出速度</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + (verdict ? '<div class="fast-bench-verdict ' + verdict[0] + '">' + esc(verdict[1]) + '</div>' : '')
+    + '<div class="quota-reset-note">每一行是一次真实请求（同样的提示词，推理强度 low），会消耗这个账号的额度。单次测速有波动，结论按开 Fast 后速度是否达到标准的 ' + FAST_BENCH_SPEEDUP + ' 倍判断；拿不准时再测一次。</div>'
+    + '</div>';
+}
+
 function renderAccounts() {
   const st = S.state;
   const strategy = st.settings.accountStrategy || 'active';
@@ -1874,13 +1959,15 @@ function renderAccounts() {
         </div>`).join('')}</div>` : ''}
       ${quotaResetPanel(a)}
       ${a.error ? `<div class="account-error">${esc(a.error)}</div>` : ''}
+      ${fastBenchPanel(a)}
       <div class="account-foot">
         <span class="when mono" title="凭据 auth.json 的大小和最近写入时间（Codex 刷新令牌时会更新）&#10;额度 ${esc(a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '尚未检查')}">${a.credentials
           ? `${fmtBytes(a.credentials.bytes)} · ${esc(fmtTime(a.credentials.updatedAt))}`
           : a.lastCheckedAt ? `${rel(a.lastCheckedAt)}检查` : '—'}</span>
         ${!active && a.status === 'ready' ? `<button class="btn sm ${rotating ? '' : 'primary'}" data-acc="activate" data-id="${a.id}">${icon('zap')}${rotating ? '设为默认' : '设为当前'}</button>` : ''}
         <button class="btn sm ghost icon" title="刷新额度" data-acc="refresh" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('refresh')}</button>
-        ${a.status === 'ready' && !disabled ? `<button class="btn sm ghost icon" title="检测 Fast 档位" aria-label="检测 Fast 档位" data-acc="fast-check" data-id="${a.id}" ${fastCheckBusy.has(a.id) ? 'disabled' : ''}>${icon('zap')}</button>` : ''}
+        ${a.status === 'ready' && !disabled ? `<button class="btn sm ghost icon" title="检测 Fast 档位" aria-label="检测 Fast 档位" data-acc="fast-check" data-id="${a.id}" ${fastCheckBusy.has(a.id) ? 'disabled' : ''}>${icon('zap')}</button>
+        <button class="btn sm ghost icon" title="Fast 对照测速：和官方 Codex 程序比速度，判断 Fast 有没有真的生效" aria-label="Fast 对照测速" data-acc="fast-bench" data-id="${a.id}" ${fastBench.get(a.id)?.running ? 'disabled' : ''}>${icon('activity')}</button>` : ''}
         <button class="btn sm ghost icon" title="${disabled ? '启用' : '停用'}" data-acc="toggle" data-id="${a.id}">${icon(disabled ? 'play' : 'pause')}</button>
         <button class="btn sm ghost icon" title="${a.status === 'ready' ? '重新登录' : '登录'}" data-acc="login" data-id="${a.id}" ${quotaBusy ? 'disabled' : ''}>${icon('login')}</button>
         <button class="btn sm ghost icon" title="改名" data-acc="rename" data-id="${a.id}">${icon('pencil')}</button>
@@ -1904,6 +1991,13 @@ $('account-grid').addEventListener('click', run(async (e) => {
   const act = btn.dataset.acc;
   if (act === 'query-reset' || act === 'consume-reset') return accountQuotaReset(a, act === 'consume-reset');
   if (act === 'login') return openLogin(a);
+  if (act === 'fast-bench-close') { fastBench.delete(id); return renderAccounts(); }
+  if (act === 'fast-bench') {
+    if (fastBench.get(id)?.running) return;
+    const model = prompt('Fast 对照测速：用这个账号依次发 5 次真实请求（官方 Codex 程序和网关转发，各自开 / 关 Fast），比较输出速度。\n约 1–2 分钟，会消耗这个账号的额度。请输入模型 ID：', S.state.settings.defaultModel || 'gpt-6.1-sol')?.trim();
+    if (!model) return;
+    return runFastBench(id, model);
+  }
   if (act === 'fast-check') {
     if (fastCheckBusy.has(id)) return;
     const model = prompt('用这个账号发送一条短请求检测 Fast，会消耗少量额度。请输入模型 ID：', S.state.settings.defaultModel || 'gpt-6.1-sol')?.trim();

@@ -148,6 +148,11 @@ export async function handleAdmin(req, res, url, body, ctx) {
       const entry = requestLog.begin({ endpoint: 'responses', source: 'playground', userAgent: req.headers['user-agent'] });
       return withLog(req, res, entry, () => ctx.accountResponses.checkFast(req, res, id, body?.model));
     }
+    // POST /admin/api/accounts/:id/fast-benchmark {model, variant}  用一种方式发一次真实请求并计时，见 codex/fastBenchmark.js
+    if (method === 'POST' && action === 'fast-benchmark') {
+      const entry = requestLog.begin({ endpoint: 'responses', source: 'playground', userAgent: req.headers['user-agent'] });
+      return withLog(req, res, entry, () => ctx.fastBenchmark.run(req, res, id, body));
+    }
     if (method === 'POST' && action === 'rate-limit-reset') return ok(await accounts.consumeRateLimitReset(id, body));
     if (method === 'POST' && action === 'activate') {
       accounts.setActive(id);
