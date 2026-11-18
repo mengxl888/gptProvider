@@ -1,6 +1,8 @@
 // Fast 对照测速：同一个账号、同一个模型、同一个提示词，换几种方式各发一次，量出首字和输出速度。
 // 上游回报的 service_tier 不一定能说明 Fast 有没有生效，速度才是 Fast 的实际效果，所以用速度来判断：
-//   「官方 Codex 程序」是对照组——网关里每个账号本来就跑着官方的 codex app-server，它发的请求和官方客户端完全一样。
+//   「官方 Codex 程序」是对照组：为这次测速单独起一个官方的 codex app-server，用官方命令行 codex exec 的身份
+//   （originator 和 User-Agent 都是 codex_exec），请求由官方程序自己发出，和官方客户端完全一样。
+//   不用网关平时那个 app-server，是因为它对上游报的名字是 codex_local_gateway，上游如果按客户端身份给 Fast，对照就不干净。
 //   官方程序开了 Fast 也不变快：上游没有给这个账号（或这个模型）实际的加速，不是网关转发的问题。
 //   官方程序变快、网关转发也变快：Fast 是生效的，上游回报的 default 不能当成没生效。
 //   官方程序变快、网关转发不变快：转发方式有缺失（官方默认走 WebSocket，网关走 HTTP，所以另测一次 WebSocket）。
@@ -9,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { httpError } from './accounts.js';
+import { AppServerClient } from './appServer.js';
 import { runTurn } from './turn.js';
 import { sendJson } from '../http.js';
 
@@ -28,9 +31,11 @@ const PROMPT = 'Write the integers from 1 to 200, one per line. Output only the 
 const TIMEOUT_MS = 120_000;
 
 export class FastBenchmark {
-  constructor({ accounts, proxy, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket }) {
+  constructor({ accounts, proxy, codex, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, AppServerClientImpl = AppServerClient }) {
     this.accounts = accounts;
     this.proxy = proxy;
+    this.codex = codex;
+    this.AppServerClient = AppServerClientImpl;
     this.fetch = fetchImpl;
     this.WebSocket = WebSocketImpl;
   }
@@ -59,6 +64,8 @@ export class FastBenchmark {
         sentTier: spec.tier,
         // 官方程序不把上游回报的档位交给调用方，所以它这两项是 undefined（页面显示「不可见」）
         earlyTier: measured.earlyTier, actualTier: measured.actualTier,
+        // 官方程序这次对上游用的 User-Agent，证明对照组用的是官方身份
+        identity: measured.identity,
         firstOutputMs: measured.firstOutputMs, totalMs: measured.totalMs,
         outputTokens: measured.usage?.outputTokens ?? null,
         reasoningTokens: measured.usage?.reasoningOutputTokens ?? null,
@@ -84,9 +91,26 @@ export class FastBenchmark {
     return spec.transport === 'websocket' ? this.#websocket(spec, account, model, signal) : this.#http(spec, account, model, signal);
   }
 
-  // 对照组：让这个账号的官方 codex app-server 自己发请求。serviceTierForTurn 传 default 是明确要求标准速度。
+  // 对照组：单独起一个官方 codex app-server，身份和官方命令行 codex exec 一样，让它自己发请求。
+  // serviceTierForTurn 传 default 是明确要求标准速度。多个 codex 进程共用一个 CODEX_HOME 是官方支持的用法。
   async #official(spec, account, model, signal) {
-    const client = await this.accounts.getClient(account.id);
+    if (this.accounts.suspended) throw httpError(503, 'Codex 正在升级，请稍后再测', 'codex_upgrading');
+    const { home, workspace } = this.accounts.paths(account.id);
+    const client = new this.AppServerClient({
+      cmd: this.accounts.cmd, codexHome: home, cwd: workspace, label: `${account.id}-fast-benchmark`,
+      clientInfo: { name: 'codex_exec', title: 'Codex Exec', version: this.codex?.version || '0.0.0' },
+    });
+    try {
+      const identity = (await client.start())?.userAgent ?? null;
+      // 先读一次模型目录：官方程序只有在目录里看到这个模型有 Fast 档时才会把它发出去
+      await client.request('model/list', { limit: 1 }).catch(() => {});
+      return { ...(await this.#officialTurn(client, spec, model, signal)), identity };
+    } finally {
+      client.close();
+    }
+  }
+
+  async #officialTurn(client, spec, model, signal) {
     const startedAt = Date.now();
     let firstOutputMs = null;
     const result = await runTurn(client, {

@@ -50,21 +50,24 @@ const upstreamEvents = (finalTier) => [
   } },
 ];
 
-function harness({ fetchImpl, WebSocketImpl, client } = {}) {
+function harness({ fetchImpl, WebSocketImpl, AppServerClientImpl } = {}) {
   const account = { id: 'synthetic-account', label: 'Synthetic', status: 'ready' };
   const reserved = [];
   const accounts = {
     reserveAccount: async (options) => { reserved.push(options.accountId); return account; },
     responsesAuth: async () => ({ accessToken: 'synthetic-token', accountId: 'synthetic-workspace' }),
-    getClient: async () => client,
+    getClient: async () => assert.fail('the benchmark must not reuse the gateway app-server'),
+    paths: (id) => ({ home: `/synthetic/${id}/home`, workspace: `/synthetic/${id}/workspace` }),
+    cmd: { command: 'synthetic-codex', prefixArgs: [] },
+    suspended: false,
   };
   const proxy = new CodexResponsesProxy({ accounts, store: { data: { settings: {} } }, codex: { version: '0.170.0' } });
   const fetchCalls = [];
   const benchmark = new FastBenchmark({
-    accounts, proxy, WebSocketImpl,
+    accounts, proxy, WebSocketImpl, AppServerClientImpl, codex: { version: '0.170.0' },
     fetchImpl: async (...args) => { fetchCalls.push(args); return fetchImpl(...args); },
   });
-  return { benchmark, fetchCalls, reserved };
+  return { benchmark, fetchCalls, reserved, accounts };
 }
 
 test('HTTP variants send the official field order and report what the upstream said and how fast it was', async () => {
@@ -180,42 +183,83 @@ test('the WebSocket variant uses the official handshake and a response.create fr
   assert.deepEqual([result.transport, result.earlyTier, result.actualTier, result.outputTokens], ['websocket', 'auto', 'priority', 600]);
 });
 
-test('the official variants run a turn on the account app-server with the requested speed tier', async () => {
+test('the official variants run a turn on a dedicated app-server with the official codex exec identity', async () => {
   for (const [variant, expectedTier] of [['official-fast', 'priority'], ['official-standard', 'default']]) {
-    const calls = [];
-    let notify;
-    const client = {
-      request: async (method, params) => {
-        calls.push({ method, params });
+    const clients = [];
+    class FakeAppServerClient {
+      constructor(options) {
+        Object.assign(this, { options, calls: [], closed: false });
+        clients.push(this);
+      }
+
+      async start() {
+        return { userAgent: `${this.options.clientInfo.name}/${this.options.clientInfo.version} (Debian 12.0.0; x86_64) unknown (${this.options.clientInfo.name}; ${this.options.clientInfo.version})` };
+      }
+
+      async request(method, params) {
+        this.calls.push({ method, params });
         if (method === 'thread/start') return { thread: { id: 'thread-synthetic' }, model: params.model };
         if (method === 'turn/start') {
           queueMicrotask(() => {
-            notify('item/started', { item: { type: 'reasoning', id: 'r1' } });
-            notify('thread/tokenUsage/updated', { tokenUsage: { total: { inputTokens: 900, cachedInputTokens: 0, outputTokens: 610, reasoningOutputTokens: 25 } } });
-            notify('turn/completed', { turn: { status: 'completed' } });
+            this.notify('item/started', { item: { type: 'reasoning', id: 'r1' } });
+            this.notify('thread/tokenUsage/updated', { tokenUsage: { total: { inputTokens: 900, cachedInputTokens: 0, outputTokens: 610, reasoningOutputTokens: 25 } } });
+            this.notify('turn/completed', { turn: { status: 'completed' } });
           });
           return { turn: { id: 'turn-synthetic' } };
         }
         return {};
-      },
-      subscribeThread: (threadId, handler) => { notify = handler; return () => {}; },
-    };
-    const h = harness({ client });
+      }
+
+      subscribeThread(threadId, handler) { this.notify = handler; return () => {}; }
+
+      close() { this.closed = true; }
+    }
+    const h = harness({ AppServerClientImpl: FakeAppServerClient });
     const res = new ResponseSink();
     await h.benchmark.run(request(), res, 'synthetic-account', { model: 'gpt-6.1-sol', variant });
 
-    const turn = calls.find((call) => call.method === 'turn/start').params;
+    const [client] = clients;
+    // 用官方命令行的身份单独起一个进程，用完就关
+    assert.deepEqual(client.options.clientInfo, { name: 'codex_exec', title: 'Codex Exec', version: '0.170.0' });
+    assert.equal(client.options.codexHome, '/synthetic/synthetic-account/home');
+    assert.deepEqual(client.options.cmd, { command: 'synthetic-codex', prefixArgs: [] });
+    assert.equal(client.closed, true);
+    // 先读模型目录，再开回合
+    assert.deepEqual(client.calls.map((call) => call.method).slice(0, 3), ['model/list', 'thread/start', 'turn/start']);
+    const turn = client.calls.find((call) => call.method === 'turn/start').params;
     assert.equal(turn.serviceTierForTurn, expectedTier);
     assert.equal(turn.effort, 'low');
-    assert.equal(calls.find((call) => call.method === 'thread/start').params.model, 'gpt-6.1-sol');
+    assert.equal(client.calls.find((call) => call.method === 'thread/start').params.model, 'gpt-6.1-sol');
     assert.equal(h.fetchCalls.length, 0);
     const result = res.json;
     assert.equal(result.transport, 'app-server');
     assert.equal(result.outputTokens, 610);
+    assert.equal(result.identity, 'codex_exec/0.170.0 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.170.0)');
     // 官方程序不把上游回报的档位交给调用方
     assert.equal(result.earlyTier, undefined);
     assert.equal(result.actualTier, undefined);
   }
+});
+
+test('the dedicated app-server is closed when the official turn fails, and not started during a Codex upgrade', async () => {
+  const clients = [];
+  class FailingAppServerClient {
+    constructor() { this.closed = false; clients.push(this); }
+    async start() { return { userAgent: 'codex_exec/0.170.0' }; }
+    async request(method) {
+      if (method === 'thread/start') throw Object.assign(new Error('Synthetic app-server failure'), { status: 502 });
+      return {};
+    }
+    close() { this.closed = true; }
+  }
+  const h = harness({ AppServerClientImpl: FailingAppServerClient });
+  await assert.rejects(h.benchmark.run(request(), new ResponseSink(), 'synthetic-account', { model: 'gpt-6.1-sol', variant: 'official-fast' }), /Synthetic app-server failure/);
+  assert.equal(clients.length, 1);
+  assert.equal(clients[0].closed, true);
+
+  h.accounts.suspended = true;
+  await assert.rejects(h.benchmark.run(request(), new ResponseSink(), 'synthetic-account', { model: 'gpt-6.1-sol', variant: 'official-fast' }), { status: 503, code: 'codex_upgrading' });
+  assert.equal(clients.length, 1);
 });
 
 test('invalid input and upstream failures are reported as errors', async () => {
@@ -232,7 +276,7 @@ test('invalid input and upstream failures are reported as errors', async () => {
   await assert.rejects(failed.benchmark.run(request(), new ResponseSink(), 'synthetic-account', { model: 'gpt-6.1-sol', variant: 'native-fast' }),
     { code: 'server_error', message: 'Synthetic upstream error' });
 
-  const noWebSocket = new FastBenchmark({ accounts: ok.benchmark.accounts, proxy: ok.benchmark.proxy, WebSocketImpl: null });
+  const noWebSocket = new FastBenchmark({ accounts: ok.accounts, proxy: ok.benchmark.proxy, WebSocketImpl: null });
   await assert.rejects(noWebSocket.run(request(), new ResponseSink(), 'synthetic-account', { model: 'gpt-6.1-sol', variant: 'native-fast-ws' }), { status: 501 });
 });
 

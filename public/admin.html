@@ -308,9 +308,9 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .fast-bench { margin: 0 20px 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 12.5px; }
 .fast-bench-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
 .fast-bench table { width: 100%; border-collapse: collapse; }
-.fast-bench th, .fast-bench td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.fast-bench th, .fast-bench td { padding: 6px 6px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .fast-bench th { color: var(--muted); font-weight: 550; }
-.fast-bench td.num, .fast-bench th:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+.fast-bench td.num, .fast-bench th:nth-child(2), .fast-bench th:nth-child(3), .fast-bench th:nth-child(5) { text-align: right; font-variant-numeric: tabular-nums; }
 .fast-bench td.bad { color: var(--danger); white-space: normal; }
 .fast-bench-verdict { margin-top: 10px; padding: 9px 12px; border-radius: 8px; line-height: 1.6; font-weight: 550; border: 1px solid var(--border); background: var(--surface); }
 .fast-bench-verdict.ok { border-color: var(--success); }
@@ -1839,10 +1839,12 @@ const fastCheckBusy = new Set();
 
 // Fast 对照测速：同一个账号依次用几种方式各发一次真实请求，比较输出速度（见 src/codex/fastBenchmark.js）。
 const FAST_BENCH_VARIANTS = [
-  ['official-standard', '官方 Codex 程序 · 标准'], ['official-fast', '官方 Codex 程序 · Fast'],
-  ['native-standard', '网关转发（HTTP）· 标准'], ['native-fast', '网关转发（HTTP）· Fast'],
-  ['native-fast-ws', '网关转发（WebSocket）· Fast'],
+  ['official-standard', '官方程序 · 标准'], ['official-fast', '官方程序 · Fast'],
+  ['native-standard', '网关 HTTP · 标准'], ['native-fast', '网关 HTTP · Fast'],
+  ['native-fast-ws', '网关 WebSocket · Fast'],
 ];
+// 每个 Fast 行和哪一行标准速度比
+const FAST_BENCH_BASELINE = { 'official-fast': 'official-standard', 'native-fast': 'native-standard', 'native-fast-ws': 'native-standard' };
 // 开 Fast 后的速度至少要到标准的这么多倍，才算明显变快（单次测速有波动，低于它不下结论）
 const FAST_BENCH_SPEEDUP = 1.25;
 const fastBench = new Map();
@@ -1877,7 +1879,7 @@ function fastBenchVerdict(rows) {
   const times = (r) => (r == null ? '没测出来' : r.toFixed(2) + ' 倍');
   if (official == null) return ['warn', '官方 Codex 程序的两次测速没有都成功，缺少对照，无法下结论。请重新测一次。'];
   if (official < FAST_BENCH_SPEEDUP) {
-    return ['warn', '官方 Codex 程序开 Fast 后的速度是标准的 ' + times(official) + '，没有明显变快：上游没有给这个账号（或这个模型）实际的 Fast 加速。这不是网关转发的问题，改请求也没有用。'];
+    return ['warn', '官方 Codex 程序（官方命令行身份）开 Fast 后的速度是标准的 ' + times(official) + '，没有明显变快：上游没有给这个账号（或这个模型）实际的 Fast 加速。这不是网关转发的问题，改请求也没有用。'];
   }
   if (http != null && http >= FAST_BENCH_SPEEDUP) {
     return ['ok', '官方 Codex 程序开 Fast 快到 ' + times(official) + '，网关转发开 Fast 也快到 ' + times(http) + '：Fast 实际已经生效。上游回报的 default 不能当成没生效的依据。'];
@@ -1893,20 +1895,25 @@ function fastBenchPanel(a) {
   if (!state) return '';
   const tier = (r) => (r.transport === 'app-server' ? '<span class="muted">不可见</span>'
     : esc(r.earlyTier || '未回报') + ' → <b>' + esc(r.actualTier || '未回报') + '</b>');
+  const tpsOf = (variant) => state.rows.find((row) => row.variant === variant)?.result?.tps || null;
   const rows = state.rows.map((row) => {
     const r = row.result;
     if (!r) {
       const note = row.status === 'error' ? esc(row.error) : row.status === 'running' ? '测速中…' : '等待';
-      return '<tr><td>' + esc(row.label) + '</td><td colspan="5" class="' + (row.status === 'error' ? 'bad' : 'muted') + '">' + note + '</td></tr>';
+      return '<tr><td>' + esc(row.label) + '</td><td colspan="4" class="' + (row.status === 'error' ? 'bad' : 'muted') + '">' + note + '</td></tr>';
     }
-    return '<tr><td>' + esc(row.label) + '</td><td>' + tier(r) + '</td><td class="num">' + esc(fmtLatency(r.firstOutputMs)) + '</td><td class="num">' + esc(fmtLatency(r.totalMs))
-      + '</td><td class="num">' + fmtNum(r.outputTokens) + '</td><td class="num"><b>' + esc(fmtTps(r.tps)) + '</b></td></tr>';
+    const baseline = tpsOf(FAST_BENCH_BASELINE[row.variant]);
+    const ratio = r.tps && baseline ? ' <span class="muted">' + (r.tps / baseline).toFixed(2) + '×</span>' : '';
+    return '<tr><td>' + esc(row.label) + '</td><td class="num"><b>' + esc(fmtTps(r.tps)) + '</b>' + ratio + '</td><td class="num">' + esc(fmtLatency(r.firstOutputMs))
+      + '</td><td>' + tier(r) + '</td><td class="num" title="总耗时 ' + esc(fmtLatency(r.totalMs)) + '">' + fmtNum(r.outputTokens) + '</td></tr>';
   }).join('');
+  const identity = state.rows.map((row) => row.result?.identity).find(Boolean);
   const verdict = state.running ? null : fastBenchVerdict(state.rows);
   return '<div class="fast-bench">'
     + '<div class="fast-bench-head"><b>Fast 对照测速 · ' + esc(state.model) + '</b>' + (state.running ? '<span class="muted">进行中，约 1–2 分钟</span>'
       : '<button class="btn sm ghost" data-acc="fast-bench-close" data-id="' + a.id + '">收起</button>') + '</div>'
-    + '<div class="table-wrap"><table><thead><tr><th>方式</th><th title="上游在开场（response.created）和终态（response.completed）回报的 service_tier；官方程序不把它交给调用方">上游回报的档位</th><th>首字</th><th>总耗时</th><th>输出 Tokens</th><th title="输出 Tokens（含推理）÷ 从开始输出到结束的时间">输出速度</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<table><thead><tr><th>方式</th><th title="输出 Tokens（含推理）÷ 从开始输出到结束的时间；Fast 行后面的倍数是相对同一种方式的标准速度">输出速度</th><th>首字</th><th title="上游在开场（response.created）和终态（response.completed）回报的 service_tier；官方程序不把它交给调用方">上游回报</th><th title="鼠标悬停看总耗时">输出 Tokens</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + (identity ? '<div class="quota-reset-note">官方程序这次对上游的身份：<span class="mono">' + esc(identity) + '</span></div>' : '')
     + (verdict ? '<div class="fast-bench-verdict ' + verdict[0] + '">' + esc(verdict[1]) + '</div>' : '')
     + '<div class="quota-reset-note">每一行是一次真实请求（同样的提示词，推理强度 low），会消耗这个账号的额度。单次测速有波动，结论按开 Fast 后速度是否达到标准的 ' + FAST_BENCH_SPEEDUP + ' 倍判断；拿不准时再测一次。</div>'
     + '</div>';

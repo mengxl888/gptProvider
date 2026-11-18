@@ -45,7 +45,7 @@ requestLog.onAttempt = (event) => {
   alerts.record(event);
   if (!event.ok && event.status === 429 && store.getAccount(event.id)) accounts.refreshAfterLimit(event.id);
 };
-const fastBenchmark = new FastBenchmark({ accounts, proxy: accountResponses });
+const fastBenchmark = new FastBenchmark({ accounts, proxy: accountResponses, codex });
 const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, fastBenchmark, alerts, restart };
 
 // 对话类请求：model 是过载后换用的备用模型（null 用请求里的）。第一次解析时记下请求实际要用的模型，

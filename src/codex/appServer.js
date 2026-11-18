@@ -11,8 +11,10 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const STDERR_TAIL_LINES = 40;
 
 export class AppServerClient extends EventEmitter {
-  constructor({ cmd, codexHome, cwd, label }) {
+  // clientInfo 决定这个 app-server 对上游的身份（originator 和 User-Agent 都由它的 name、version 生成），默认是网关自己的名字。
+  constructor({ cmd, codexHome, cwd, label, clientInfo = null }) {
     super();
+    this.clientInfo = clientInfo || { name: CLIENT_NAME, title: 'Codex Local Gateway', version: CLIENT_VERSION };
     this.cmd = cmd;
     this.codexHome = codexHome;
     this.cwd = cwd;
@@ -54,7 +56,7 @@ export class AppServerClient extends EventEmitter {
     child.stdin.on('error', () => {});
 
     this.initializeResult = await this.request('initialize', {
-      clientInfo: { name: CLIENT_NAME, title: 'Codex Local Gateway', version: CLIENT_VERSION },
+      clientInfo: this.clientInfo,
       capabilities: { experimentalApi: false, requestAttestation: false },
     });
     this.#write({ method: 'initialized' });
