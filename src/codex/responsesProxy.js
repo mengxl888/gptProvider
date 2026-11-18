@@ -106,6 +106,9 @@ export class CodexResponsesProxy {
     req.log?.diag?.({ client, input: inputSummary(body, inputItems) });
     linkFollowUp(req.log, threadKey, startedAt, client.turnId, inputItems);
     const diag = { phase: 'auth', handlerMs: ms(), attempts: 0, events: 0, items: 0, bytes: 0 };
+    // 速度档位：客户端要的、按网关设置实际发给上游的、上游回报实际执行的（见下面 actualTier）。
+    // Fast 没生效（发了 priority、上游按 default 跑）时首字会明显变慢，日志里要能直接看出来。
+    diag.tier = { requested: clip(body.service_tier, 20) ?? null, sent: clip(payload.service_tier, 20) ?? null, actual: null };
     let tracker = null;
 
     const abort = new AbortController();
@@ -153,7 +156,7 @@ export class CodexResponsesProxy {
           method: 'POST',
           redirect: 'error',
           signal: abort.signal,
-          headers: this.#headers(req, auth, userAgent),
+          headers: this.#headers(req, auth, userAgent, payload),
           body: JSON.stringify(payload),
         });
         diag.status = upstream.status;
@@ -216,7 +219,10 @@ export class CodexResponsesProxy {
         diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
         const actualTier = tracker.response?.service_tier ?? tracker.initial.service_tier;
-        if (actualTier != null) req.log?.request({ model: payload.model, stream: body.stream, serviceTier: actualTier });
+        if (actualTier != null) {
+          req.log?.request({ model: payload.model, stream: body.stream, serviceTier: actualTier });
+          diag.tier.actual = clip(actualTier, 20);
+        }
         if (tracker.output && diag.firstOutputMs == null) {
           diag.firstOutputMs = ms();
           req.log?.firstToken?.();
@@ -374,7 +380,7 @@ export class CodexResponsesProxy {
     return payload;
   }
 
-  #headers(req, auth, userAgent) {
+  #headers(req, auth, userAgent, payload) {
     const headers = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
@@ -384,6 +390,10 @@ export class CodexResponsesProxy {
       'user-agent': userAgent,
     };
     if (this.codex.version) headers.version = this.codex.version;
+    // 官方客户端直连 Codex 后端时每个请求都带路由提示（codex-rs/core/src/client.rs build_routing_hint_header），
+    // 后端据此按模型和速度档位分流。客户端连网关时不会发这个头，由网关按实际发给上游的模型和档位补上。
+    const routingHint = payload.service_tier ? `model=${payload.model};tier=${payload.service_tier}` : `model=${payload.model}`;
+    if (/^[\x21-\x7e]+$/.test(routingHint)) headers['x-codex-routing-hint'] = routingHint;
     for (const name of REQUEST_HEADERS) {
       if (typeof req.headers[name] === 'string') headers[name] = req.headers[name];
     }

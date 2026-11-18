@@ -2718,6 +2718,7 @@ function logDiagnostics(r) {
     rows.push(['上游时间线', `<div class="small">${joinDot([
       u.handlerMs != null && `开始处理 ${esc(fmtMs(u.handlerMs))}`, u.requestMs != null && `发出请求 ${esc(fmtMs(u.requestMs))}`,
       u.headersMs != null && `上游响应头 ${esc(fmtMs(u.headersMs))}${u.status ? `（HTTP ${esc(u.status)}）` : ''}`,
+      u.firstChunkMs != null && `上游首个事件 ${esc(fmtMs(u.firstChunkMs))}`,
       u.firstOutputMs != null && `首个输出 ${esc(fmtMs(u.firstOutputMs))}`, u.committedMs != null && `发出响应头 ${esc(fmtMs(u.committedMs))}`,
       u.lastEventMs != null && `最后事件 ${esc(fmtMs(u.lastEventMs))}`, u.terminalMs != null && `结束事件 ${esc(fmtMs(u.terminalMs))}`,
     ])}</div><div class="small">${joinDot([
@@ -2725,6 +2726,17 @@ function logDiagnostics(r) {
       `${esc(fmtBytes(u.bytes || 0))}`, u.drainWaits && `等客户端读取 ${esc(u.drainWaits)} 次 / ${esc(fmtMs(u.drainMs))}`,
       u.requestId && `x-request-id <span class="mono">${esc(u.requestId)}</span>`,
     ])}</div><div class="small muted">完成的条目（${fmtNum(u.items)}）：${kindChips(u.itemKinds)}${u.openItem ? ` · 未完成：<span class="mono">${esc(u.openItem)}</span>` : ''}</div>`]);
+  }
+  if (u.tier) {
+    // Fast（priority）发给了上游，但上游回报按别的档位执行：首字和输出速度都会比 Fast 慢
+    const fastMissed = u.tier.sent === 'priority' && u.tier.actual && u.tier.actual !== 'priority';
+    const stripped = (u.tier.requested === 'priority' || u.tier.requested === 'fast') && u.tier.sent !== 'priority';
+    rows.push(['速度档位', `<span class="small">${joinDot([
+      `客户端请求 <span class="mono">${esc(u.tier.requested || '未指定')}</span>`,
+      `发给上游 <span class="mono">${esc(u.tier.sent || '未指定')}</span>`,
+      `上游实际 <span class="mono">${esc(u.tier.actual || '未回报')}</span>`,
+    ])}</span>${fastMissed ? ' <span class="chip warn">Fast 未生效</span><div class="small muted">已向上游请求 Fast，但上游按其他档位执行（账号套餐不含 Fast、Fast 额度用完或上游降级），首字和输出会变慢。</div>'
+      : stripped ? ' <span class="chip warn">Fast 被网关关闭</span><div class="small muted">客户端要了 Fast，但设置里「Codex 速度档位」是「关闭 Fast」，网关没有把它发给上游。</div>' : ''}`]);
   }
   if (d.failedAttempts?.length) rows.push(['失败尝试的时间线', `<pre>${esc(JSON.stringify(d.failedAttempts, null, 2))}</pre>`]);
   if (d.connection) {

@@ -973,3 +973,23 @@ for (const [label, result, code] of [
     await assert.rejects(manager.responsesAuth('synthetic-account'), { code });
   });
 }
+
+test('native requests carry the official routing hint and record requested, sent and actual service tiers', async () => {
+  for (const [settings, requested, sent, hint] of [
+    [{}, 'priority', 'priority', 'model=gpt-6.1-sol;tier=priority'],
+    [{}, 'fast', 'priority', 'model=gpt-6.1-sol;tier=priority'],
+    [{}, undefined, null, 'model=gpt-6.1-sol'],
+    [{ serviceTierMode: 'standard' }, 'priority', null, 'model=gpt-6.1-sol'],
+    [{ serviceTierMode: 'fast' }, undefined, 'priority', 'model=gpt-6.1-sol;tier=priority'],
+  ]) {
+    const req = request();
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    // 上游接受了请求，但回报实际按 default 档位执行
+    const h = harness(async () => upstream(terminalSse(response('completed', { service_tier: 'default' }))), settings);
+    await h.proxy.handle(req, new ResponseSink(), toolBody(requested ? { service_tier: requested } : {}));
+    assert.equal(h.fetchCalls[0][1].headers['x-codex-routing-hint'], hint, `${JSON.stringify(settings)} ${requested}`);
+    assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier ?? null, sent);
+    const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream)?.value.upstream;
+    assert.deepEqual(diag.tier, { requested: requested ?? null, sent, actual: 'default' });
+  }
+});
