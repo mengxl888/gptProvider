@@ -181,8 +181,10 @@ export class CodexResponsesProxy {
         diag.phase = 'connecting';
         diag.attempts++;
         diag.requestMs ??= ms();
-        // 带上这个账号上次拿到的路由 Cookie，让请求落回同一组后端（提示词缓存才能命中），见 routingCookies.js
-        const routing = fastCheck ? { names: [] } : this.routingCookies.get(account.id, RESPONSES_URL);
+        // 路由 Cookie 还会把请求固定到同一组后端，但不同服务档位不能共用一份
+        // Cookie；否则从 default 切到 priority 后，旧的标准档粘性路由可能覆盖 Fast。
+        const routingScope = this.#routingScope(account.id, payload.service_tier);
+        const routing = fastCheck ? { names: [] } : this.routingCookies.get(routingScope, RESPONSES_URL);
         const headers = this.#headers(clientHeaders, auth, userAgent, payload, routing.header);
         diag.wire = {
           originator: headers.originator,
@@ -202,7 +204,7 @@ export class CodexResponsesProxy {
         // 只记 Cookie 名字，不记值；cf-ray 末尾是 Cloudflare 接入点，用来看请求是不是每次落在不同地方
         diag.routing = {
           sent: routing.names,
-          received: fastCheck ? [] : this.routingCookies.store(account.id, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
+          received: fastCheck ? [] : this.routingCookies.store(routingScope, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
           cfRay: clip(upstream.headers.get('cf-ray'), 40),
         };
         if (!fastCheck && upstream.status === 401 && !refreshedAuth) {
@@ -450,6 +452,10 @@ export class CodexResponsesProxy {
       if (typeof clientHeaders[name] === 'string') headers[name] = clientHeaders[name];
     }
     return headers;
+  }
+
+  #routingScope(accountId, serviceTier) {
+    return `${accountId}\0${serviceTier || 'auto'}`;
   }
 }
 

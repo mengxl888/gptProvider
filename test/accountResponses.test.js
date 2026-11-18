@@ -1051,6 +1051,34 @@ test('native requests replay the account routing cookies and send a consistent o
   assert.equal(kept.fetchCalls[0][1].headers.version, '0.169.0-alpha.11.1');
 });
 
+test('native requests isolate routing cookies when switching between standard and Fast', async () => {
+  const responses = [
+    response('completed', { service_tier: 'default' }),
+    response('completed', { service_tier: 'priority' }),
+    response('completed', { service_tier: 'default' }),
+  ];
+  let index = 0;
+  const h = harness(async () => new Response(terminalSse(responses[index++]), { headers: [
+    ['content-type', 'text/event-stream'],
+    ['set-cookie', `${index === 2 ? '__oailb=fast-pool' : '__oailb=standard-pool'}; Path=/; Max-Age=3600`],
+  ] }));
+  const send = async (serviceTier) => {
+    const req = request();
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    await h.proxy.handle(req, new ResponseSink(), toolBody(serviceTier ? { service_tier: serviceTier } : {}));
+    return h.fetchCalls.at(-1)[1].headers.cookie;
+  };
+
+  assert.equal(await send(), undefined);
+  assert.equal(await send('priority'), undefined);
+  assert.equal(await send(), '__oailb=standard-pool');
+
+  const fastRequest = h.fetchCalls[1][1];
+  assert.equal(JSON.parse(fastRequest.body).service_tier, 'priority');
+  assert.equal(fastRequest.headers.cookie, undefined);
+  assert.equal(h.fetchCalls[2][1].headers.cookie, '__oailb=standard-pool');
+});
+
 test('Fast Responses Lite forwards the official wire tier with one consistent client identity', async () => {
   const desktop = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)';
   for (const [userAgentMode, originator, version] of [
