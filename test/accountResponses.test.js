@@ -1030,6 +1030,7 @@ test('native requests replay the account routing cookies and send a consistent o
   assert.deepEqual(first.diag.routing, { sent: [], received: ['__cflb'], cfRay: 'synthetic-LAX' });
   // 改写后的 UA 是 codex_cli_rs，originator 跟它一致；官方客户端带的会话标识头原样转发
   assert.equal(first.sent.originator, 'codex_cli_rs');
+  assert.equal(first.sent.version, '0.165.0');
   assert.match(first.sent['user-agent'], /^codex_cli_rs\//);
   assert.equal(first.sent['x-codex-window-id'], 'thread-1:1');
   assert.equal(first.sent['x-codex-turn-metadata'], '{"turn_id":"t1"}');
@@ -1047,6 +1048,39 @@ test('native requests replay the account routing cookies and send a consistent o
   await kept.proxy.handle(req, new ResponseSink(), toolBody());
   assert.equal(kept.fetchCalls[0][1].headers['user-agent'], desktop);
   assert.equal(kept.fetchCalls[0][1].headers.originator, 'Codex Desktop');
+  assert.equal(kept.fetchCalls[0][1].headers.version, '0.169.0-alpha.11.1');
+});
+
+test('Fast Responses Lite forwards the official wire tier with one consistent client identity', async () => {
+  const desktop = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)';
+  for (const [userAgentMode, originator, version] of [
+    ['always', 'codex_cli_rs', '0.165.0'],
+    ['non_codex', 'Codex Desktop', '0.169.0-alpha.11.1'],
+  ]) {
+    const h = harness(async () => upstream(terminalSse(response('completed', { service_tier: 'default' }))), { userAgentMode });
+    const req = request();
+    Object.assign(req.headers, {
+      'user-agent': desktop,
+      'x-openai-internal-codex-responses-lite': 'true',
+      'x-codex-routing-hint': 'model=wrong;tier=default',
+      version: '99.0.0',
+    });
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    const body = { model: 'gpt-6.1-sol', input: 'Reply OK', reasoning: { effort: 'xhigh' }, service_tier: 'priority', stream: true };
+    assert.equal(needsNativeResponses(body, req.headers), true);
+    await h.proxy.handle(req, new ResponseSink(), body);
+    const [, outgoing] = h.fetchCalls[0];
+    const wire = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream.wire;
+    const routingHint = 'model=gpt-6.1-sol;tier=priority';
+    assert.equal(h.fetchCalls.length, 1);
+    assert.equal(outgoing.headers['x-openai-internal-codex-responses-lite'], 'true');
+    assert.equal(outgoing.headers['x-codex-routing-hint'], routingHint);
+    assert.equal(outgoing.headers.version, version);
+    assert.equal(outgoing.headers.originator, originator);
+    assert.equal(outgoing.headers['user-agent'], userAgentMode === 'always' ? CODEX_DESKTOP_USER_AGENT : desktop);
+    assert.equal(JSON.parse(outgoing.body).service_tier, 'priority');
+    assert.deepEqual(wire, { originator, version, routingHint });
+  }
 });
 
 test('Fast requests record whether the account model catalog offers the priority tier', async () => {

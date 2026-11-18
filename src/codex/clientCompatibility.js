@@ -44,12 +44,12 @@ export const DEFAULT_USER_AGENT_MODE = 'always';
 // 只认官方 Codex 客户端的 UA：必须以官方 originator 开头、紧跟 /版本号（格式见 default_client.rs get_codex_user_agent），
 // 区分大小写。originator 取自 codex 源码：CLI（codex_cli_rs）、codex exec、TUI、VS Code 插件、ChatGPT 桌面端 / Atlas 和 Codex Desktop。
 // 只是包含 codex 字样、大小写不对、或者自称 codex 的第三方客户端都不算，一律改写。
-const CODEX_PRODUCT = /^(codex_cli_rs|codex_exec|codex-tui|codex_vscode|codex_atlas|codex_chatgpt_desktop|Codex Desktop)\/\d+\.\d+\.\d+(?:[-.\w]*)(?: |$)/;
+const CODEX_PRODUCT = /^(codex_cli_rs|codex_exec|codex-tui|codex_vscode|codex_atlas|codex_chatgpt_desktop|Codex Desktop)\/(\d+\.\d+\.\d+[-.\w]*)(?: |$)/;
 
 // 官方客户端的 originator 请求头和 User-Agent 是同一个标识（UA 以 originator 开头，见 default_client.rs default_headers）。
-// 发给上游的 originator 跟着实际发出的 UA 走：官方客户端的 UA 原样保留时用它自己的标识，改写后的 UA 是 codex_cli_rs。
-export function originatorForUserAgent(userAgent) {
-  return CODEX_PRODUCT.exec(String(userAgent ?? ''))?.[1] || 'codex_cli_rs';
+export function codexIdentityForUserAgent(userAgent) {
+  const [, originator = 'codex_cli_rs', version] = CODEX_PRODUCT.exec(String(userAgent ?? '')) || [];
+  return { originator, version };
 }
 
 export function responsesUserAgent(incoming, mode = DEFAULT_USER_AGENT_MODE, target = codexCliUserAgent()) {

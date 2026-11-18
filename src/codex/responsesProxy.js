@@ -6,7 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { affinityKey } from './accountPicker.js';
 import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
-import { codexCliUserAgent, normalizeSystemMessages, originatorForUserAgent, responsesUserAgent } from './clientCompatibility.js';
+import { codexCliUserAgent, codexIdentityForUserAgent, normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
 import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
 import { RoutingCookies } from './routingCookies.js';
 import { applyServiceTierPolicy } from './serviceTier.js';
@@ -160,11 +160,17 @@ export class CodexResponsesProxy {
         diag.requestMs ??= ms();
         // 带上这个账号上次拿到的路由 Cookie，让请求落回同一组后端（提示词缓存才能命中），见 routingCookies.js
         const routing = this.routingCookies.get(account.id, RESPONSES_URL);
+        const headers = this.#headers(req, auth, userAgent, payload, routing.header);
+        diag.wire = {
+          originator: headers.originator,
+          version: clip(headers.version, 40),
+          routingHint: clip(headers['x-codex-routing-hint'], 120),
+        };
         upstream = await this.fetch(RESPONSES_URL, {
           method: 'POST',
           redirect: 'error',
           signal: abort.signal,
-          headers: this.#headers(req, auth, userAgent, payload, routing.header),
+          headers,
           body: JSON.stringify(payload),
         });
         diag.status = upstream.status;
@@ -393,17 +399,17 @@ export class CodexResponsesProxy {
   }
 
   #headers(req, auth, userAgent, payload, cookie) {
+    const { originator, version } = codexIdentityForUserAgent(userAgent);
     const headers = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
       authorization: `Bearer ${auth.accessToken}`,
       'chatgpt-account-id': auth.accountId,
-      // originator 和 User-Agent 是同一个客户端标识，官方客户端两者总是一致
-      originator: originatorForUserAgent(userAgent),
+      originator,
       'user-agent': userAgent,
     };
     if (cookie) headers.cookie = cookie;
-    if (this.codex.version) headers.version = this.codex.version;
+    if (version) headers.version = version;
     // 官方客户端直连 Codex 后端时每个请求都带路由提示（codex-rs/core/src/client.rs build_routing_hint_header），
     // 后端据此按模型和速度档位分流。客户端连网关时不会发这个头，由网关按实际发给上游的模型和档位补上。
     const routingHint = payload.service_tier ? `model=${payload.model};tier=${payload.service_tier}` : `model=${payload.model}`;

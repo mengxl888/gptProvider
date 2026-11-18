@@ -400,10 +400,11 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
   - 这个设置只管原生转发。不走原生转发的对话请求由 codex app-server 发出，UA 由 app-server 决定，日志记录它实际使用的 UA。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道（包括失败后改用 API 上游）转发给上游的 User-Agent 也按这个设置改写。
 - 原生转发按官方 Codex 客户端的方式和账号上游通信，这些直接影响上游的缓存命中和首字时间：
   - **路由 Cookie**：上游（Cloudflare）每个响应都会下发负载均衡的会话粘性 Cookie（`__cflb`、`__oailb` 等）。网关按账号保存并在后续请求带回去，让同一个账号的请求固定落到同一组后端，提示词缓存才能命中；不带的话每个请求都被重新分配，缓存命中很低、首字变慢。只保存 Cloudflare 基础设施 Cookie 和 `__oailb`（白名单同官方客户端），不保存任何账号、会话、登录类 Cookie；只存在内存里，网关重启后每个账号的第一个请求重新建立。
-  - **客户端标识**：`originator` 请求头跟着实际发出的 User-Agent 走（改写后是 `codex_cli_rs`，保留官方客户端的 UA 时用它自己的标识），两者保持一致。
+  - **客户端标识**：`originator` 和 `version` 都跟着实际发出的 User-Agent 走。保留官方 Desktop 的 UA 时不会混用网关 CLI 的版本号。日志详情的「上游时间线」会显示实际发送的客户端标识、版本和路由提示。
   - **路由提示和会话标识**：补发 `x-codex-routing-hint`（按实际发给上游的模型和速度档位生成），并原样转发客户端带来的 `x-codex-window-id`、`x-codex-turn-metadata`、`x-codex-parent-thread-id`、`x-openai-subagent`。
   - 日志详情的「上游时间线」会显示这次请求带回了哪些路由 Cookie（只显示名字）、上游下发了哪些，以及 `cf-ray`（末尾是 Cloudflare 接入点）。
 - **Fast 是否生效**：日志详情的「速度档位」区分客户端请求、网关发送、上游开场和上游终态。发送 `priority` 只代表请求了 Fast；以终态 `service_tier` 为准，终态未回报就标为未确认，费用估算不会把请求档位当实际档位。账号的模型目录只表示有没有列出 Fast，不代表当次请求的额度或降档原因。旧日志没有记录档位来自哪个事件，不能据此确认终态。
+- **Fast 对照排查**：用同一个账号及工作区、同一个模型和推理档位开新会话，用相同的短提示词分别测试「统一改写」和「只改写异常 UA」，看终态档位而不是首字时间。两种都回报 `default` 时，再用同账号同工作区的官方 Codex 直连测试；不要重放已成功输出的请求来追求 Fast。
 - 原生转发将 `input` 中 `system` 消息的角色按原位置转换为 `developer`，保留消息顺序和内容；工具调用、工具结果及其他历史项保持原样。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。

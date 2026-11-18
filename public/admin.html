@@ -2737,7 +2737,11 @@ function logDiagnostics(r) {
       `结果 <span class="mono">${esc(u.end || '—')}</span>`, `尝试 ${esc(u.attempts)} 次`, `事件 ${fmtNum(u.events)} 个`,
       `${esc(fmtBytes(u.bytes || 0))}`, u.drainWaits && `等客户端读取 ${esc(u.drainWaits)} 次 / ${esc(fmtMs(u.drainMs))}`,
       u.requestId && `x-request-id <span class="mono">${esc(u.requestId)}</span>`,
-    ])}</div>${u.routing ? `<div class="small">${joinDot([
+    ])}</div>${u.wire ? `<div class="small">${joinDot([
+      u.wire.originator && `originator <span class="mono">${esc(u.wire.originator)}</span>`,
+      u.wire.version && `version <span class="mono">${esc(u.wire.version)}</span>`,
+      u.wire.routingHint && `路由提示 <span class="mono">${esc(u.wire.routingHint)}</span>`,
+    ])}</div>` : ''}${u.routing ? `<div class="small">${joinDot([
       u.routing.sent?.length ? `路由 Cookie 已带回 <span class="mono">${esc(u.routing.sent.join(' '))}</span>` : '路由 Cookie 未带（这个账号重启后的第一个请求，或已过期）',
       u.routing.received?.length && `上游下发 <span class="mono">${esc(u.routing.received.join(' '))}</span>`,
       u.routing.cfRay && `cf-ray <span class="mono">${esc(u.routing.cfRay)}</span>`,
