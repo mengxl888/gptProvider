@@ -598,7 +598,10 @@ export class AccountManager {
 
   async pickClient(options) {
     const account = await this.reserveAccount(options);
-    return { account, client: await this.getClient(account.id) };
+    const client = await this.getClient(account.id);
+    // app-server 自己发上游请求，UA 由它的 initialize 响应给出；网关不改写这条路径的 UA。
+    options.req?.log?.upstreamRequest?.({ userAgent: client.initializeResult?.userAgent ?? null, userAgentRewritten: false });
+    return { account, client };
   }
 
   // 只向调用方返回本次请求需要的短期令牌；刷新仍由 Codex 的 AuthManager 处理。

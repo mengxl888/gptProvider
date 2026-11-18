@@ -99,7 +99,7 @@ function harness(fetchImpl = async () => upstream()) {
 const toolBody = (extra = {}) => ({ model: 'gpt-6.1-sol', input: 'Run the tool', tools: [{ type: 'function', name: 'ping', parameters: { type: 'object', properties: {} } }], ...extra });
 
 test('non-Codex clients use the exact requested Desktop User-Agent and retain their incoming headers', async () => {
-  const expected = 'Codex Desktop/0.165.0-alpha.1.2 (Windows 10.0.22631; x86_64) unknown (Codex Desktop; 26.1023.51421)';
+  const expected = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)';
   assert.equal(CODEX_DESKTOP_USER_AGENT, expected);
   for (const original of [undefined, '', 'OpenAI/Python 2.0.0', 'OpenAI/JS 6.0.0', 'python-requests/2.32.0', 'CustomCodexClient/1.0', 'my_codex_cli_rs/1.0', 'OpenAI/Python 2.0 codex-compatible']) {
     const req = request();

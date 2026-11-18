@@ -393,7 +393,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 **客户端工具调用**：请求带有 `function`、`custom`、`namespace` 等客户端工具，或 `function_call` / `function_call_output`、`custom_tool_call` / `custom_tool_call_output` 等历史项时，自动改用原生 Responses 转发（账号按[调用策略](#多账号调用策略)选择）。工具定义、调用 ID、工具结果和加密推理项保留原始结构，工具在客户端执行；Codex CLI 可直接使用「Codex 账号」渠道的 Key。
 
 - `input` 含 `additional_tools` 项，或客户端明确发送 `x-openai-internal-codex-responses-lite: true` 时，也走原生转发。客户端提供的 Lite 头会原样透传，缺失时不会自动添加。
-- 原生转发保留 Codex 客户端的 User-Agent；其他客户端使用兼容值 `Codex Desktop/0.165.0-alpha.1.2 (Windows 10.0.22631; x86_64) unknown (Codex Desktop; 26.1023.51421)`。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道保持原有转发行为。
+- 原生转发保留 Codex 客户端的 User-Agent；其他客户端使用官方桌面版的 UA `Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)`（Codex 桌面版 26.1111.21308）。不走原生转发的对话请求由 codex app-server 发出，日志记录它实际使用的 UA。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道保持原有转发行为。
 - 原生转发将 `input` 中 `system` 消息的角色按原位置转换为 `developer`，保留消息顺序和内容；工具调用、工具结果及其他历史项保持原样。
 - 网关向账号上游发送 `store: false`、`stream: true`；下游使用 `stream: true` 时原样接收 SSE，使用 `stream: false` 时汇总最终 Response 为 JSON。
 - 原生转发路径不支持 `previous_response_id`，每次需在 `input` 中带齐对话、模型输出（包括推理项）和对应工具结果；不会把工具结果拼成普通文本。
