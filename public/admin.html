@@ -200,6 +200,7 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .stat .stat-value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
 .stat .stat-value.text { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; line-height: 1.5; }
 .stat .stat-foot { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+#log-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .stat.cost-stat { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 12px 24px; flex-wrap: wrap; }
 .cost-stat .stat-foot { margin-left: auto; }
 .overview-grid { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); align-items: start; }
@@ -458,7 +459,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
 .gate p { margin: 0 0 18px; color: var(--text-2); font-size: 13px; }
 
 /* ---------- responsive ---------- */
-@media (max-width: 1100px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .overview-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1100px) { .stats, #log-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } #log-stats .cache-stat { grid-column: 1 / -1; } .overview-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar { position: sticky; z-index: 10; height: auto; flex-direction: row; align-items: center; padding: 10px 16px; border-right: none; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
@@ -471,7 +472,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
   .setting { flex-direction: column; align-items: stretch; gap: 12px; } .setting .control { justify-content: flex-start; min-width: 0; }
 }
 @media (max-width: 560px) {
-  .stats, .account-grid, .option-grid { grid-template-columns: minmax(0, 1fr); }
+  .stats, #log-stats, .account-grid, .option-grid { grid-template-columns: minmax(0, 1fr); }
   .health { gap: 2px; } .health-axis { margin-right: 0; }
   .account-top { flex-wrap: wrap; } .account-top .title { order: 5; flex: 1 1 100%; }
   .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -628,7 +629,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           </div>
           <div class="log-summary" id="log-summary" hidden></div>
           <div class="table-wrap"><table class="log-table">
-            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th title="首字：从收到请求到模型开始输出&#10;输出 TPS = 输出 Tokens ÷（总耗时 − 首字）">耗时</th><th title="输入 / 输出">Tokens</th><th title="美元估算，包含已记录用量的失败重试">费用（USD）</th><th>错误</th></tr></thead>
+            <thead><tr><th>时间</th><th>状态</th><th>接口</th><th>模型</th><th>账号 / 上游</th><th>来源</th><th title="首字：从收到请求到模型开始输出&#10;输出 TPS = 输出 Tokens ÷（总耗时 − 首字）">耗时</th><th title="输入 / 输出&#10;第二行：缓存命中的输入 Tokens · 命中率（缓存命中 ÷ 输入）">Tokens</th><th title="美元估算，包含已记录用量的失败重试">费用（USD）</th><th>错误</th></tr></thead>
             <tbody id="log-rows"></tbody>
           </table></div>
           <div class="pager"><span id="logs-range"></span><div class="btns"><button class="btn sm" id="logs-prev">上一页</button><button class="btn sm" id="logs-next">下一页</button></div></div>
@@ -1128,6 +1129,12 @@ const fmtShortTime = (t) => {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 };
 const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
+// 缓存命中率 = 缓存命中的输入 Tokens ÷ 输入 Tokens；没有输入用量时没有命中率（显示 —，不当成 0%）
+const cacheRate = (cached, input) => (input > 0 ? Math.min(Math.max(cached || 0, 0), input) / input : null);
+const fmtPct = (ratio) => (ratio == null ? '—' : `${(ratio * 100).toFixed(1)}%`);
+const CACHE_TIP = '缓存命中：上游按缓存计费的输入 Tokens。命中率 = 缓存命中 ÷ 输入 Tokens';
+// 账号 / 上游卡片和健康度卡片里的一行：缓存命中量和命中率
+const cacheStat = (o) => `<span title="${CACHE_TIP}">缓存命中 <b>${fmtNum(o?.cachedTokens)}</b> tokens（<b>${fmtPct(cacheRate(o?.cachedTokens, o?.inputTokens))}</b>）</span>`;
 const fmtMs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 const COST_SCOPE = '按当前价格和已记录用量折算美元，含失败重试；Codex 订阅不代表现金扣款。不含缓存写入、搜索等工具附加费用。';
 function fmtUsd(n) {
@@ -1400,7 +1407,8 @@ function requestBlock(stat) {
     + '<div class="req-gap"></div>'
     + line('最终结果', '这个账号 / 上游收到的请求，客户端最后拿到的结果：在这里结束的，加上在这里失败、转给别的账号或 API 上游之后的结果', stat?.outcome || stat)
     + outcomeSummary(stat?.outcome)
-    + `<div class="cost-note">${costSummaryLabel(stat)} ${costSummaryHtml(stat)} <span class="muted">· ${esc(costCoverage(stat))}</span></div>`;
+    + `<div class="cost-note">${costSummaryLabel(stat)} ${costSummaryHtml(stat)} <span class="muted">· ${esc(costCoverage(stat))}</span></div>`
+    + `<div class="health-meta" style="margin-top:6px"><span>输入 <b>${fmtNum(stat?.inputTokens)}</b> tokens</span>${cacheStat(stat)}</div>`;
 }
 
 function healthCard(o, { title, link, switcher }) {
@@ -1413,7 +1421,7 @@ function healthCard(o, { title, link, switcher }) {
     <div class="health-row">${healthBar(o?.series, true)}<span class="rate ${r.cls}">${r.text}</span></div>
     <div class="health-axis"><span>${esc(windowFrom())}</span><span>${esc(windowUntil())}</span></div>
     <div class="health-meta"><span>平均耗时 <b>${fmtMs(o?.avgMs)}</b></span>
-      <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span><span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
+      <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span>${cacheStat(o)}<span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
       <span>生图 <b>${fmtNum(o?.images)}</b> 张</span><span>${costSummaryLabel(o)} ${costSummaryHtml(o)}</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>
       <div class="cost-note">${esc(costCoverage(o))} · Token 折算美元，Codex 订阅不代表现金扣款。<a href="#settings" data-focus-pricing>模型价格</a></div>`;
 }
@@ -2507,6 +2515,8 @@ function renderLogSummary() {
       `统计 ${fmtNum(s.durationCount)} 条，包含失败和中断的请求；只看成功的请把状态选成「成功」`),
     item('平均输出 TPS', fmtTps(s.avgTps), null,
       `每条请求的输出 Tokens ÷（总耗时 − 首字），再取平均；统计有输出 Tokens 的 ${fmtNum(s.tpsCount)} 条`),
+    item('缓存命中', s.inputTokens ? `${fmtNum(s.cachedTokens)} · ${fmtPct(s.cacheHitRate)}` : '—', null,
+      `${CACHE_TIP}。当前筛选下有输入用量的 ${fmtNum(s.usageCount)} 条：缓存命中 ${fmtNum(s.cachedTokens)} / 输入 ${fmtNum(s.inputTokens)} Tokens`),
   ].join('');
 }
 
@@ -2514,7 +2524,6 @@ function renderLogStats() {
   const o = S.stats?.overall;
   const s = o?.success ?? 0, f = o?.failure ?? 0, a = o?.aborted ?? 0, r = rateInfo(s, f);
   const transfers = transferCounts(o);
-  const cachedPct = o?.inputTokens ? Math.round((o.cachedTokens / o.inputTokens) * 100) : 0;
   const card = (ico, label, value, foot, cls = '') => `<div class="card stat ${cls}">
     <div class="stat-label"><span class="stat-icon">${icon(ico)}</span>${label}</div>
     <div class="stat-value num">${value}</div><div class="stat-foot">${foot}</div></div>`;
@@ -2524,7 +2533,9 @@ function renderLogStats() {
       `<span style="color:var(--success)">成功 ${fmtNum(s)}</span> · <span style="color:var(--danger)">失败 ${fmtNum(f)}</span>${transfers.total > 0 ? transferSummary(o) : ''}`),
     card('clock', '平均耗时', fmtMs(o?.avgMs), '只统计成功的请求'),
     card('zap', 'Tokens', `${fmtNum(o?.inputTokens)}<span style="font-size:14px;color:var(--muted)"> / ${fmtNum(o?.outputTokens)}</span>`,
-      `输入 / 输出 · 缓存命中 ${cachedPct}%`),
+      '输入 / 输出'),
+    card('server', '缓存命中率', fmtPct(cacheRate(o?.cachedTokens, o?.inputTokens)),
+      `<span title="${CACHE_TIP}">缓存命中 ${fmtNum(o?.cachedTokens)} / 输入 ${fmtNum(o?.inputTokens)} tokens</span>`, 'cache-stat'),
     card('zap', `全部请求 · ${costSummaryLabel(o)} · USD`, esc(costSummaryValue(o)), `${esc(costCoverage(o))} · ${windowLabel()}，含失败重试的已记录用量`, 'cost-stat'),
   ].join('');
   $('log-health').innerHTML = healthCard(o, { title: '请求健康度', link: false, switcher: false });
@@ -2621,7 +2632,8 @@ function renderLogRows() {
       <td class="clip" title="${esc(r.account_email || '')}">${esc(r.account_email || '—')}${failoverChip(r)}</td>
       <td>${esc(r.source === 'playground' ? '调试台' : r.api_key_name || 'API')}${r.user_agent_rewritten === 1 ? ' <span class="chip">UA已改写</span>' : ''}</td>
       <td>${latencyCell(r)}</td>
-      <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}`}</td>
+      <td class="num">${r.input_tokens == null ? '—' : `${fmtNum(r.input_tokens)} / ${fmtNum(r.output_tokens)}${r.input_tokens > 0
+        ? `<div class="small muted" title="${CACHE_TIP}">缓存 ${fmtNum(r.cached_tokens)} · ${fmtPct(cacheRate(r.cached_tokens, r.input_tokens))}</div>` : ''}`}</td>
       <td class="num" title="${esc(`${COST_SCOPE}\n${costCoverage(r.costSummary)}`)}">${costSummaryHtml(r.costSummary)}${r.costSummary?.unpricedAttempts || r.costSummary?.partialAttempts ? '<div class="small muted">已计价小计</div>' : ''}</td>
       <td class="err-cell" title="${esc(r.error_message || '')}"><div>${esc(r.error_message || '')}</div></td>
     </tr>`;
@@ -2655,7 +2667,7 @@ function logDetail(r) {
     ['耗时', `首字 ${esc(fmtLatency(r.first_token_ms))} · 总耗时 ${esc(fmtLatency(r.duration_ms))} · 输出 TPS ${esc(fmtTps(r.tps))}
       <div class="small muted">首字从收到请求算到模型开始输出（推理、回答或工具调用），包含之前失败重试的时间；输出 TPS = 输出 Tokens ÷（总耗时 − 首字），没记到首字时除以总耗时</div>`],
     ['Tokens', r.input_tokens == null ? '—'
-      : `输入 ${fmtNum(r.input_tokens)}（缓存 ${fmtNum(r.cached_tokens)}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
+      : `输入 ${fmtNum(r.input_tokens)}（缓存命中 ${fmtNum(r.cached_tokens)}，命中率 ${fmtPct(cacheRate(r.cached_tokens, r.input_tokens))}）· 输出 ${fmtNum(r.output_tokens)}（推理 ${fmtNum(r.reasoning_tokens)}）`],
     ['本次费用估算', costDetails(r.cost)],
     ['请求费用合计', `${costSummaryHtml(r.costSummary, true)}<div class="small muted">${esc(COST_SCOPE)}</div>`],
     ...(r.images ? [['生图', `${r.images} 张`]] : []),

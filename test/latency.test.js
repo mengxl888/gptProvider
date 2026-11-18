@@ -77,6 +77,7 @@ test('the summary averages every request matching the filter, not just the curre
     avgFirstTokenMs: 7000, firstTokenCount: 2,
     avgDurationMs: 10_750, durationCount: 4,
     avgTps: 75, tpsCount: 2,
+    inputTokens: 0, cachedTokens: 0, cacheHitRate: null, usageCount: 0,
   });
 
   const success = log.list({ status: 'success' }).summary;
@@ -87,6 +88,7 @@ test('the summary averages every request matching the filter, not just the curre
 
   assert.deepEqual(log.list({ status: 'retried' }).summary, {
     avgFirstTokenMs: null, firstTokenCount: 0, avgDurationMs: null, durationCount: 0, avgTps: null, tpsCount: 0,
+    inputTokens: 0, cachedTokens: 0, cacheHitRate: null, usageCount: 0,
   });
 });
 

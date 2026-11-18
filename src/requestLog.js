@@ -280,13 +280,16 @@ export class RequestLog {
              AVG(first_token_ms) AS ft, COUNT(first_token_ms) AS ftn,
              AVG(duration_ms) AS d, COUNT(duration_ms) AS dn,
              AVG(CASE WHEN output_tokens > 0 AND gen_ms > 0 THEN output_tokens * 1000.0 / gen_ms END) AS tps,
-             COUNT(CASE WHEN output_tokens > 0 AND gen_ms > 0 THEN 1 END) AS tpsn
-      FROM (SELECT first_token_ms, duration_ms, output_tokens, ${GENERATION_MS_SQL} AS gen_ms FROM requests WHERE ${sql})
+             COUNT(CASE WHEN output_tokens > 0 AND gen_ms > 0 THEN 1 END) AS tpsn,
+             SUM(input_tokens) AS it, SUM(MIN(COALESCE(cached_tokens, 0), input_tokens)) AS ct, COUNT(CASE WHEN input_tokens > 0 THEN 1 END) AS itn
+      FROM (SELECT first_token_ms, duration_ms, input_tokens, cached_tokens, output_tokens, ${GENERATION_MS_SQL} AS gen_ms FROM requests WHERE ${sql})
     `).get(...args);
     const summary = {
       avgFirstTokenMs: agg.ft == null ? null : Math.round(agg.ft), firstTokenCount: agg.ftn,
       avgDurationMs: agg.d == null ? null : Math.round(agg.d), durationCount: agg.dn,
       avgTps: agg.tps, tpsCount: agg.tpsn,
+      // 缓存命中：整个筛选结果里缓存命中的输入 Tokens、输入 Tokens 和两者之比，只统计有输入用量的请求
+      inputTokens: agg.it || 0, cachedTokens: agg.ct || 0, cacheHitRate: cacheHitRate(agg.ct, agg.it), usageCount: agg.itn,
     };
     const data = this.db
       .prepare(`SELECT * FROM requests WHERE ${sql} ORDER BY ts DESC LIMIT ? OFFSET ?`)
@@ -298,7 +301,7 @@ export class RequestLog {
       const previous = (attempts.get(row.id) || []).map((attempt) => ({ ...attempt, cost: estimateCost(attempt, pricing) }));
       const costSummary = emptyCostSummary();
       for (const item of [...previous, { cost }]) addCost(costSummary, item.cost);
-      return { ...row, tps: outputTps(row), cost, costSummary, attempts: previous };
+      return { ...row, tps: outputTps(row), cacheHitRate: cacheHitRate(row.cached_tokens, row.input_tokens), cost, costSummary, attempts: previous };
     }) };
   }
 
@@ -361,8 +364,10 @@ export class RequestLog {
       if (row.account_id) durations[row.account_id] = row.dsum || 0;
     }
     result.overall.avgMs = result.overall.success ? Math.round(durations.overall / result.overall.success) : null;
+    result.overall.cacheHitRate = cacheHitRate(result.overall.cachedTokens, result.overall.inputTokens);
     for (const [id, stats] of Object.entries(result.accounts)) {
       stats.avgMs = stats.success ? Math.round(durations[id] / stats.success) : null;
+      stats.cacheHitRate = cacheHitRate(stats.cachedTokens, stats.inputTokens);
     }
 
     const series = this.db
@@ -475,6 +480,7 @@ function emptyStats() {
     avgMs: null,
     inputTokens: 0,
     cachedTokens: 0,
+    cacheHitRate: null,
     outputTokens: 0,
     images: 0,
     transfers: { account: 0, api: 0, unknown: 0, total: 0 },
@@ -706,6 +712,11 @@ function addCost(summary, cost, count = 1) {
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// 缓存命中率：缓存命中的输入 Tokens ÷ 输入 Tokens（0–1）；没有输入用量时为 null，不当成 0%。
+export function cacheHitRate(cached, input) {
+  return input > 0 ? Math.min(Math.max(cached || 0, 0), input) / input : null;
 }
 
 export function clip(value, max = 80) {
