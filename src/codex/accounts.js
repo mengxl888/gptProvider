@@ -684,6 +684,14 @@ export class AccountManager {
     return this.store.data.modelCatalog[id] || null;
   }
 
+  // 这个账号的模型目录里，该模型带不带这个速度档位（priority 就是 Fast）；没有目录或目录里没有这个模型时返回 null（不知道）。
+  supportsServiceTier(id, model, tier) {
+    const info = this.store.data.modelCatalog[id]?.data?.find((m) => m?.id === model || m?.model === model);
+    if (!info) return null;
+    return (info.serviceTiers || []).some((t) => t?.id === tier)
+      || (tier === 'priority' && (info.additionalSpeedTiers || []).includes('fast'));
+  }
+
   // 与 core/src/tools/spec_plan.rs 的 image_generation_available 一致：Free 套餐不可用。
   supportsImageGeneration(account) {
     return account.planType !== 'free';

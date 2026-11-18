@@ -6,8 +6,9 @@ import { StringDecoder } from 'node:string_decoder';
 import { affinityKey } from './accountPicker.js';
 import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
-import { codexCliUserAgent, normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
+import { codexCliUserAgent, normalizeSystemMessages, originatorForUserAgent, responsesUserAgent } from './clientCompatibility.js';
 import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
+import { RoutingCookies } from './routingCookies.js';
 import { applyServiceTierPolicy } from './serviceTier.js';
 import { DeferredStream, sendJson } from '../http.js';
 import { clip } from '../requestLog.js';
@@ -27,6 +28,8 @@ const REQUEST_HEADERS = [
   'openai-beta', 'idempotency-key', 'session_id', 'conversation_id', 'x-client-request-id',
   'session-id', 'thread-id', 'x-codex-turn-state', 'x-codex-beta-features',
   'x-openai-internal-codex-responses-lite',
+  // 官方客户端随每个请求发的会话标识（core/src/responses_metadata.rs compatibility_headers），原样带给上游
+  'x-codex-window-id', 'x-codex-turn-metadata', 'x-codex-parent-thread-id', 'x-openai-subagent',
 ];
 // 只回传协议需要的头，避免把登录账户、cookie 或其他认证信息交给下游。
 const RESPONSE_HEADERS = [
@@ -75,6 +78,7 @@ export class CodexResponsesProxy {
     this.store = store;
     this.codex = codex;
     this.fetch = fetchImpl;
+    this.routingCookies = new RoutingCookies();
   }
 
   async handle(req, res, body) {
@@ -109,6 +113,11 @@ export class CodexResponsesProxy {
     // 速度档位：客户端要的、按网关设置实际发给上游的、上游回报实际执行的（见下面 actualTier）。
     // Fast 没生效（发了 priority、上游按 default 跑）时首字会明显变慢，日志里要能直接看出来。
     diag.tier = { requested: clip(body.service_tier, 20) ?? null, sent: clip(payload.service_tier, 20) ?? null, actual: null };
+    // 发了 Fast 时记下这个账号本身有没有 Fast：账号的模型目录里该模型不带 priority 档，上游一定会降档，换什么请求头都没用。
+    if (payload.service_tier === 'priority') {
+      diag.tier.accountSupports = this.accounts.supportsServiceTier?.(account.id, payload.model, 'priority') ?? null;
+      diag.tier.plan = clip(account.planType, 20);
+    }
     let tracker = null;
 
     const abort = new AbortController();
@@ -152,16 +161,24 @@ export class CodexResponsesProxy {
         diag.phase = 'connecting';
         diag.attempts++;
         diag.requestMs ??= ms();
+        // 带上这个账号上次拿到的路由 Cookie，让请求落回同一组后端（提示词缓存才能命中），见 routingCookies.js
+        const routing = this.routingCookies.get(account.id, RESPONSES_URL);
         upstream = await this.fetch(RESPONSES_URL, {
           method: 'POST',
           redirect: 'error',
           signal: abort.signal,
-          headers: this.#headers(req, auth, userAgent, payload),
+          headers: this.#headers(req, auth, userAgent, payload, routing.header),
           body: JSON.stringify(payload),
         });
         diag.status = upstream.status;
         diag.requestId = clip(upstream.headers.get('x-request-id'), 80);
         diag.headersMs = ms();
+        // 只记 Cookie 名字，不记值；cf-ray 末尾是 Cloudflare 接入点，用来看请求是不是每次落在不同地方
+        diag.routing = {
+          sent: routing.names,
+          received: this.routingCookies.store(account.id, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
+          cfRay: clip(upstream.headers.get('cf-ray'), 40),
+        };
         if (upstream.status === 401 && !refreshedAuth) {
           refreshedAuth = true;
           await upstream.body?.cancel();
@@ -380,15 +397,17 @@ export class CodexResponsesProxy {
     return payload;
   }
 
-  #headers(req, auth, userAgent, payload) {
+  #headers(req, auth, userAgent, payload, cookie) {
     const headers = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
       authorization: `Bearer ${auth.accessToken}`,
       'chatgpt-account-id': auth.accountId,
-      originator: 'codex_local_gateway',
+      // originator 和 User-Agent 是同一个客户端标识，官方客户端两者总是一致
+      originator: originatorForUserAgent(userAgent),
       'user-agent': userAgent,
     };
+    if (cookie) headers.cookie = cookie;
     if (this.codex.version) headers.version = this.codex.version;
     // 官方客户端直连 Codex 后端时每个请求都带路由提示（codex-rs/core/src/client.rs build_routing_hint_header），
     // 后端据此按模型和速度档位分流。客户端连网关时不会发这个头，由网关按实际发给上游的模型和档位补上。

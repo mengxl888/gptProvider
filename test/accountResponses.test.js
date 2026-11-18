@@ -990,6 +990,59 @@ test('native requests carry the official routing hint and record requested, sent
     assert.equal(h.fetchCalls[0][1].headers['x-codex-routing-hint'], hint, `${JSON.stringify(settings)} ${requested}`);
     assert.equal(JSON.parse(h.fetchCalls[0][1].body).service_tier ?? null, sent);
     const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream)?.value.upstream;
-    assert.deepEqual(diag.tier, { requested: requested ?? null, sent, actual: 'default' });
+    // 发了 Fast 时还会记下账号本身支不支持 Fast（这个测试里的账号没有模型目录，所以是未知）
+    assert.deepEqual(diag.tier, { requested: requested ?? null, sent, actual: 'default', ...(sent === 'priority' ? { accountSupports: null, plan: null } : {}) });
+  }
+});
+
+test('native requests replay the account routing cookies and send a consistent official identity', async () => {
+  const upstreamWithCookies = async () => new Response(terminalSse(), { headers: [
+    ['content-type', 'text/event-stream'], ['cf-ray', 'synthetic-LAX'],
+    ['set-cookie', '__cflb=synthetic-pool; HttpOnly; Secure; Path=/; Max-Age=3600'],
+    ['set-cookie', 'chatgpt_session=SYNTHETIC_SECRET; Path=/'],
+  ] });
+  const h = harness(upstreamWithCookies);
+  const send = async (headers = {}) => {
+    const req = request();
+    Object.assign(req.headers, headers);
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    await h.proxy.handle(req, new ResponseSink(), toolBody());
+    return { sent: h.fetchCalls.at(-1)[1].headers, diag: req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream };
+  };
+
+  const first = await send({ 'user-agent': 'Python-urllib/3.11', 'x-codex-window-id': 'thread-1:1', 'x-codex-turn-metadata': '{"turn_id":"t1"}' });
+  assert.equal(first.sent.cookie, undefined);
+  assert.deepEqual(first.diag.routing, { sent: [], received: ['__cflb'], cfRay: 'synthetic-LAX' });
+  // 改写后的 UA 是 codex_cli_rs，originator 跟它一致；官方客户端带的会话标识头原样转发
+  assert.equal(first.sent.originator, 'codex_cli_rs');
+  assert.match(first.sent['user-agent'], /^codex_cli_rs\//);
+  assert.equal(first.sent['x-codex-window-id'], 'thread-1:1');
+  assert.equal(first.sent['x-codex-turn-metadata'], '{"turn_id":"t1"}');
+
+  const second = await send();
+  assert.equal(second.sent.cookie, '__cflb=synthetic-pool');
+  assert.deepEqual(second.diag.routing.sent, ['__cflb']);
+  assert.doesNotMatch(JSON.stringify([second.sent.cookie, second.diag]), /SYNTHETIC_SECRET/);
+
+  // 保留官方客户端自己的 UA 时，originator 用它自己的标识
+  const desktop = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.1111.21308)';
+  const kept = harness(upstreamWithCookies, { userAgentMode: 'non_codex' });
+  const req = request();
+  req.headers['user-agent'] = desktop;
+  await kept.proxy.handle(req, new ResponseSink(), toolBody());
+  assert.equal(kept.fetchCalls[0][1].headers['user-agent'], desktop);
+  assert.equal(kept.fetchCalls[0][1].headers.originator, 'Codex Desktop');
+});
+
+test('Fast requests record whether the account model catalog offers the priority tier', async () => {
+  for (const [supports, expected] of [[true, true], [false, false], [undefined, null]]) {
+    const req = request();
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    const h = harness(async () => upstream(terminalSse(response('completed', { service_tier: 'default' }))));
+    h.account.planType = 'plus';
+    if (supports !== undefined) h.accounts.supportsServiceTier = (id, model, tier) => (id === 'synthetic-account' && model === 'gpt-6.1-sol' && tier === 'priority' ? supports : null);
+    await h.proxy.handle(req, new ResponseSink(), toolBody({ service_tier: 'priority' }));
+    const diag = req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream;
+    assert.deepEqual(diag.tier, { requested: 'priority', sent: 'priority', actual: 'default', accountSupports: expected, plan: 'plus' });
   }
 });

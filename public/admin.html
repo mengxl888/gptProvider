@@ -2725,7 +2725,11 @@ function logDiagnostics(r) {
       `结果 <span class="mono">${esc(u.end || '—')}</span>`, `尝试 ${esc(u.attempts)} 次`, `事件 ${fmtNum(u.events)} 个`,
       `${esc(fmtBytes(u.bytes || 0))}`, u.drainWaits && `等客户端读取 ${esc(u.drainWaits)} 次 / ${esc(fmtMs(u.drainMs))}`,
       u.requestId && `x-request-id <span class="mono">${esc(u.requestId)}</span>`,
-    ])}</div><div class="small muted">完成的条目（${fmtNum(u.items)}）：${kindChips(u.itemKinds)}${u.openItem ? ` · 未完成：<span class="mono">${esc(u.openItem)}</span>` : ''}</div>`]);
+    ])}</div>${u.routing ? `<div class="small">${joinDot([
+      u.routing.sent?.length ? `路由 Cookie 已带回 <span class="mono">${esc(u.routing.sent.join(' '))}</span>` : '路由 Cookie 未带（这个账号重启后的第一个请求，或已过期）',
+      u.routing.received?.length && `上游下发 <span class="mono">${esc(u.routing.received.join(' '))}</span>`,
+      u.routing.cfRay && `cf-ray <span class="mono">${esc(u.routing.cfRay)}</span>`,
+    ])}</div>` : ''}<div class="small muted">完成的条目（${fmtNum(u.items)}）：${kindChips(u.itemKinds)}${u.openItem ? ` · 未完成：<span class="mono">${esc(u.openItem)}</span>` : ''}</div>`]);
   }
   if (u.tier) {
     // Fast（priority）发给了上游，但上游回报按别的档位执行：首字和输出速度都会比 Fast 慢
@@ -2735,7 +2739,11 @@ function logDiagnostics(r) {
       `客户端请求 <span class="mono">${esc(u.tier.requested || '未指定')}</span>`,
       `发给上游 <span class="mono">${esc(u.tier.sent || '未指定')}</span>`,
       `上游实际 <span class="mono">${esc(u.tier.actual || '未回报')}</span>`,
-    ])}</span>${fastMissed ? ' <span class="chip warn">Fast 未生效</span><div class="small muted">已向上游请求 Fast，但上游按其他档位执行（账号套餐不含 Fast、Fast 额度用完或上游降级），首字和输出会变慢。</div>'
+      u.tier.sent === 'priority' && `账号${u.tier.plan ? `（${esc(u.tier.plan)}）` : ''}${u.tier.accountSupports === true ? '支持 Fast' : u.tier.accountSupports === false ? '<b>不支持 Fast</b>' : '是否支持 Fast 未知'}`,
+    ])}</span>${fastMissed ? ` <span class="chip warn">Fast 未生效</span><div class="small muted">${u.tier.accountSupports === false
+        ? '这个账号的模型目录里，该模型没有 Fast 档，上游一定会按标准速度执行。要用 Fast，需要让请求落到支持 Fast 的账号上。'
+        : u.tier.accountSupports === true ? '账号的模型目录显示支持 Fast，网关也向上游请求了 Fast，但上游仍按其他档位执行（Fast 额度用完或上游降级）。'
+          : '已向上游请求 Fast，但上游按其他档位执行（账号套餐不含 Fast、Fast 额度用完或上游降级）。'}首字和输出会变慢。</div>`
       : stripped ? ' <span class="chip warn">Fast 被网关关闭</span><div class="small muted">客户端要了 Fast，但设置里「Codex 速度档位」是「关闭 Fast」，网关没有把它发给上游。</div>' : ''}`]);
   }
   if (d.failedAttempts?.length) rows.push(['失败尝试的时间线', `<pre>${esc(JSON.stringify(d.failedAttempts, null, 2))}</pre>`]);
