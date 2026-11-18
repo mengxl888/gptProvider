@@ -10,7 +10,7 @@
 - 管理后台：账号和 API 上游管理、额度和请求健康度、调用日志、模型列表、生图图库、调试台、API Key（渠道、每月 Token 上限、本月用量）
 - 账号可以手动停用 / 启用，额度用完自动停用、重置后自动恢复；失败率过高、登录失效、额度快用完等异常发到飞书群机器人
 - Codex 账号渠道：`/v1/chat/completions`、`/v1/responses`（都支持流式，Responses 支持客户端工具调用）、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
-- OpenAI API 渠道：`/v1` 下所有请求原样转发到官方 API，函数调用、Embeddings、音频等都能用；多个 Key 按优先级自动切换
+- OpenAI API 渠道：`/v1` 下请求转发到官方 API，函数调用、Embeddings、音频等都能用；多个 Key 按优先级自动切换
 - 一键更新：GitHub 发布新版本后，在后台点「更新」即可升级，失败自动回退
 - Docker 部署：克隆仓库后一条命令构建并启动，也可以直接用 Node 运行
 
@@ -321,7 +321,7 @@ Docker 部署时，`ALLOWED_HOSTS`、`MAX_REQUEST_BODY_MB`、`GITHUB_PROXY`、`N
 
 ## 接口
 
-下面是 **Codex 账号渠道**的接口。OpenAI API 渠道的 Key 把 `/v1` 下所有请求原样转发到官方 API，见[官方 API Key 渠道](#官方-api-key-渠道)。
+下面是 **Codex 账号渠道**的接口。OpenAI API 渠道的 Key 把 `/v1` 下的请求转发到官方 API，见[官方 API Key 渠道](#官方-api-key-渠道)。
 
 | 接口 | 说明 |
 |---|---|
@@ -418,13 +418,14 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 
 ## 官方 API Key 渠道
 
-在「API 上游」页添加 OpenAI 官方 API Key，再新建一个渠道为「OpenAI API」的下游 Key。用这个 Key 调用 `/v1` 下的任何接口，网关都会**原样转发**到官方 API。除了下面说的流式 Chat 用量处理，请求体和响应（包括流式 SSE）都不做改动：
+在「API 上游」页添加 OpenAI 官方 API Key，再新建一个渠道为「OpenAI API」的下游 Key。用这个 Key 调用 `/v1` 下的接口，网关会转发到配置的 API 上游。除了下面说的 Responses 速度档位和流式 Chat 用量处理，请求体和响应都不做改动：
 
 ```
 客户端 ──/v1/...（sk-local-…）──▶ gptProvider ──/v1/...（你的 sk-proj-…）──▶ api.openai.com
 ```
 
 - **所有官方接口都能用**：Responses 和 Chat 的函数调用、`function_call_output` 回传、结构化输出、`previous_response_id`、Embeddings、音频、图片、文件、`DELETE`/`GET` 等，跟直接调官方一样。multipart 和二进制响应也原样转发。
+- **Responses 速度档位**：`POST /v1/responses`（包括从 Codex 账号渠道回退过来的请求）按「设置 → Codex 速度档位」处理。选「Fast（加速）」时发送 `service_tier: "priority"`；「关闭 Fast」时发送 `"default"`；「按客户端决定」时保留客户端的选择。日志分别显示客户端请求、发给上游和上游终态。只有终态回报 `priority`（或兼容上游的 `fast`）才确认 Fast；未回报时留空，不按 Fast 估算费用。
 - **转发的请求头**：`Content-Type`、`Accept`、`OpenAI-Beta`、`User-Agent`、`Idempotency-Key`。其中 `User-Agent` 按设置页「User-Agent 改写」处理：默认统一改成网关里安装的 Codex 的 UA，也可以选只改写非 Codex 客户端的 UA。`Authorization` 换成上游的 Key，上游配了 Organization / Project 时带上对应的头。响应会去掉 `openai-organization`、`openai-project`、`set-cookie` 等头，不把上游账户信息透露给下游。
 - **多个上游**：按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个；出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
 - **用量和额度**：从响应的 `usage` 里记 token，流式响应边转发边解析。流式 Chat 请求没带 `stream_options.include_usage` 时，网关会替客户端加上，再把多出来的用量块从回给客户端的流里去掉，所以 token 照样能记上。下游 Key 可以设置**每月 Token 上限**（本自然月的输入 + 输出），到了上限返回 429 `insufficient_quota`，Codex CLI 遇到这个错误会直接停止，不会反复重试。
@@ -446,7 +447,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 - **原生 Responses 非流式请求**：账号上游返回 `status: failed` 时按错误返回（HTTP 状态和错误码取自上游），以便换账号或交给 API 上游。
 - **会话**：换账号只影响这一次请求，同一会话的下一个请求仍然先用它固定的账号。换备用模型也只影响这一次请求，下一个请求仍然先用请求里的模型。
 - **备用模型的注意事项**：备用模型最好选当前账号模型列表里有的模型（不在列表里的会标黄提示）；备用模型不支持请求里的推理强度等参数时会返回 4xx，按普通失败处理（换账号、用回请求的模型）。日志「模型」列显示最后实际请求的模型，换过备用模型的带「备用」标签，展开的「请求过程」里列出每次尝试用的模型。
-- **转给 API 上游时请求怎么改**：原始请求体原样转发，只做两处调整：没写 `model` 时补上默认模型；Responses 的 `input` 里带 `encrypted_content` 的推理项会去掉（它们是 ChatGPT 后端加密的，官方 API 解不开），对话、工具调用和工具结果都保留。
+- **转给 API 上游时请求怎么改**：没写 `model` 时补上默认模型；Responses 的 `input` 里带 `encrypted_content` 的推理项会去掉（它们是 ChatGPT 后端加密的，官方 API 解不开），速度档位按 API 上游的 Responses 规则处理。对话、工具调用和工具结果都保留。
 - **日志**：重试过的请求在「账号 / 上游」列显示最后用的账号或上游，并标「已换账号」或「已切换上游」；展开能看到每一次失败的尝试（哪个账号、什么错误）。状态、耗时和 Token 记的是最终结果；账号卡片的「最终结果」把在这个账号上失败、转走的请求按转走之后的结果算，具体被哪个账号或上游救回来要在日志里看。
 - **费用**：换账号用的是订阅额度，不额外计费；API 上游按 API 用量计在上游 Key 所属的账户上。同一个会话切到 API 上游后，后续请求如果带回了官方 API 加密的推理项，账号上游可能不认，会继续走 API 上游。
 

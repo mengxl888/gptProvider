@@ -179,7 +179,7 @@ async function fallbackToUpstream(req, res, url, raw, name, err) {
   return upstreams.proxy(req, res, { subPath: url.pathname.slice('/v1'.length), search: url.search, body });
 }
 
-// OpenAI API 渠道：/v1 下所有请求原样转发给官方 API Key 上游，包括工具调用和流式输出。
+// OpenAI API 渠道：/v1 下的请求转发给 API Key 上游，包括工具调用和流式输出。
 async function proxyToUpstream(req, res, url, keyRecord) {
   const subPath = url.pathname.slice('/v1'.length);
   const options = { subPath, search: url.search };

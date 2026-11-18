@@ -1,4 +1,4 @@
-// 官方 OpenAI API Key 上游。绑定到「OpenAI API」渠道的下游 Key，/v1/* 请求原样转发到这里：
+// 官方 OpenAI API Key 上游。绑定到「OpenAI API」渠道的下游 Key，/v1/* 请求转发到这里：
 // Responses、工具调用、Embeddings 等都由官方 API 处理，外部 Codex CLI 也能正常用。
 // 按优先级从高到低使用，同优先级轮流分摊；遇到 401/403/429/5xx 或网络错误自动换下一个，
 // 出错的上游冷却一段时间排到最后。只在还没开始回写响应时才换，流式输出开始后不会重发。
@@ -11,6 +11,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { httpError } from './codex/accounts.js';
 import { isOutputEvent } from './codex/responsesProxy.js';
 import { codexCliUserAgent, responsesUserAgent } from './codex/clientCompatibility.js';
+import { applyServiceTierPolicy } from './codex/serviceTier.js';
+import { clip } from './requestLog.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
@@ -149,7 +151,15 @@ export class UpstreamManager {
       throw httpError(503, '还没有可用的 OpenAI API Key 上游，请在后台「API 上游」页添加', 'no_upstream');
     }
     const json = parseJsonRequest(req, body);
-    req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: json?.service_tier ?? 'default' });
+    let tier;
+    if (json && req.method === 'POST' && (subPath === '/responses' || subPath === '/responses/')) {
+      const payload = applyServiceTierPolicy(json, this.store.data.settings?.serviceTierMode, { explicitStandard: true });
+      if (payload.service_tier !== json.service_tier) body = Buffer.from(JSON.stringify(payload));
+      tier = { requested: clipTier(json.service_tier), sent: clipTier(payload.service_tier), early: null, actual: null };
+      req.log?.diag?.({ apiUpstreamTier: { ...tier } });
+    }
+    const initialTier = tier ? null : json?.service_tier ?? 'default';
+    req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: initialTier });
     // 和 Codex 账号渠道的原生转发一样，按设置页「User-Agent 改写」处理发给上游的 UA
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings?.userAgentMode, codexCliUserAgent(this.codex?.version));
     req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted: 0 });
@@ -167,7 +177,7 @@ export class UpstreamManager {
       const upstream = list[i];
       const isLast = i === list.length - 1;
       req.log?.account({ id: upstream.id, label: upstream.label });
-      req.log?.request({ serviceTier: json?.service_tier ?? 'default' });
+      req.log?.request({ serviceTier: initialTier });
       let upstreamRes;
       try {
         upstreamRes = await send(upstream, req.method, subPath + (search || ''), body, headers, res);
@@ -185,17 +195,17 @@ export class UpstreamManager {
         const info = parseJsonBody(Buffer.from(text));
         if (info.model) req.log?.resolvedModel(info.model);
         if (info.usage) req.log?.usage(info.usage);
-        if (info.serviceTier != null) req.log?.request({ serviceTier: info.serviceTier });
+        if (!tier && info.serviceTier != null) req.log?.request({ serviceTier: info.serviceTier });
         this.#fail(upstream, upstreamRes.statusCode, errorMessage(text, upstreamRes.statusCode), upstreamRes.headers);
         req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, upstream.lastError, 'upstream_error'));
         continue;
       }
-      return this.#relay(upstream, upstreamRes, res, req.log, stripUsageChunk);
+      return this.#relay(upstream, upstreamRes, res, req.log, stripUsageChunk, tier);
     }
   }
 
   // 把上游响应原样回写给下游，同时从里面取出用量、模型和错误用于日志
-  async #relay(upstream, upstreamRes, res, log, stripUsageChunk) {
+  async #relay(upstream, upstreamRes, res, log, stripUsageChunk, tier) {
     if (res.destroyed) {
       upstreamRes.destroy();
       throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
@@ -227,7 +237,8 @@ export class UpstreamManager {
           const info = tracker.result();
           if (info.output) log?.firstToken?.();
           if (info.model) log?.resolvedModel(info.model);
-          if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
+          if (tier) recordResponsesTier(log, tier, info.earlyTier, info.terminalTier);
+          else if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
           if (info.usage) log?.usage(info.usage);
           forward(filter ? filter.push(text) : chunk);
         } else {
@@ -259,7 +270,12 @@ export class UpstreamManager {
     log?.resolvedModel(info.model);
     log?.usage(info.usage);
     if (info.images != null) log?.images(info.images);
-    if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
+    if (tier) {
+      if (!tracker && status < 300 && !info.error) {
+        const pending = info.responseStatus === 'queued' || info.responseStatus === 'in_progress';
+        recordResponsesTier(log, tier, pending ? info.serviceTier : null, pending ? null : info.serviceTier);
+      }
+    } else if (info.serviceTier != null) log?.request({ serviceTier: info.serviceTier });
     if (status >= 400 || info.error) {
       const err = new Error(info.error || `上游返回 HTTP ${status}`);
       err.status = status >= 400 ? status : 502;
@@ -341,7 +357,7 @@ class SseTracker {
   constructor() {
     this.decoder = new StringDecoder('utf8');
     this.buffer = '';
-    this.info = { model: null, usage: null, serviceTier: null, error: null, errorCode: null, output: false };
+    this.info = { model: null, usage: null, serviceTier: null, earlyTier: null, terminalTier: null, error: null, errorCode: null, output: false };
   }
 
   // 返回这一块解码后的文本，过滤用量块时要用
@@ -365,7 +381,10 @@ class SseTracker {
   #take(event) {
     this.info.output ||= isOutputEvent(event) || hasChatOutput(event);
     this.info.model ||= event.model || event.response?.model || null;
-    this.info.serviceTier = event.service_tier ?? event.response?.service_tier ?? this.info.serviceTier;
+    const tier = event.response?.service_tier ?? event.service_tier;
+    this.info.serviceTier = tier ?? this.info.serviceTier;
+    if (event.type === 'response.created') this.info.earlyTier = tier;
+    if (['response.completed', 'response.incomplete', 'response.failed'].includes(event.type)) this.info.terminalTier = tier;
     const usage = toUsage(event.usage || event.response?.usage);
     if (usage) this.info.usage = usage;
     const error = event.error || (event.type === 'response.failed' ? event.response?.error : null);
@@ -432,6 +451,7 @@ function parseJsonBody(buf) {
     return {
       model: json.model || json.response?.model || null,
       serviceTier: json.service_tier ?? json.response?.service_tier ?? null,
+      responseStatus: json.response?.status ?? json.status ?? null,
       usage: toUsage(json.usage || json.response?.usage),
       images: images || null,
       error: json.error?.message || null,
@@ -440,6 +460,18 @@ function parseJsonBody(buf) {
   } catch {
     return {};
   }
+}
+
+function clipTier(value) {
+  return typeof value === 'string' ? clip(value, 20) : null;
+}
+
+function recordResponsesTier(log, tier, early, actual) {
+  const next = { early: clipTier(early), actual: clipTier(actual) };
+  if (tier.early === next.early && tier.actual === next.actual) return;
+  Object.assign(tier, next);
+  log?.request({ serviceTier: tier.actual });
+  log?.diag?.({ apiUpstreamTier: { ...tier } });
 }
 
 // Chat（prompt/completion）和 Responses（input/output）两种用量格式统一成日志用的字段

@@ -17,14 +17,14 @@ export function forcedServiceTier(mode) {
   }
 }
 
-export function applyServiceTierPolicy(body, mode) {
+export function applyServiceTierPolicy(body, mode, { explicitStandard = false } = {}) {
   const normalized = normalizeServiceTierMode(mode);
   if (normalized === 'client') {
     if (body.service_tier === 'fast') return { ...body, service_tier: 'priority' };
     return body;
   }
   const payload = { ...body, service_tier: forcedServiceTier(normalized) };
-  if (normalized === 'standard') delete payload.service_tier;
+  if (normalized === 'standard' && !explicitStandard) delete payload.service_tier;
   return payload;
 }
 

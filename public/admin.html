@@ -827,7 +827,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><select id="set-model" class="select" style="width:240px"></select></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>Codex 速度档位</b><span>Fast（加速）会按模型规则消耗更多额度；按客户端决定时保留客户端的选择。</span></div>
+            <div class="desc"><b>Codex 速度档位</b><span>适用于 Codex 账号渠道和 API 上游的 Responses 请求。Fast（加速）可能增加用量或费用，实际档位由上游决定。</span></div>
             <div class="control"><div class="segmented" id="set-service-tier">
               <button data-v="client">按客户端决定</button><button data-v="fast">Fast（加速）</button><button data-v="standard">关闭 Fast</button></div></div>
           </div>
@@ -2763,23 +2763,25 @@ function logDiagnostics(r) {
       u.routing.cfRay && `cf-ray <span class="mono">${esc(u.routing.cfRay)}</span>`,
     ])}</div>` : ''}<div class="small muted">完成的条目（${fmtNum(u.items)}）：${kindChips(u.itemKinds)}${u.openItem ? ` · 未完成：<span class="mono">${esc(u.openItem)}</span>` : ''}</div>`]);
   }
-  if (u.tier) {
+  const tier = d.apiUpstreamTier || u.tier;
+  if (tier) {
     const isFast = (tier) => tier === 'priority' || tier === 'fast';
-    const hasTierStages = Object.hasOwn(u.tier, 'early');
-    const fastSent = isFast(u.tier.sent);
-    const fastMissed = fastSent && hasTierStages && u.tier.actual && !isFast(u.tier.actual);
-    const stripped = isFast(u.tier.requested) && !fastSent;
+    const hasTierStages = Object.hasOwn(tier, 'early');
+    const fastSent = isFast(tier.sent);
+    const fastConfirmed = hasTierStages && isFast(tier.actual);
+    const fastMissed = fastSent && hasTierStages && tier.actual && !isFast(tier.actual);
+    const stripped = isFast(tier.requested) && !fastSent;
     rows.push(['速度档位', `<span class="small">${joinDot([
-      `客户端请求 <span class="mono">${esc(u.tier.requested || '未指定')}</span>`,
-      `发给上游 <span class="mono">${esc(u.tier.sent || '未指定')}</span>`,
-      u.tier.early && `上游开场 <span class="mono">${esc(u.tier.early)}</span>`,
-      `${hasTierStages ? '上游终态' : '上游回报（旧日志，阶段未记录）'} <span class="mono">${esc(u.tier.actual || '未回报')}</span>`,
-      fastSent && `账号${u.tier.plan ? `（${esc(u.tier.plan)}）` : ''}模型目录${u.tier.accountSupports === true ? '列出 Fast' : u.tier.accountSupports === false ? '未列出 Fast' : '未知是否列出 Fast'}`,
-    ])}</span>${fastMissed ? ` <span class="chip warn">Fast 未生效</span><div class="small muted">${u.tier.accountSupports === false
+      `客户端请求 <span class="mono">${esc(tier.requested || '未指定')}</span>`,
+      `发给上游 <span class="mono">${esc(tier.sent || '未指定')}</span>`,
+      tier.early && `上游开场 <span class="mono">${esc(tier.early)}</span>`,
+      `${hasTierStages ? '上游终态' : '上游回报（旧日志，阶段未记录）'} <span class="mono">${esc(tier.actual || '未回报')}</span>`,
+      fastSent && !d.apiUpstreamTier && `账号${tier.plan ? `（${esc(tier.plan)}）` : ''}模型目录${tier.accountSupports === true ? '列出 Fast' : tier.accountSupports === false ? '未列出 Fast' : '未知是否列出 Fast'}`,
+    ])}</span>${fastConfirmed ? ' <span class="chip on">Fast 已确认</span>' : fastMissed ? ` <span class="chip warn">Fast 未生效</span><div class="small muted">${tier.accountSupports === false
         ? '已向上游请求 Fast，但终态回报其他档位。该账号的模型目录未列出 Fast，请核对模型和账号。'
-        : '已向上游请求 Fast，但终态回报其他档位。上游未提供原因，模型目录也不能证明本次可用额度。'}</div>`
-      : fastSent && (!hasTierStages || !u.tier.actual) ? ' <span class="chip warn">Fast 未确认</span><div class="small muted">已向上游请求 Fast，但日志没有可确认的终态档位。</div>'
-      : stripped ? ' <span class="chip warn">Fast 被网关关闭</span><div class="small muted">客户端要了 Fast，但设置里「Codex 速度档位」是「关闭 Fast」，网关没有把它发给上游。</div>' : ''}`]);
+        : '已向上游请求 Fast，但终态回报其他档位。上游未提供原因。'}</div>`
+      : fastSent && (!hasTierStages || !tier.actual) ? ' <span class="chip warn">Fast 未确认</span><div class="small muted">已向上游请求 Fast，但日志没有可确认的终态档位。</div>'
+      : stripped ? ' <span class="chip warn">Fast 被网关关闭</span><div class="small muted">客户端要了 Fast，但设置里「Codex 速度档位」是「关闭 Fast」，网关没有请求 Fast。</div>' : ''}`]);
   }
   if (d.failedAttempts?.length) rows.push(['失败尝试的时间线', `<pre>${esc(JSON.stringify(d.failedAttempts, null, 2))}</pre>`]);
   if (d.connection) {
