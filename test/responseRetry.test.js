@@ -5,7 +5,7 @@ import test from 'node:test';
 
 import { CodexResponsesProxy } from '../src/codex/responsesProxy.js';
 import { overloadRetryDelay, responseErrorStatus } from '../src/codex/responseRetry.js';
-import { CODEX_DESKTOP_USER_AGENT } from '../src/codex/clientCompatibility.js';
+import { codexCliUserAgent } from '../src/codex/clientCompatibility.js';
 
 class Sink extends Writable {
   constructor() {
@@ -84,7 +84,7 @@ test('an HTTP overload retries once before output with stable payload, account a
   const payload = JSON.parse(h.calls[1].options.body);
   assert.equal(payload.input[0].role, 'developer');
   assert.equal(h.body.input[0].role, 'system');
-  for (const call of h.calls) assert.equal(call.options.headers['user-agent'], CODEX_DESKTOP_USER_AGENT);
+  for (const call of h.calls) assert.equal(call.options.headers['user-agent'], codexCliUserAgent('0.165.0'));
   assert.equal(h.metadata.length, 2);
   assert.equal(h.failures.length, 0);
   assert.equal(h.res.statusCode, 200);

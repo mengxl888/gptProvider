@@ -6,7 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { affinityKey } from './accountPicker.js';
 import { httpError } from './accounts.js';
 import { readResponseError } from './responseErrors.js';
-import { normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
+import { codexCliUserAgent, normalizeSystemMessages, responsesUserAgent } from './clientCompatibility.js';
 import { isOverloaded, responseErrorStatus, waitForOverloadRetry } from './responseRetry.js';
 import { applyServiceTierPolicy } from './serviceTier.js';
 import { DeferredStream, sendJson } from '../http.js';
@@ -86,7 +86,7 @@ export class CodexResponsesProxy {
       this.store.data.settings.serviceTierMode,
     );
     req.log?.request({ model: payload.model, stream: body.stream, serviceTier: payload.service_tier ?? 'default' });
-    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode);
+    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings.userAgentMode, codexCliUserAgent(this.codex.version));
     if (body.max_output_tokens != null) {
       // 账号后端不接受这个字段。兼容客户端默认值，但不伪装成已经实施硬性 token 上限。
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');

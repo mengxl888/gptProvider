@@ -3,7 +3,9 @@ import http from 'node:http';
 import { Writable } from 'node:stream';
 import test from 'node:test';
 
-import { CODEX_DESKTOP_USER_AGENT } from '../src/codex/clientCompatibility.js';
+import { codexCliUserAgent, observeAppServerUserAgent } from '../src/codex/clientCompatibility.js';
+
+const CODEX_DESKTOP_USER_AGENT = codexCliUserAgent('0.170.1');
 import { UpstreamManager } from '../src/upstreams.js';
 
 class Sink extends Writable {
@@ -38,9 +40,18 @@ test('API upstream requests rewrite the User-Agent according to userAgentMode', 
     const logged = [];
     const log = { request() {}, account() {}, resolvedModel() {}, usage() {}, images() {}, fail() {}, upstreamRequest: (v) => logged.push(v) };
     const req = { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': incoming }, log };
-    await new UpstreamManager({ store }).proxy(req, new Sink(), { subPath: '/responses', body: Buffer.from('{"model":"m"}') });
+    await new UpstreamManager({ store, codex: { version: '0.170.1' } }).proxy(req, new Sink(), { subPath: '/responses', body: Buffer.from('{"model":"m"}') });
     assert.equal(seen.at(-1), expected, `${mode} ${incoming}`);
     assert.equal(req.headers['user-agent'], incoming);
     assert.deepEqual(logged, [{ userAgent: expected, userAgentRewritten: expected !== incoming, systemMessagesConverted: 0 }]);
   }
+});
+
+// 放在最后：observe 会改掉模块里记住的系统信息。
+test('the platform part comes from the User-Agent app-server reports once one has started', () => {
+  observeAppServerUserAgent('not a codex ua');
+  assert.equal(codexCliUserAgent('0.170.1'), CODEX_DESKTOP_USER_AGENT);
+  observeAppServerUserAgent('codex_local_gateway/0.170.0 (Debian 12.0.0; x86_64) unknown (codex_local_gateway; 0.1.0)');
+  assert.equal(codexCliUserAgent('0.170.0'), 'codex_cli_rs/0.170.0 (Debian 12.0.0; x86_64) unknown');
+  assert.equal(codexCliUserAgent('0.171.0'), 'codex_cli_rs/0.171.0 (Debian 12.0.0; x86_64) unknown');
 });

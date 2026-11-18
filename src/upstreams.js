@@ -10,7 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './codex/accounts.js';
 import { isOutputEvent } from './codex/responsesProxy.js';
-import { responsesUserAgent } from './codex/clientCompatibility.js';
+import { codexCliUserAgent, responsesUserAgent } from './codex/clientCompatibility.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
@@ -28,8 +28,9 @@ export class UpstreamManager {
   #cooldown = new Map();
   #turn = 0;
 
-  constructor({ store }) {
+  constructor({ store, codex }) {
     this.store = store;
+    this.codex = codex;
   }
 
   get records() {
@@ -150,7 +151,7 @@ export class UpstreamManager {
     const json = parseJsonRequest(req, body);
     req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: json?.service_tier ?? 'default' });
     // 和 Codex 账号渠道的原生转发一样，按设置页「User-Agent 改写」处理发给上游的 UA
-    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings?.userAgentMode);
+    const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings?.userAgentMode, codexCliUserAgent(this.codex?.version));
     req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted: 0 });
     const headers = { ...req.headers, 'user-agent': userAgent };
 

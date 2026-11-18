@@ -6,7 +6,7 @@ import test from 'node:test';
 import { AccountManager } from '../src/codex/accounts.js';
 import { CodexResponsesProxy, needsNativeResponses } from '../src/codex/responsesProxy.js';
 import { MAX_ERROR_BODY_BYTES } from '../src/codex/responseErrors.js';
-import { CODEX_DESKTOP_USER_AGENT, normalizeSystemMessages, responsesUserAgent } from '../src/codex/clientCompatibility.js';
+import { codexCliUserAgent, normalizeSystemMessages, responsesUserAgent } from '../src/codex/clientCompatibility.js';
 import { handleResponses } from '../src/openai/responses.js';
 import { withLog } from '../src/requestLog.js';
 
@@ -96,11 +96,19 @@ function harness(fetchImpl = async () => upstream(), settings = {}) {
   return { proxy, accounts, account, authCalls, fetchCalls };
 }
 
+// harness 里安装的 Codex 版本是 0.165.0
+const CODEX_DESKTOP_USER_AGENT = codexCliUserAgent('0.165.0');
+
 const toolBody = (extra = {}) => ({ model: 'gpt-6.1-sol', input: 'Run the tool', tools: [{ type: 'function', name: 'ping', parameters: { type: 'object', properties: {} } }], ...extra });
 
-test('non-Codex clients use the exact requested Desktop User-Agent and retain their incoming headers', async () => {
-  const expected = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)';
-  assert.equal(CODEX_DESKTOP_USER_AGENT, expected);
+test('the rewritten User-Agent follows the installed Codex version and the platform app-server reports', () => {
+  assert.match(codexCliUserAgent('0.170.0'), /^codex_cli_rs\/0\.170\.0 \([^()]+; [^()]+\) unknown$/);
+  assert.match(codexCliUserAgent(null), /^codex_cli_rs\/\d+\.\d+\.\d+ \(/);
+});
+
+test('non-Codex clients use the installed Codex CLI User-Agent and retain their incoming headers', async () => {
+  const expected = CODEX_DESKTOP_USER_AGENT;
+  assert.match(expected, /^codex_cli_rs\/0\.165\.0 \(/);
   for (const original of [undefined, '', 'OpenAI/Python 2.0.0', 'OpenAI/JS 6.0.0', 'python-requests/2.32.0', 'CustomCodexClient/1.0', 'my_codex_cli_rs/1.0', 'OpenAI/Python 2.0 codex-compatible']) {
     const req = request();
     if (original !== undefined) req.headers['user-agent'] = original;
@@ -130,7 +138,7 @@ test('non_codex mode rewrites everything that is not an official Codex client Us
     'Codex/0.165.0', 'codex_cli_rs', 'codex_cli_rs/abc', 'my codex_cli_rs/0.165.0', 'Mozilla/5.0 (codex_cli_rs/0.165.0)',
     'Codex Desktopx/0.165.0', 'codex_cli_rs/0.165.0/extra',
   ]) {
-    assert.deepEqual(responsesUserAgent(original, 'non_codex'), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: true }, String(original));
+    assert.deepEqual(responsesUserAgent(original, 'non_codex', CODEX_DESKTOP_USER_AGENT), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: true }, String(original));
   }
 });
 
@@ -164,7 +172,7 @@ test('always mode (the default) rewrites every User-Agent, Codex clients include
     }
   }
   // 已经是这个 UA 的请求不算改写
-  assert.deepEqual(responsesUserAgent(CODEX_DESKTOP_USER_AGENT), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: false });
+  assert.deepEqual(responsesUserAgent(CODEX_DESKTOP_USER_AGENT, 'always', CODEX_DESKTOP_USER_AGENT), { userAgent: CODEX_DESKTOP_USER_AGENT, userAgentRewritten: false });
 });
 
 test('native system messages become developer messages without mutating content, tools, typed history or ordering', async () => {

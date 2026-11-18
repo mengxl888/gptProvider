@@ -12,6 +12,7 @@ import path from 'node:path';
 import { AccountPicker, accountUsable, accountWeight, limitExhausted } from './accountPicker.js';
 import { AccountQueue } from './accountQueue.js';
 import { AppServerClient } from './appServer.js';
+import { observeAppServerUserAgent } from './clientCompatibility.js';
 import { configServiceTier } from './serviceTier.js';
 
 // 网关只做对话和生图：关闭会让 Codex 动本机环境或调用额外服务的工具。
@@ -197,7 +198,7 @@ export class AccountManager {
     });
     client.on('notification', (method, params) => this.#onNotification(id, method, params));
     try {
-      await client.start();
+      observeAppServerUserAgent((await client.start())?.userAgent);
     } catch (err) {
       this.clients.delete(id);
       client.close();

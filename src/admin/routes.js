@@ -8,7 +8,7 @@ import { handleChatCompletions } from '../openai/chat.js';
 import { IMAGE_MODEL_ID, IMAGE_MODEL_IDS, handleImageGenerations } from '../openai/images.js';
 import { MAX_EXPORT_ROWS, withLog } from '../requestLog.js';
 import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
-import { CODEX_DESKTOP_USER_AGENT, USER_AGENT_MODES } from '../codex/clientCompatibility.js';
+import { USER_AGENT_MODES, codexCliUserAgent } from '../codex/clientCompatibility.js';
 import { config } from '../config.js';
 import { MAX_BACKUP_MODELS, normalizeBackupModels } from '../failover.js';
 import { pricingInfo, validatePrices } from '../pricing.js';
@@ -34,7 +34,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       upstreams: upstreams.list(),
       apiKeys: apiKeysWithUsage(store, requestLog),
       settings: store.data.settings,
-      codexUserAgent: CODEX_DESKTOP_USER_AGENT,
+      codexUserAgent: codexCliUserAgent(codex.version),
       pricing: pricingInfo(store.data.settings.modelPrices),
       stats: {
         images: store.data.images.length,

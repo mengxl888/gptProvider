@@ -831,7 +831,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
               <button data-v="client">按客户端决定</button><button data-v="fast">Fast（加速）</button><button data-v="standard">关闭 Fast</button></div></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>User-Agent 改写</b><span>网关发给上游的 User-Agent，对 API 上游的所有请求和 Codex 账号渠道的原生转发（带工具调用的 Responses 请求）生效。统一改写：不管客户端发什么都改成官方 Codex 桌面版的 UA；只改写异常 UA：只有官方 Codex 客户端的 UA 原样保留，其余一律改写（如 Python、Node SDK，或只是带 codex 字样的第三方客户端）。改写后的值：<code class="mono small" id="set-ua-value" style="word-break:break-all"></code></span></div>
+            <div class="desc"><b>User-Agent 改写</b><span>网关发给上游的 User-Agent，对 API 上游的所有请求和 Codex 账号渠道的原生转发（带工具调用的 Responses 请求）生效。统一改写：不管客户端发什么都改成网关里安装的 Codex 的 UA（版本跟随上方「运行信息」里的 Codex，升级后自动变）；只改写异常 UA：只有官方 Codex 客户端的 UA 原样保留，其余一律改写（如 Python、Node SDK，或只是带 codex 字样的第三方客户端）。改写后的值：<code class="mono small" id="set-ua-value" style="word-break:break-all"></code></span></div>
             <div class="control"><div class="segmented" id="set-ua-mode">
               <button data-v="always">统一改写</button><button data-v="non_codex">只改写异常 UA</button></div></div>
           </div>

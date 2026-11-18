@@ -33,7 +33,7 @@ const accounts = new AccountManager({
   cmd: codex.cmd,
   featureNames: codex.featureNames,
 });
-const upstreams = new UpstreamManager({ store });
+const upstreams = new UpstreamManager({ store, codex });
 const images = new ImageLibrary({ store, dataDir: config.dataDir });
 const requestLog = await openRequestLog(config.dataDir, { getPricing: () => store.data.settings.modelPrices || {} });
 const updater = new AppUpdater({ config });
