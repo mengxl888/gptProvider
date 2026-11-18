@@ -15,6 +15,10 @@ const allowedName = (name) => ALLOWED_NAMES.has(name) || name.startsWith('cf_chl
 export class RoutingCookies {
   #jars = new Map();
 
+  clear(scope) {
+    this.#jars.delete(scope);
+  }
+
   // 这次请求要带的 Cookie：header 是请求头的值（没有可带的为 null），names 只用于日志。
   get(scope, url, now = Date.now()) {
     const jar = this.#jars.get(scope);

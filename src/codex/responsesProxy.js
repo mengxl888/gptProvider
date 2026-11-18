@@ -176,6 +176,7 @@ export class CodexResponsesProxy {
       let upstreamError;
       let refreshedAuth = false;
       let retriedOverload = false;
+      let pendingRouting = null;
       for (;;) {
         req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted });
         diag.phase = 'connecting';
@@ -201,10 +202,12 @@ export class CodexResponsesProxy {
         diag.status = upstream.status;
         diag.requestId = clip(upstream.headers.get('x-request-id'), 80);
         diag.headersMs = ms();
+        const setCookies = upstream.headers.getSetCookie?.() ?? [];
+        pendingRouting = { scope: routingScope, requestedTier: payload.service_tier || null, setCookies };
         // 只记 Cookie 名字，不记值；cf-ray 末尾是 Cloudflare 接入点，用来看请求是不是每次落在不同地方
         diag.routing = {
           sent: routing.names,
-          received: fastCheck ? [] : this.routingCookies.store(routingScope, RESPONSES_URL, upstream.headers.getSetCookie?.() ?? []),
+          received: [],
           cfRay: clip(upstream.headers.get('cf-ray'), 40),
         };
         if (!fastCheck && upstream.status === 401 && !refreshedAuth) {
@@ -306,6 +309,16 @@ export class CodexResponsesProxy {
         }
       }
       tracker.finish();
+      if (!fastCheck && pendingRouting) {
+        const terminalTier = tracker.terminalTier;
+        const requestedTier = pendingRouting.requestedTier;
+        const tierMismatch = requestedTier && terminalTier !== requestedTier;
+        if (tierMismatch) this.routingCookies.clear(pendingRouting.scope);
+        const targetScope = tierMismatch
+          ? (terminalTier ? this.#routingScope(account.id, terminalTier) : null)
+          : pendingRouting.scope;
+        if (targetScope) diag.routing.received = this.routingCookies.store(targetScope, RESPONSES_URL, pendingRouting.setCookies);
+      }
       const response = tracker.response;
       response.model ||= payload.model;
       req.log?.resolvedModel(response.model);

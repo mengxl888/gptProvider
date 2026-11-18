@@ -399,7 +399,7 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
   - 管理接口：`PUT /admin/api/settings {"userAgentMode": "always" | "non_codex"}`，改了立即生效。
   - 这个设置只管原生转发。不走原生转发的对话请求由 codex app-server 发出，UA 由 app-server 决定，日志记录它实际使用的 UA。User-Agent 仅用于协议兼容，不用于认证，账号认证仍使用登录令牌。OpenAI API 渠道（包括失败后改用 API 上游）转发给上游的 User-Agent 也按这个设置改写。
 - 原生转发按官方 Codex 客户端的方式和账号上游通信，这些直接影响上游的缓存命中和首字时间：
-  - **路由 Cookie**：上游（Cloudflare）每个响应都会下发负载均衡的会话粘性 Cookie（`__cflb`、`__oailb` 等）。网关按账号保存并在后续请求带回去，让同一个账号的请求固定落到同一组后端，提示词缓存才能命中；不带的话每个请求都被重新分配，缓存命中很低、首字变慢。只保存 Cloudflare 基础设施 Cookie 和 `__oailb`（白名单同官方客户端），不保存任何账号、会话、登录类 Cookie；只存在内存里，网关重启后每个账号的第一个请求重新建立。
+  - **路由 Cookie**：上游（Cloudflare）每个响应都会下发负载均衡的会话粘性 Cookie（`__cflb`、`__oailb` 等）。网关按账号和有效速度档位分别保存并在后续请求带回去，让同一档位的请求固定落到同一组后端，提示词缓存才能命中；如果上游把 `priority` 请求终态降为 `default`，该响应的 Cookie 不会继续污染 Fast 路由。只保存 Cloudflare 基础设施 Cookie 和 `__oailb`（白名单同官方客户端），不保存任何账号、会话、登录类 Cookie；只存在内存里，网关重启后重新建立。
   - **客户端标识**：`originator` 和 `version` 都跟着实际发出的 User-Agent 走。保留官方 Desktop 的 UA 时不会混用网关 CLI 的版本号。日志详情的「上游时间线」会显示实际发送的客户端标识、版本和路由提示。
   - **路由提示和会话标识**：补发 `x-codex-routing-hint`（按实际发给上游的模型和速度档位生成），并原样转发客户端带来的 `x-codex-window-id`、`x-codex-turn-metadata`、`x-codex-parent-thread-id`、`x-openai-subagent`。
   - 日志详情的「上游时间线」会显示这次请求带回了哪些路由 Cookie（只显示名字）、上游下发了哪些，以及 `cf-ray`（末尾是 Cloudflare 接入点）。

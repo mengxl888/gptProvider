@@ -1079,6 +1079,34 @@ test('native requests isolate routing cookies when switching between standard an
   assert.equal(h.fetchCalls[2][1].headers.cookie, '__oailb=standard-pool');
 });
 
+test('native Fast requests do not keep a cookie from a default terminal response', async () => {
+  const responses = [
+    response('completed', { service_tier: 'default' }),
+    response('completed', { service_tier: 'priority' }),
+    response('completed', { service_tier: 'priority' }),
+  ];
+  let index = 0;
+  const h = harness(async () => upstream(terminalSse(responses[index++]), { headers: {
+    'set-cookie': index === 1 ? '__oailb=standard-pool; Path=/; Max-Age=3600' : '__oailb=fast-pool; Path=/; Max-Age=3600',
+  } }), { serviceTierMode: 'fast' });
+  const send = async () => {
+    const req = request();
+    req.log.diag = (value) => req.events.push({ name: 'diag', value });
+    await h.proxy.handle(req, new ResponseSink(), toolBody());
+    return req.events.findLast((entry) => entry.name === 'diag' && entry.value.upstream).value.upstream;
+  };
+
+  const first = await send();
+  const second = await send();
+  const third = await send();
+  assert.equal(h.fetchCalls[0][1].headers.cookie, undefined);
+  assert.equal(h.fetchCalls[1][1].headers.cookie, undefined);
+  assert.equal(h.fetchCalls[2][1].headers.cookie, '__oailb=fast-pool');
+  assert.deepEqual(first.tier, { requested: null, sent: 'priority', early: null, actual: 'default', accountSupports: null, plan: null });
+  assert.deepEqual(second.tier, { requested: null, sent: 'priority', early: null, actual: 'priority', accountSupports: null, plan: null });
+  assert.deepEqual(third.routing.sent, ['__oailb']);
+});
+
 test('Fast Responses Lite forwards the official wire tier with one consistent client identity', async () => {
   const desktop = 'Codex Desktop/0.169.0-alpha.11.1 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.1111.21308)';
   for (const [userAgentMode, originator, version] of [
