@@ -435,7 +435,8 @@ Chat Completions 不支持 `tools` / function calling（会返回 400，需要�
 - **所有官方接口都能用**：Responses 和 Chat 的函数调用、`function_call_output` 回传、结构化输出、`previous_response_id`、Embeddings、音频、图片、文件、`DELETE`/`GET` 等，跟直接调官方一样。multipart 和二进制响应也原样转发。
 - **Responses 速度档位**：`POST /v1/responses`（包括从 Codex 账号渠道回退过来的请求）按「设置 → Codex 速度档位」处理。选「Fast（加速）」时发送 `service_tier: "priority"`；「关闭 Fast」时发送 `"default"`；「按客户端决定」时保留客户端的选择。日志分别显示客户端请求、发给上游和上游终态。只有终态回报 `priority`（或兼容上游的 `fast`）才确认 Fast；未回报时留空，不按 Fast 估算费用。
 - **转发的请求头**：`Content-Type`、`Accept`、`OpenAI-Beta`、`User-Agent`、`Idempotency-Key`。其中 `User-Agent` 按设置页「User-Agent 改写」处理：默认统一改成网关里安装的 Codex 的 UA，也可以选只改写非 Codex 客户端的 UA。`Authorization` 换成上游的 Key，上游配了 Organization / Project 时带上对应的头。响应会去掉 `openai-organization`、`openai-project`、`set-cookie` 等头，不把上游账户信息透露给下游。
-- **多个上游**：按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个；出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
+- **模型列表**：「OpenAI API」渠道的 `GET /v1/models` 汇总所有启用上游的模型，按模型 ID 去重，保留上游返回的模型信息。目录缓存 60 秒；某个上游不可用时仍返回其他上游的模型。
+- **多个上游**：优先选择已公布支持请求模型的上游，再尝试目录未知或可能过期的上游；同组内按优先级从高到低使用，相同优先级轮流分摊。JSON 和 multipart 上传请求都支持按模型选择上游。遇到模型不存在、401/403/429/5xx 或连不上时自动换下一个；其他参数错误不重试。出错的 Key 冷却一段时间（Key 无效 10 分钟，429 按 `retry-after`、默认 30 秒，5xx 15 秒，连不上 30 秒），期间排到最后，所有 Key 都在冷却时仍会尝试。流式输出开始后不会再切换。全部失败时，返回最后一个上游的原始错误。
 - **用量和额度**：从响应的 `usage` 里记 token，流式响应边转发边解析。流式 Chat 请求没带 `stream_options.include_usage` 时，网关会替客户端加上，再把多出来的用量块从回给客户端的流里去掉，所以 token 照样能记上。下游 Key 可以设置**每月 Token 上限**（本自然月的输入 + 输出），到了上限返回 429 `insufficient_quota`，Codex CLI 遇到这个错误会直接停止，不会反复重试。
 - **日志**：每个请求记一条，「账号 / 上游」列是实际使用的上游，`GET /v1/models` 不记。上游卡片上的健康条只统计最终落到这个上游的请求。
 - **不支持**：WebSocket（Codex CLI 自定义 provider 默认就用 HTTP，不受影响）。所有渠道的请求体默认上限为 100 MiB，可用 `MAX_REQUEST_BODY_MB` 调整。

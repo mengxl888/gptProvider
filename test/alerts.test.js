@@ -24,7 +24,7 @@ function monitor({ accounts = [acct('a'), acct('b')], upstreams = [], settings =
   const clock = { now: T0 };
   const m = new AlertMonitor({
     store,
-    accounts: { usable: (a) => accountUsable(a, { pauseExhausted: data.settings.autoDisableOnQuota }) },
+    accounts: { usable: (a) => accountUsable(a, { pauseExhausted: data.settings.autoDisableOnQuota, now: clock.now }) },
     appVersion: '9.9.9',
     now: () => clock.now,
     send: async (channel, message) => {

@@ -612,7 +612,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       </div>
       <div class="stack">
         <div class="grid account-grid" id="upstream-grid"></div>
-        <div class="card card-pad small text-2">按优先级从高到低使用，相同优先级轮流分摊。遇到 401/403/429/5xx 或连不上时自动换下一个，出错的 Key 冷却一段时间（Key 无效 10 分钟，限流按 retry-after，其他 15–30 秒）后再优先使用。流式输出开始后不会切换。</div>
+        <div class="card card-pad small text-2">模型列表汇总所有启用上游。请求优先交给支持该模型的上游，再按优先级从高到低使用，相同优先级轮流分摊。遇到模型不存在、401/403/429/5xx 或连不上时自动换下一个，出错的 Key 冷却一段时间（Key 无效 10 分钟，限流按 retry-after，其他 15–30 秒）后再优先使用。流式输出开始后不会切换。</div>
       </div>
     </section>
 

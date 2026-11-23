@@ -95,6 +95,7 @@ async function route(req, res) {
       : '请求缺少 Host 头');
   }
   const url = new URL(req.url, 'http://localhost');
+  if (req.method === 'GET' && url.pathname === '/v1/models/') url.pathname = '/v1/models';
   const pathname = url.pathname;
 
   if (req.method === 'OPTIONS') return sendCors(res);

@@ -6,6 +6,7 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
 import { httpError } from './codex/accounts.js';
@@ -13,6 +14,8 @@ import { isOutputEvent } from './codex/responsesProxy.js';
 import { codexCliUserAgent, responsesUserAgent } from './codex/clientCompatibility.js';
 import { applyServiceTierPolicy } from './codex/serviceTier.js';
 import { clip } from './requestLog.js';
+import { sendJson } from './http.js';
+import { parseMultipart } from './multipart.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
@@ -23,12 +26,19 @@ const DROP_RESPONSE_HEADERS = new Set([
 ]);
 const IDLE_TIMEOUT_MS = 10 * 60_000;
 const MAX_TRACKED_JSON_BYTES = 16 * 1024 * 1024;
+const MODEL_CATALOG_TTL_MS = 60_000;
+const MODEL_CATALOG_TIMEOUT_MS = 10_000;
+const MODEL_REQUEST_PATHS = new Set([
+  '/responses', '/chat/completions', '/completions', '/embeddings',
+  '/images/generations', '/images/edits', '/audio/speech', '/audio/transcriptions', '/audio/translations', '/moderations',
+]);
 
 const isFailover = (status) => status === 401 || status === 403 || status === 429 || status >= 500;
 
 export class UpstreamManager {
   #cooldown = new Map();
   #turn = 0;
+  #modelCatalog = new Map();
 
   constructor({ store, codex }) {
     this.store = store;
@@ -78,6 +88,7 @@ export class UpstreamManager {
   update(id, patch) {
     const record = this.get(id);
     if (!record) throw httpError(404, '上游不存在');
+    const previousConnection = connectionKey(record);
     const baseUrl = 'baseUrl' in patch ? normalizeBaseUrl(patch.baseUrl) : record.baseUrl;
     if ('label' in patch) record.label = String(patch.label || '').trim() || record.label;
     if (patch.apiKey?.trim()) record.apiKey = patch.apiKey.trim();
@@ -86,6 +97,13 @@ export class UpstreamManager {
     if ('project' in patch) record.project = patch.project?.trim() || null;
     if ('priority' in patch) record.priority = Number(patch.priority) || 0;
     if ('enabled' in patch) record.enabled = Boolean(patch.enabled);
+    this.#modelCatalog.delete(id);
+    if (previousConnection !== connectionKey(record)) {
+      record.models = null;
+      record.status = 'unknown';
+      record.lastError = null;
+      record.lastCheckedAt = null;
+    }
     this.#cooldown.delete(id);
     this.store.save();
     return record;
@@ -95,6 +113,7 @@ export class UpstreamManager {
     if (!this.get(id)) throw httpError(404, '上游不存在');
     this.store.data.upstreams = this.records.filter((u) => u.id !== id);
     this.#cooldown.delete(id);
+    this.#modelCatalog.delete(id);
     this.store.save();
   }
 
@@ -102,25 +121,86 @@ export class UpstreamManager {
   async test(id) {
     const record = this.get(id);
     if (!record) throw httpError(404, '上游不存在');
+    this.#modelCatalog.delete(id);
+    const source = { ...record };
+    const current = () => this.get(id) === record && connectionKey(record) === connectionKey(source);
     try {
-      const res = await send(record, 'GET', '/models', Buffer.alloc(0), {});
+      const res = await send(source, 'GET', '/models', Buffer.alloc(0), {});
       const text = (await readAll(res)).toString('utf8');
       if (res.statusCode >= 400) {
-        this.#fail(record, res.statusCode, errorMessage(text, res.statusCode), res.headers);
-        return { ok: false, status: res.statusCode, error: record.lastError };
+        const error = errorMessage(text, res.statusCode);
+        if (current()) this.#fail(record, res.statusCode, error, res.headers);
+        return { ok: false, status: res.statusCode, error };
       }
       let models = [];
       try {
         models = (JSON.parse(text).data || []).map((m) => m.id).filter(Boolean).sort();
       } catch {}
-      record.models = models;
-      this.#cooldown.delete(id);
-      this.#mark(record, 'ready', null, true);
+      if (current()) {
+        record.models = models;
+        this.#cooldown.delete(id);
+        this.#mark(record, 'ready', null, true);
+      }
       return { ok: true, models: models.length };
     } catch (err) {
-      this.#fail(record, 0, `连接失败：${err.message}`);
-      return { ok: false, error: record.lastError };
+      const error = `连接失败：${err.message}`;
+      if (current()) this.#fail(record, 0, error);
+      return { ok: false, error };
     }
+  }
+
+  // 模型目录合并所有启用的上游，按候选顺序保留重复 ID 的元数据。
+  // 短期缓存并共享正在进行的请求，避免客户端频繁拉模型时重复访问每个上游。
+  async #listModels(list, headers, search) {
+    const results = await Promise.allSettled(list.map((record) => this.#models(record, headers, search)));
+    const models = new Map();
+    let succeeded = false;
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      succeeded = true;
+      for (const model of result.value) {
+        if (!models.has(model.id)) models.set(model.id, model);
+      }
+    }
+    if (!succeeded) {
+      const error = results[0].reason;
+      throw httpError(error.status || 502, `获取上游模型列表失败：${error.message}`, error.code || 'upstream_unreachable');
+    }
+    return { object: 'list', data: [...models.values()] };
+  }
+
+  #models(record, headers, search = '') {
+    const signature = `${connectionKey(record)}|${headers['user-agent'] || ''}|${search}`;
+    const previous = this.#modelCatalog.get(record.id);
+    if (!search && previous?.signature === signature && previous.expiresAt > Date.now()) return previous.promise;
+    const source = { ...record };
+    const cached = { signature, expiresAt: Date.now() + MODEL_CATALOG_TTL_MS };
+    if (!search) this.#modelCatalog.set(record.id, cached);
+    cached.promise = (async () => {
+      let response;
+      try {
+        response = await send(source, 'GET', `/models${search}`, Buffer.alloc(0), headers, null, MODEL_CATALOG_TIMEOUT_MS);
+        const text = (await readAll(response)).toString('utf8');
+        if (response.statusCode >= 400) throw httpError(response.statusCode, errorMessage(text, response.statusCode), 'upstream_error');
+        let payload;
+        try { payload = JSON.parse(text); } catch {}
+        if (!Array.isArray(payload?.data)) throw httpError(502, '上游返回了无效的模型列表', 'invalid_upstream_response');
+        const models = payload.data.filter((model) => typeof model?.id === 'string' && model.id);
+        if (this.#modelCatalog.get(record.id) === cached) {
+          record.models = [...new Set(models.map((model) => model.id))].sort();
+          this.#cooldown.delete(record.id);
+          this.#mark(record, 'ready', null, true);
+        }
+        return models;
+      } catch (err) {
+        cached.expiresAt = Date.now() + 5_000;
+        if (this.#modelCatalog.get(record.id) === cached && (!response || isFailover(response.statusCode))) {
+          this.#fail(record, err.status || 0, err.message, response?.headers);
+        }
+        throw err;
+      }
+    })();
+    return cached.promise;
   }
 
   // 优先级高的在前；同优先级每次换一个起点轮流用；冷却中的排到最后，所有上游都在冷却时仍会尝试
@@ -146,11 +226,14 @@ export class UpstreamManager {
 
   // 把下游请求转发给上游；subPath 是去掉 /v1 之后的路径，例如 /responses
   async proxy(req, res, { subPath, search, body }) {
-    const list = this.candidates();
+    let list = this.candidates();
     if (list.length === 0) {
       throw httpError(503, '还没有可用的 OpenAI API Key 上游，请在后台「API 上游」页添加', 'no_upstream');
     }
     const json = parseJsonRequest(req, body);
+    const form = !json && /^multipart\/form-data\b/i.test(req.headers['content-type'] || '')
+      ? parseMultipart(body, req.headers['content-type']) : null;
+    const requestModel = json?.model ?? form?.fields.model;
     let tier;
     if (json && req.method === 'POST' && (subPath === '/responses' || subPath === '/responses/')) {
       const payload = applyServiceTierPolicy(json, this.store.data.settings?.serviceTierMode, { explicitStandard: true });
@@ -159,11 +242,30 @@ export class UpstreamManager {
       req.log?.diag?.({ apiUpstreamTier: { ...tier } });
     }
     const initialTier = tier ? null : json?.service_tier ?? 'default';
-    req.log?.request({ model: json?.model, stream: json?.stream, serviceTier: initialTier });
+    req.log?.request({ model: requestModel, stream: json?.stream, serviceTier: initialTier });
     // 和 Codex 账号渠道的原生转发一样，按设置页「User-Agent 改写」处理发给上游的 UA
     const { userAgent, userAgentRewritten } = responsesUserAgent(req.headers['user-agent'], this.store.data.settings?.userAgentMode, codexCliUserAgent(this.codex?.version));
     req.log?.upstreamRequest?.({ userAgent, userAgentRewritten, systemMessagesConverted: 0 });
     const headers = { ...req.headers, 'user-agent': userAgent };
+
+    if (req.method === 'GET' && (subPath === '/models' || subPath === '/models/')) {
+      return sendJson(res, 200, await this.#listModels(list, headers, search));
+    }
+    const modelDetail = req.method === 'GET' && /^\/models\/[^/]+\/?$/.test(subPath);
+    let model = requestModel;
+    if (modelDetail) {
+      try { model = decodeURIComponent(subPath.split('/')[2]); }
+      catch { throw httpError(400, '模型 ID 编码无效', 'invalid_model'); }
+    }
+    if (typeof model === 'string' && model) {
+      const now = Date.now();
+      const rank = (upstream) => {
+        const match = upstream.models?.includes(model) ? 0 : upstream.models == null ? 1 : 2;
+        return match + (this.#cooldown.get(upstream.id) > now ? 3 : 0);
+      };
+      list = list.toSorted((a, b) => rank(a) - rank(b));
+    }
+    const retryMissingModel = modelDetail || req.method === 'POST' && MODEL_REQUEST_PATHS.has(subPath.replace(/\/$/, ''));
 
     // 流式对话默认不带用量，补上 include_usage 才能记 token、算额度；客户端没要的话把用量块过滤掉再回给它
     let stripUsageChunk = false;
@@ -189,6 +291,17 @@ export class UpstreamManager {
           continue;
         }
         throw httpError(502, `连接上游失败：${err.message}`, 'upstream_unreachable');
+      }
+      if (!isLast && retryMissingModel && model && (upstreamRes.statusCode === 400 || upstreamRes.statusCode === 404)) {
+        const raw = await readAll(upstreamRes);
+        if (modelDetail && upstreamRes.statusCode === 404 || isMissingModel(raw)) {
+          req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, errorMessage(raw.toString('utf8'), upstreamRes.statusCode), 'model_not_found'));
+          continue;
+        }
+        // 错误体读过后仍原样交给统一响应和日志处理。
+        upstreamRes = Object.assign(Readable.from([raw]), {
+          statusCode: upstreamRes.statusCode, headers: upstreamRes.headers, complete: true,
+        });
       }
       if (isFailover(upstreamRes.statusCode) && !isLast) {
         const text = (await readAll(upstreamRes)).toString('utf8');
@@ -317,7 +430,7 @@ export function endpointName(subPath) {
     .join('.') || 'unknown';
 }
 
-function send(upstream, method, path, body, incomingHeaders, downstreamRes) {
+function send(upstream, method, path, body, incomingHeaders, downstreamRes, timeoutMs) {
   const url = new URL(upstream.baseUrl + path);
   const headers = { authorization: `Bearer ${upstream.apiKey}`, 'accept-encoding': 'identity' };
   for (const name of FORWARD_REQUEST_HEADERS) {
@@ -329,7 +442,7 @@ function send(upstream, method, path, body, incomingHeaders, downstreamRes) {
   const lib = url.protocol === 'http:' ? http : https;
 
   return new Promise((resolve, reject) => {
-    const request = lib.request(url, { method, headers }, resolve);
+    const request = lib.request(url, { method, headers, ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) }, resolve);
     request.setTimeout(IDLE_TIMEOUT_MS, () => request.destroy(new Error('上游响应超时')));
     request.on('error', reject);
     // 下游在上游返回响应头之前就断开了，直接取消上游请求
@@ -346,7 +459,12 @@ function send(upstream, method, path, body, incomingHeaders, downstreamRes) {
 function readAll(res) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    res.on('data', (c) => chunks.push(c));
+    let bytes = 0;
+    res.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_TRACKED_JSON_BYTES) return res.destroy(httpError(502, '上游响应过大', 'upstream_response_too_large'));
+      chunks.push(c);
+    });
     res.on('end', () => resolve(Buffer.concat(chunks)));
     res.on('error', reject);
   });
@@ -498,10 +616,26 @@ function parseJsonRequest(req, body) {
 
 function errorMessage(text, status) {
   try {
-    return JSON.parse(text).error?.message || `HTTP ${status}`;
+    const body = JSON.parse(text);
+    return body.error?.message || body.message || `HTTP ${status}`;
   } catch {
     return `HTTP ${status}${text ? `：${text.slice(0, 200)}` : ''}`;
   }
+}
+
+function isMissingModel(raw) {
+  try {
+    const body = JSON.parse(raw.toString('utf8'));
+    const error = body.error || body;
+    return ['model_not_found', 'invalid_model', 'unknown_model', 'unsupported_model'].includes(error.code)
+      || /模型不存在|\bmodel\b.*\b(not found|does not exist|not exist|not supported|unsupported)\b/i.test(error.message || '');
+  } catch {
+    return false;
+  }
+}
+
+function connectionKey(record) {
+  return JSON.stringify([record.baseUrl, record.apiKey, record.organization, record.project]);
 }
 
 function normalizeBaseUrl(value) {
