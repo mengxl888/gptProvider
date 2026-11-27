@@ -56,3 +56,33 @@ test('pricing validation is atomic, bounded, supports zero and rejects malformed
   assert.equal(pricingInfo(prices).models.synthetic.source, 'custom');
   assert.equal(pricingInfo().models['gpt-6.1-sol'].source, 'official');
 });
+
+test('synced reference prices update estimates and defaults while custom prices keep precedence', () => {
+  const reference = { syncedAt: '2026-11-27T08:00:00Z', models: {
+    synthetic: { input: 3, cachedInput: 0.3, output: 15, fastMultiplier: 3,
+      longContext: { threshold: 272_000, input: 2, cachedInput: 2, output: 1.5 } },
+    'gpt-6.1-sol': { input: 4, cachedInput: 0.2, output: 20 },
+  } };
+  const info = pricingInfo({}, reference);
+  assert.equal(info.defaults.synthetic.input, 3);
+  assert.equal(info.models.synthetic.source, 'official');
+  assert.equal(info.syncedAt, reference.syncedAt);
+  assert.equal(info.models['gpt-6.1-sol'].longContext.threshold, 272_000);
+  const official = estimateCost(usage, {}, reference);
+  assert.equal(official.usd, 5.01);
+  assert.equal(official.longContext, true);
+  assert.equal(official.rateSource, 'official');
+  const custom = estimateCost(usage, prices, reference);
+  assert.equal(custom.usd, 1.92);
+  assert.equal(custom.longContext, false);
+  assert.equal(pricingInfo(prices, reference).models.synthetic.source, 'custom');
+  assert.equal(estimateCost({ ...usage, model: 'synthetic-alias' }, {}, reference).usd, null);
+});
+
+test('invalid persisted reference entries cannot produce negative or missing rates', () => {
+  const reference = { models: { synthetic: { input: -1, cachedInput: 0, output: 1 },
+    'gpt-6.1-sol': { input: 'invalid', cachedInput: 0.1, output: 10 } } };
+  assert.equal(estimateCost(usage, {}, reference).usd, null);
+  assert.equal(pricingInfo({}, reference).models['gpt-6.1-sol'].input, 2);
+  assert.equal(pricingInfo({}, reference).models.synthetic, undefined);
+});

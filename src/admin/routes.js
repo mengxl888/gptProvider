@@ -11,7 +11,8 @@ import { SERVICE_TIER_MODES } from '../codex/serviceTier.js';
 import { USER_AGENT_MODES, codexCliUserAgent } from '../codex/clientCompatibility.js';
 import { config } from '../config.js';
 import { MAX_BACKUP_MODELS, normalizeBackupModels } from '../failover.js';
-import { pricingInfo, validatePrices } from '../pricing.js';
+import { PricingCatalog } from '../pricingCatalog.js';
+import { ROUTING_MODES } from '../poolRouter.js';
 import { resolveTimeRange } from '../timeRange.js';
 
 export async function handleAdmin(req, res, url, body, ctx) {
@@ -19,6 +20,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
   const parts = url.pathname.replace(/^\/admin\/api\/?/, '').split('/').filter(Boolean);
   const method = req.method;
   const ok = (payload = { ok: true }) => sendJson(res, 200, payload);
+  const pricing = ctx.pricing || new PricingCatalog({ store });
 
   // GET /admin/api/state
   if (method === 'GET' && parts[0] === 'state') {
@@ -35,7 +37,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
       apiKeys: apiKeysWithUsage(store, requestLog),
       settings: store.data.settings,
       codexUserAgent: codexCliUserAgent(codex.version),
-      pricing: pricingInfo(store.data.settings.modelPrices),
+      pricing: pricing.info(),
       stats: {
         images: store.data.images.length,
         models:
@@ -51,15 +53,11 @@ export async function handleAdmin(req, res, url, body, ctx) {
     });
   }
 
-  // Dollar estimates use the current administrator-maintained price catalog.
-  if (parts[0] === 'pricing' && !parts[1]) {
-    if (method === 'GET') return ok(pricingInfo(store.data.settings.modelPrices));
-    if (method === 'PUT') {
-      const models = validatePrices(body?.models);
-      store.data.settings.modelPrices = models;
-      store.save();
-      return ok(pricingInfo(models));
-    }
+  // Refresh reference prices independently from administrator overrides.
+  if (parts[0] === 'pricing') {
+    if (method === 'GET' && !parts[1]) return ok(pricing.info());
+    if (method === 'PUT' && !parts[1]) return ok(pricing.update(body));
+    if (method === 'POST' && parts[1] === 'sync' && !parts[2]) return ok(await pricing.sync());
   }
 
   // PUT /admin/api/alerts       {enabled, feishu: {webhook, secret} | null, rules: {errorRate: {...}, ...}, repeatMinutes, notifyRecovery}
@@ -249,9 +247,22 @@ export async function handleAdmin(req, res, url, body, ctx) {
   // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
   //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode, userAgentMode}
   if (parts[0] === 'settings' && method === 'PUT') {
-    const settings = store.data.settings;
+    const settings = { ...store.data.settings };
     const before = settings.webSearch;
     const beforeServiceTier = settings.serviceTierMode;
+    if ('routingMode' in body) {
+      if (!ROUTING_MODES.includes(body.routingMode)) throw httpError(400, 'routingMode 取值无效', 'invalid_parameter');
+      settings.routingMode = body.routingMode;
+    }
+    if ('upstreamStrategy' in body) {
+      if (!['priority', 'round_robin', 'weighted'].includes(body.upstreamStrategy)) throw httpError(400, 'upstreamStrategy 取值无效', 'invalid_parameter');
+      settings.upstreamStrategy = body.upstreamStrategy;
+    }
+    if ('quotaTimeZone' in body) {
+      if (typeof body.quotaTimeZone !== 'string' || !body.quotaTimeZone || body.quotaTimeZone.length > 100) throw httpError(400, '请填写有效的日额度重置时区', 'invalid_parameter');
+      try { settings.quotaTimeZone = new Intl.DateTimeFormat('en', { timeZone: body.quotaTimeZone }).resolvedOptions().timeZone; }
+      catch { throw httpError(400, '日额度重置时区无效', 'invalid_parameter'); }
+    }
     if ('defaultModel' in body) settings.defaultModel = body.defaultModel || null;
     if ('webSearch' in body) {
       if (!['disabled', 'cached', 'live'].includes(body.webSearch)) throw httpError(400, 'webSearch 取值无效');
@@ -291,7 +302,9 @@ export async function handleAdmin(req, res, url, body, ctx) {
       if (!USER_AGENT_MODES.includes(body.userAgentMode)) throw httpError(400, 'userAgentMode 取值无效');
       settings.userAgentMode = body.userAgentMode;
     }
-    store.save();
+    const previous = store.data.settings;
+    store.data.settings = settings;
+    try { store.save(); } catch (err) { store.data.settings = previous; throw err; }
     accounts.queue.drainAll();
     // web_search 和 service_tier 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before || settings.serviceTierMode !== beforeServiceTier) accounts.restartAll();

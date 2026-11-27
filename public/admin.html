@@ -255,6 +255,9 @@ details.notes-box summary { cursor: pointer; color: var(--accent); }
 .pricing-table .price-model { min-width: 190px; }
 .pricing-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 20px; }
 .pricing-help { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--border); }
+[data-view="routing"] table { min-width: 920px; }
+[data-view="routing"] .control .input, [data-view="routing"] .control .select { max-width: 100%; }
+#pricing-card .card-head { flex-wrap: wrap; }
 
 /* ---------- logs ---------- */
 .filters { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); align-items: center; }
@@ -519,9 +522,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <a href="#overview" data-page="overview"><svg class="i" data-icon="dashboard"></svg>概览</a>
       <a href="#accounts" data-page="accounts"><svg class="i" data-icon="users"></svg>账号<span class="count" id="count-accounts"></span></a>
       <a href="#upstreams" data-page="upstreams"><svg class="i" data-icon="server"></svg>API 上游<span class="count" id="count-upstreams"></span></a>
+      <a href="#routing" data-page="routing"><svg class="i" data-icon="sliders"></svg>路由调度</a>
       <a href="#logs" data-page="logs"><svg class="i" data-icon="activity"></svg>日志</a>
       <a href="#alerts" data-page="alerts"><svg class="i" data-icon="bell"></svg>告警<span class="count" id="count-alerts"></span></a>
       <a href="#models" data-page="models"><svg class="i" data-icon="cpu"></svg>模型<span class="count" id="count-models"></span></a>
+      <a href="#pricing" data-page="pricing"><svg class="i" data-icon="dollar"></svg>模型定价</a>
       <a href="#images" data-page="images"><svg class="i" data-icon="image"></svg>生图<span class="count" id="count-images"></span></a>
       <a href="#playground" data-page="playground"><svg class="i" data-icon="message"></svg>调试台</a>
       <a href="#keys" data-page="keys"><svg class="i" data-icon="key"></svg>API Key<span class="count" id="count-keys"></span></a>
@@ -565,7 +570,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/generations</span><span class="d">文生图</span></div>
             <div class="endpoint"><span class="m post">POST</span><span class="p mono">/v1/images/edits</span><span class="d">图片编辑</span></div>
             <div class="card-pad small text-2 stack" style="border-top:1px solid var(--border);gap:8px">
-              <div><b>Codex 账号渠道</b>：提供上面这些接口，Responses 支持客户端工具调用，可接入 Codex CLI，仅供自己使用。在对话里选择任意 <code>gpt-image-*</code> 名称会直接生图；普通模型在开启「对话中允许生图」后，用户要求画图时会自动调用 Codex 的生图工具。</div>
+              <div><b>账号 / 混合池渠道</b>：按 <a href="#routing">路由调度</a> 选择 ChatGPT 账号或 API 上游。账号支持上面这些接口、Responses 客户端工具调用和 Codex CLI，仅供自己使用；账号路径中的 <code>gpt-image-*</code> 名称用于生图，开启「对话中允许生图」后也可在普通对话中画图。</div>
               <div><b>OpenAI API 渠道</b>：<code>/v1</code> 下所有请求原样转发到「API 上游」里的官方 Key，工具调用、Embeddings、音频等官方接口都能用，Codex CLI 也能直接接入。</div>
             </div>
           </div>
@@ -576,7 +581,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <!-- ---------- 账号 ---------- -->
     <section data-view="accounts" hidden>
       <div class="page-head">
-        <div><h1>账号</h1><p>用官方 Codex 登录流程添加 ChatGPT 账号，按下面的调用策略分配 API 请求；支持导出 / 导入账号 JSON 进行本地测试</p></div>
+        <div><h1>账号</h1><p>添加 ChatGPT 账号。下面的策略用于账号内部调度；账号与 API 上游混合调度请到 <a href="#routing">路由调度</a> 配置</p></div>
         <div class="actions">
           <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
           <button class="btn" data-action="import-account" title="导入包含登录凭据的账号 JSON"><svg class="i" data-icon="upload"></svg>导入 JSON</button>
@@ -604,7 +609,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     <!-- ---------- API 上游 ---------- -->
     <section data-view="upstreams" hidden>
       <div class="page-head">
-        <div><h1>API 上游</h1><p>添加 OpenAI 官方 API Key。「OpenAI API」渠道的下游 Key 会把 /v1 请求原样转发到这里，费用记在这些 Key 所属的 OpenAI 账户上</p></div>
+        <div><h1>API 上游</h1><p>配置 API Key、每日额度和权重。API 上游可单独轮询，也可在 <a href="#routing">路由调度</a> 中与账号组成混合池</p></div>
         <div class="actions">
           <div class="window-filter"><div class="segmented window-switch"></div><div class="window-caption"></div></div>
           <button class="btn primary" data-action="add-upstream"><svg class="i" data-icon="plus"></svg>添加 API Key</button>
@@ -612,7 +617,35 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       </div>
       <div class="stack">
         <div class="grid account-grid" id="upstream-grid"></div>
-        <div class="card card-pad small text-2">模型列表汇总所有启用上游。请求优先交给支持该模型的上游，再按优先级从高到低使用，相同优先级轮流分摊。遇到模型不存在、401/403/429/5xx 或连不上时自动换下一个，出错的 Key 冷却一段时间（Key 无效 10 分钟，限流按 retry-after，其他 15–30 秒）后再优先使用。流式输出开始后不会切换。</div>
+        <div class="card card-pad small text-2">API 池支持优先级、平均轮询和加权轮询，在 <a href="#routing">路由调度</a> 中切换。日美元或 Token 任一额度达到上限后，当天停止分配新请求，次日自动恢复；手动停用的上游不会自动启用。日用量独立于上方统计时间范围。费用按已回报的用量估算，进行中的请求结算后可能超过上限。流式输出开始后不会切换节点。</div>
+      </div>
+    </section>
+
+    <!-- ---------- 路由调度 ---------- -->
+    <section data-view="routing" hidden>
+      <div class="page-head"><div><h1>路由调度</h1><p>让 ChatGPT 账号和 API 上游按模型、可用状态、额度和权重共同分配请求，修改后自动保存</p></div></div>
+      <div class="stack">
+        <div class="card">
+          <div class="setting">
+            <div class="desc"><b>账号 / 混合池运行模式</b><span>作用于渠道为「账号 / 混合池」的下游 API Key。「OpenAI API」渠道始终只使用 API 上游。</span></div>
+            <div class="control"><select class="select" id="set-routing-mode" aria-label="账号与 API 混合池运行模式"><option value="legacy">兼容模式：账号失败后兜底</option><option value="accounts_first">账号优先</option><option value="api_first">API 优先</option><option value="round_robin">账号与 API 平均轮询</option><option value="weighted">账号与 API 加权轮询</option></select></div>
+          </div>
+          <p class="cost-note pricing-help" id="routing-mode-help"></p>
+          <div class="setting">
+            <div class="desc"><b>API 池内部调度</b><span>用于「OpenAI API」渠道及优先模式中的 API 节点选择。统一混合轮询时由上方的池模式分配。</span></div>
+            <div class="control"><select class="select" id="set-upstream-strategy" aria-label="API 池内部调度"><option value="priority">按优先级，同级轮询</option><option value="round_robin">平均轮询</option><option value="weighted">加权轮询</option></select></div>
+          </div>
+          <div class="setting">
+            <div class="desc"><b>每日额度时区</b><span>API 上游每日美元与 Token 额度在该时区的午夜重置，任一额度到限即暂停。留空使用 Asia/Shanghai。</span></div>
+            <div class="control"><input class="input mono" id="set-quota-time-zone" list="quota-time-zones" placeholder="Asia/Shanghai" aria-label="每日额度时区"><datalist id="quota-time-zones"><option value="Asia/Shanghai"><option value="UTC"></datalist></div>
+          </div>
+        </div>
+        <div class="banner info"><div class="txt"><b>节点参与规则</b><span>统一轮询跳过已停用、权重为 0、额度耗尽及已知不支持目标模型的节点；同一会话尽量保持在同一节点。账号权重在账号页调整，API 权重和每日额度在上游编辑窗口调整。</span></div></div>
+        <div class="card">
+          <div class="card-head"><h2>调度节点</h2><span class="sub" id="routing-summary"></span><div class="right"><a class="btn sm" href="#accounts">管理账号</a><a class="btn sm" href="#upstreams">管理 API 上游</a></div></div>
+          <div class="table-wrap"><table><thead><tr><th>节点</th><th>类型</th><th>状态</th><th>权重</th><th>今日用量 / 上限</th><th>模型</th><th>操作</th></tr></thead><tbody id="routing-rows"></tbody></table></div>
+        </div>
+        <p class="small text-2" style="margin:0">美元额度使用「模型定价」估算，缺少价格或用量会单独标记，不能视为免费。进行中的请求结算后可能超过设置的额度；停用只影响后续新请求。</p>
       </div>
     </section>
 
@@ -825,9 +858,32 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       </div>
     </section>
 
+    <!-- ---------- 模型定价 ---------- -->
+    <section data-view="pricing" hidden>
+      <div class="page-head">
+        <div><h1>模型定价</h1><p>同步官方参考价格，或配置模型与上游别名的自定义单价</p></div>
+        <div class="actions"><button class="btn primary" id="pricing-sync"><svg class="i" data-icon="refresh"></svg><span>同步参考价格</span></button></div>
+      </div>
+      <div class="banner info" id="pricing-sync-status" role="status" aria-live="polite" hidden></div>
+      <div class="stack">
+        <div class="card">
+          <div class="setting">
+            <div class="desc"><b>自动同步参考价格</b><span>启动时及每 24 小时从 OpenAI 同步标准文本 Token 参考价格，自动补充新模型。自定义价格优先；图片每张价格需手动配置。</span></div>
+            <div class="control"><label class="switch"><input type="checkbox" id="pricing-auto-sync" aria-label="自动同步参考价格"><span></span></label></div>
+          </div>
+        </div>
+        <div class="card" id="pricing-card">
+          <div class="card-head"><h2>模型价格</h2><span class="sub">美元 / 100 万 Tokens</span><div class="right"><button class="btn sm" id="pricing-add">添加模型</button></div></div>
+          <p class="cost-note pricing-help">输入、缓存输入、输出的单位为美元 / 100 万 Tokens。推理已包含在输出中，不重复计费；不含缓存写入、搜索等工具附加费用。Codex 订阅按 API 等值估算，不代表现金扣款。缺用量、缺价格单列为未计价；保存或同步价格会重新估算保留的历史日志。</p>
+          <div class="table-wrap"><table class="pricing-table"><thead><tr><th>模型 ID（精确匹配）</th><th>输入</th><th>缓存输入</th><th>输出</th><th>生图 $ / 张（可选）</th><th>Fast 倍率</th><th>来源 / 操作</th></tr></thead><tbody id="pricing-rows"></tbody></table></div>
+          <div class="pricing-foot"><div class="small text-2" id="pricing-source"></div><div class="inline-actions" style="margin:0"><span class="small muted" id="pricing-dirty"></span><button class="btn sm" id="pricing-discard">撤销修改</button><button class="btn sm primary" id="pricing-save">保存价格</button></div></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ---------- 设置 ---------- -->
     <section data-view="settings" hidden>
-      <div class="page-head"><div><h1>设置</h1><p>常规设置修改后自动保存；模型价格需点击保存</p></div></div>
+      <div class="page-head"><div><h1>设置</h1><p>修改后自动保存</p></div></div>
       <div class="stack">
         <div class="card">
           <div class="setting">
@@ -873,12 +929,6 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><div class="segmented" id="set-web">
               <button data-v="disabled">关闭</button><button data-v="cached">缓存</button><button data-v="live">实时</button></div></div>
           </div>
-        </div>
-        <div class="card" id="pricing-card">
-          <div class="card-head"><h2>美元费用估算</h2><span class="sub">模型价格</span><div class="right"><button class="btn sm" id="pricing-add">添加模型</button></div></div>
-          <p class="cost-note pricing-help">输入、缓存输入、输出的单位为美元 / 100 万 Tokens。推理已包含在输出中，不重复计费；不含缓存写入、搜索等工具附加费用。Codex 订阅按 API 等值估算，不代表现金扣款。缺用量、缺价格单列为未计价；保存价格会重新估算保留的历史日志。</p>
-          <div class="table-wrap"><table class="pricing-table"><thead><tr><th>模型 ID（精确匹配）</th><th>输入</th><th>缓存输入</th><th>输出</th><th>生图 $ / 张（可选）</th><th>Fast 倍率</th><th>来源 / 操作</th></tr></thead><tbody id="pricing-rows"></tbody></table></div>
-          <div class="pricing-foot"><div class="small text-2" id="pricing-source"></div><div class="inline-actions" style="margin:0"><span class="small muted" id="pricing-dirty"></span><button class="btn sm" id="pricing-discard">撤销修改</button><button class="btn sm primary" id="pricing-save">保存价格</button></div></div>
         </div>
         <div class="card">
           <div class="card-head"><h2>运行信息</h2></div>
@@ -942,7 +992,14 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
       <div class="field"><label>Project（可选）</label><input id="up-project" class="input mono" placeholder="proj_…"></div>
     </div>
     <div class="field"><label>优先级</label><input id="up-priority" class="input" type="number" step="1" value="0">
-      <div class="small muted" style="margin-top:5px">数字大的优先使用，相同优先级轮流分摊</div></div>
+      <div class="small muted" style="margin-top:5px">按优先级模式下数字大的优先使用，同级轮询</div></div>
+    <div class="field"><label>轮询权重</label><input id="up-weight" class="input" type="number" min="0" max="100" step="1" value="1">
+      <div class="small muted" style="margin-top:5px">0–100 的整数，加权轮询时按比例分配；0 表示不参与调度</div></div>
+    <div class="option-grid">
+      <div class="field"><label>每日美元额度</label><input id="up-daily-usd" class="input" type="number" min="0" step="any" placeholder="留空不限，例如 10"></div>
+      <div class="field"><label>每日 Token 额度</label><input id="up-daily-tokens" class="input" type="number" min="0" step="1" placeholder="留空不限，例如 1000000"></div>
+    </div>
+    <div class="small muted">Token 按输入 + 输出统计（缓存包含在输入内）。任一额度到限后当天暂停，次日按 <a href="#routing" data-close-upstream>调度时区</a> 自动恢复；填 0 表示当天不接收新请求，手动停用不会自动恢复。</div>
   </div>
   <div class="dlg-foot">
     <button class="btn" data-close-upstream>取消</button>
@@ -978,7 +1035,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
         <label class="option on"><input type="radio" name="channel" value="openai" checked>
           <div class="ico"><svg class="i" data-icon="server"></svg></div><b>OpenAI API</b><span>原样转发到「API 上游」的官方 Key，支持工具调用，按 API 用量计费</span></label>
         <label class="option"><input type="radio" name="channel" value="codex">
-          <div class="ico"><svg class="i" data-icon="users"></svg></div><b>Codex 账号</b><span>走当前 ChatGPT 账号，支持对话、生图和 Responses 工具调用，可用于 Codex CLI，仅供自己使用</span></label>
+          <div class="ico"><svg class="i" data-icon="users"></svg></div><b>账号 / 混合池</b><span>按「路由调度」设置使用 ChatGPT 账号或 API 上游，支持账号优先、API 优先、统一轮询和加权轮询</span></label>
       </div>
     </div>
     <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
@@ -1022,6 +1079,7 @@ const ICONS = {
   cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
   message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  dollar: '<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
@@ -1088,7 +1146,7 @@ const S = { token: readToken(), state: null, page: 'overview', models: null, ima
   window: WINDOWS.some(([v]) => v === readPref('window')) && (readPref('window') !== 'custom' || savedCustomRange) ? readPref('window') : '24h',
   customRange: savedCustomRange, stats: null,
   logs: { total: 0, data: [], offset: 0, filters: {}, open: null, loadedAt: 0 } };
-const pricingEditor = { rows: null, overrides: {}, dirty: false, loading: false, saving: false };
+const pricingEditor = { rows: null, overrides: {}, removed: new Set(), dirty: false, loading: false, saving: false, syncing: false, autoSaving: false, syncMessage: '', syncFailed: false, failedSyncedAt: null };
 
 async function api(method, path, body) {
   const res = await fetch(`/admin/api${path}`, {
@@ -1197,9 +1255,9 @@ function attemptCostHtml(c) {
   return `<span class="cost-value">${esc(fmtUsd(c.usd))}</span>${c.status === 'partial' ? ' <span class="small muted">部分费用</span>' : ''}`;
 }
 function costDetails(c) {
-  if (c?.usd == null) return `<span class="text-2">未计价：${esc(costReason(c))}</span> · <a href="#settings" data-focus-pricing>配置模型价格</a>`;
+  if (c?.usd == null) return `<span class="text-2">未计价：${esc(costReason(c))}</span> · <a href="#pricing">配置模型价格</a>`;
   const parts = [['输入', c.inputUsd], ['缓存输入', c.cachedInputUsd], ['输出（含推理）', c.outputUsd], ['生图', c.imageUsd]].filter(([, v]) => v != null);
-  return `${attemptCostHtml(c)}<div class="cost-breakdown">${parts.map(([label, value]) => `<span>${label} ${esc(fmtUsd(value))}</span>`).join('')}</div><div class="small muted">${esc(c.model || '')}${c.serviceTier ? ` · ${esc(c.serviceTier)}` : ''}${c.assumedStandardTier ? ' · 档位未记录，按标准档估算' : ''}${c.multiplier && c.multiplier !== 1 ? ` · 档位倍率 ${esc(c.multiplier)}×` : ''}${c.longContext ? ' · 含长上下文倍率' : ''} · ${c.rateSource === 'custom' ? '自定义价格' : '内置参考价格'}${c.status === 'partial' ? ` · ${esc(costReason(c))}` : ''}</div>`;
+  return `${attemptCostHtml(c)}<div class="cost-breakdown">${parts.map(([label, value]) => `<span>${label} ${esc(fmtUsd(value))}</span>`).join('')}</div><div class="small muted">${esc(c.model || '')}${c.serviceTier ? ` · ${esc(c.serviceTier)}` : ''}${c.assumedStandardTier ? ' · 档位未记录，按标准档估算' : ''}${c.multiplier && c.multiplier !== 1 ? ` · 档位倍率 ${esc(c.multiplier)}×` : ''}${c.longContext ? ' · 含长上下文倍率' : ''} · ${c.rateSource === 'custom' ? '自定义价格' : '官方参考价格'}${c.status === 'partial' ? ` · ${esc(costReason(c))}` : ''}</div>`;
 }
 const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#10b981', '#0ea5e9', '#14b8a6', '#f43f5e'];
 function avatar(seed, text, cls = '') {
@@ -1249,8 +1307,10 @@ async function refreshState() {
   if (S.page === 'overview') renderOverview();
   if (S.page === 'accounts') renderAccounts();
   if (S.page === 'upstreams') renderUpstreams();
+  if (S.page === 'routing') renderRouting();
   if (S.page === 'keys') renderKeys();
   if (S.page === 'settings') renderSettings();
+  if (S.page === 'pricing') renderPricing();
   if (S.page === 'alerts') renderAlerts();
   if (S.state.activeAccountId && (!S.models || S.models.updatedAt !== S.state.stats.modelsUpdatedAt || S.models.accountId !== S.state.activeAccountId)) {
     loadModels().catch(() => {});
@@ -1270,7 +1330,7 @@ setInterval(() => {
 setInterval(() => { if (S.page === 'models' && S.models) $('models-updated').textContent = modelsNote(); }, 30000);
 
 // ============ 路由 ============
-const TITLES = { overview: '概览', accounts: '账号', upstreams: 'API 上游', logs: '日志', alerts: '告警', models: '模型', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
+const TITLES = { overview: '概览', accounts: '账号', upstreams: 'API 上游', routing: '路由调度', logs: '日志', alerts: '告警', models: '模型', pricing: '模型定价', images: '生图', playground: '调试台', keys: 'API Key', settings: '设置' };
 const STATS_PAGES = ['overview', 'accounts', 'upstreams', 'logs'];
 function route() {
   const page = (location.hash || '#overview').slice(1);
@@ -1281,7 +1341,7 @@ function route() {
   document.querySelector('.main').classList.toggle('wide', S.page === 'logs');
   renderInstance();
   ({ overview: renderOverview, accounts: renderAccounts, upstreams: renderUpstreams, logs: renderLogsPage, alerts: renderAlerts, models: renderModels, images: loadImages,
-     playground: renderPlayground, keys: renderKeys, settings: renderSettings })[S.page]();
+     playground: renderPlayground, keys: renderKeys, pricing: renderPricing, routing: renderRouting, settings: renderSettings })[S.page]();
   if (STATS_PAGES.includes(S.page)) loadStats().catch(() => {});
 }
 window.addEventListener('hashchange', () => { if (S.state) route(); });
@@ -1312,7 +1372,7 @@ function renderShell() {
   $('count-alerts').textContent = st.alerts.enabled && st.alerts.feishu.configured ? st.alerts.firing.length || '' : '';
   $('count-alerts').style.color = st.alerts.firing.length ? 'var(--danger)' : '';
   $('mini-account').innerHTML = a
-    ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · ${(S.state.settings.accountStrategy || 'active') === 'active' ? '当前使用' : '默认 · 多账号轮询中'}</div></div>`
+    ? `${avatar(a.email || a.id, a.email || a.label, 'sm')}<div class="who"><div class="email">${esc(a.email || a.label)}</div><div class="meta">${esc(planName(a.planType))} · ${S.state.settings.routingMode && S.state.settings.routingMode !== 'legacy' ? '混合池调度中' : (S.state.settings.accountStrategy || 'active') === 'active' ? '当前使用' : '默认 · 多账号轮询中'}</div></div>`
     : `<div class="avatar sm" style="background:var(--surface-3);color:var(--muted)">${icon('users')}</div><div class="who"><div class="email">未选择账号</div><div class="meta"><a href="#accounts">去添加</a></div></div>`;
 }
 
@@ -1456,7 +1516,7 @@ function healthCard(o, { title, link, switcher }) {
     <div class="health-meta"><span>平均耗时 <b>${fmtMs(o?.avgMs)}</b></span>
       <span>输入 <b>${fmtNum(o?.inputTokens)}</b> tokens</span>${cacheStat(o)}<span>输出 <b>${fmtNum(o?.outputTokens)}</b> tokens</span>
       <span>生图 <b>${fmtNum(o?.images)}</b> 张</span><span>${costSummaryLabel(o)} ${costSummaryHtml(o)}</span>${link ? '<a href="#logs">查看调用日志 →</a>' : ''}</div>
-      <div class="cost-note">${esc(costCoverage(o))} · Token 折算美元，Codex 订阅不代表现金扣款。<a href="#settings" data-focus-pricing>模型价格</a></div>`;
+      <div class="cost-note">${esc(costCoverage(o))} · Token 折算美元，Codex 订阅不代表现金扣款。<a href="#pricing">模型价格</a></div>`;
 }
 
 function renderWindowSwitches() {
@@ -1946,6 +2006,7 @@ function renderAccounts() {
   const st = S.state;
   const strategy = st.settings.accountStrategy || 'active';
   const rotating = strategy !== 'active';
+  const mixedRotating = ['round_robin', 'weighted'].includes(st.settings.routingMode);
   document.querySelectorAll('#set-strategy button').forEach((b) => b.classList.toggle('on', b.dataset.v === strategy));
   $('strategy-desc').textContent = `${STRATEGY_DESC[strategy]}${rotating
     ? `停用的账号不参与；${st.settings.autoDisableOnQuota ? '' : '额度用满的账号在还有其他账号可用时暂时跳过；'}没有可轮询的账号时用「默认」账号。`
@@ -1962,7 +2023,9 @@ function renderAccounts() {
     const ident = `codex-${a.id}-${a.email || 'unknown'}-${a.planType || 'unknown'}`;
     const weight = accountWeight(a);
     const share = shares?.[a.id];
-    const weightChip = rotating
+    const weightChip = mixedRotating
+      ? `<button class="chip ${weight > 0 ? 'on' : ''}" style="flex:none;cursor:pointer" data-acc="weight" data-id="${a.id}" title="修改统一混合池中的节点权重">${weight === 0 ? '不参与调度' : `池权重 ${weight}`}</button>`
+      : rotating
       ? `<button class="chip ${share ? 'on' : ''}" style="flex:none;cursor:pointer" data-acc="weight" data-id="${a.id}" title="点击修改调用权重">${
         weight === 0 ? '不参与轮询' : `${strategy === 'weighted' ? `权重 ${weight}` : '参与轮询'}${share ? ` · ${Math.round(share * 100)}%` : ''}`}</button>`
       : '';
@@ -2120,17 +2183,103 @@ for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-m
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const UP_STATUS = { ready: ['success', '可用'], invalid: ['danger', 'Key 无效'], error: ['warn', '异常'], unknown: ['', '未检测'] };
 const upModelsOpen = new Set();
+const UPSTREAM_QUOTA_REASONS = {
+  daily_budget_exhausted: '今日美元额度已达到上限，次日自动恢复',
+  daily_tokens_exhausted: '今日 Token 额度已达到上限，次日自动恢复',
+  unpriced_usage: '存在未完整计价用量，已暂停分配，请先配置模型价格',
+  missing_token_usage: '上游未回报完整 Token 用量，已暂停分配以保护每日额度',
+};
+const upstreamQuotaText = (u) => UPSTREAM_QUOTA_REASONS[u.quotaReason] || u.quotaReason || '每日额度达到上限，次日自动恢复';
+
+function upstreamDailySummary(u, compact = false) {
+  const usage = u.dailyUsage;
+  const usdLimit = u.dailyBudgetUsd == null ? '不限' : fmtUsd(u.dailyBudgetUsd);
+  const tokenLimit = u.dailyTokenLimit == null ? '不限' : fmtNum(u.dailyTokenLimit);
+  const unknown = Number(usage?.unpricedAttempts || 0);
+  const unknownTokens = Number(usage?.unknownTokenAttempts || 0);
+  const cost = usage ? `${unknown ? '已计价小计 ' : ''}${fmtUsd(usage.costUsd)}` : '未加载';
+  const tokens = usage?.tokens == null ? '未加载' : fmtNum(usage.tokens);
+  const missing = `${unknown ? `<div class="small" style="color:var(--warn)">${fmtNum(unknown)} 次用量未完整计价${u.dailyBudgetUsd != null ? '，美元限额保护可能暂停调度' : ''} · <a href="#pricing">配置价格</a></div>` : ''}${unknownTokens ? `<div class="small" style="color:var(--warn)">${fmtNum(unknownTokens)} 次请求缺少完整 Token 用量</div>` : ''}`;
+  const reset = usage?.until ? new Date(usage.until).toLocaleString('zh-CN', { timeZone: usage.timeZone || S.state.settings.quotaTimeZone || 'Asia/Shanghai', hour12: false }) : '';
+  return `<div class="small ${compact ? '' : 'text-2'}">${compact ? '' : '<b>今日额度</b> · '}美元 ${esc(cost)} / ${esc(usdLimit)}<br>Token ${esc(tokens)} / ${esc(tokenLimit)}</div>${missing}${!compact && reset ? `<div class="small muted" style="margin-top:4px">${esc(usage.timeZone || 'Asia/Shanghai')} · ${esc(reset)} 重置</div>` : ''}`;
+}
+
+function upstreamQuotaBadge(u) {
+  if (u.enabled === false) return '<span class="badge">手动停用</span>';
+  if (u.quotaExhausted || u.quotaBlocked) return `<span class="badge warn" title="${esc(upstreamQuotaText(u))}">${u.quotaBlocked && !u.quotaExhausted ? '用量待确认 · 暂停' : '日额度已满 · 暂停'}</span>`;
+  if ((u.weight ?? 1) === 0) return '<span class="badge">权重 0 · 不参与</span>';
+  return '';
+}
+
+const ROUTING_MODES = {
+  legacy: '保持原有账号策略，是否在账号失败后使用 API 上游仍由「设置 → 失败时改用 API 上游」决定。',
+  accounts_first: '先使用可用账号，账号均不可用或尝试失败后改用 API 上游。账号内部按账号页策略选择。',
+  api_first: '先使用可用 API 上游，上游均不可用或尝试失败后改用账号。API 费用按实际使用计入对应上游。',
+  round_robin: '所有可用账号与 API 上游作为独立节点平均分配新会话请求，同一会话尽量保持在同一节点。',
+  weighted: '所有可用账号与 API 上游按各自权重共同分配新会话请求，权重越大分到越多，0 不参与。',
+};
+
+function renderRouting() {
+  const st = S.state, settings = st.settings;
+  const mode = settings.routingMode || 'legacy';
+  if (document.activeElement !== $('set-routing-mode')) $('set-routing-mode').value = mode;
+  if (document.activeElement !== $('set-upstream-strategy')) $('set-upstream-strategy').value = settings.upstreamStrategy || 'priority';
+  if (document.activeElement !== $('set-quota-time-zone')) $('set-quota-time-zone').value = settings.quotaTimeZone || 'Asia/Shanghai';
+  $('routing-mode-help').textContent = ROUTING_MODES[mode] || ROUTING_MODES.legacy;
+  $('routing-summary').textContent = `${st.accounts.length} 个账号 · ${st.upstreams.length} 个 API 上游`;
+  const accountRows = st.accounts.map((a) => `<tr>
+    <td>${esc(a.email || a.label || a.id)}</td><td><span class="chip">Codex 账号</span></td>
+    <td>${accountBadge(a)}${accountWeight(a) === 0 ? ' <span class="chip">权重 0</span>' : ''}</td>
+    <td class="num">${accountWeight(a)}</td><td class="small text-2">Codex 订阅额度</td>
+    <td class="small text-2">按账号模型目录匹配</td><td><a class="btn sm ghost" href="#accounts">调整账号</a></td></tr>`);
+  const apiRows = st.upstreams.map((u) => {
+    const [cls, status] = UP_STATUS[u.status] || ['', u.status || '未检测'];
+    return `<tr><td>${esc(u.label)}</td><td><span class="chip">API 上游</span></td>
+      <td>${upstreamQuotaBadge(u) || `<span class="badge ${cls}">${esc(status)}</span>`}${u.coolingUntil > Date.now() && u.enabled !== false ? ' <span class="chip warn">冷却中</span>' : ''}</td>
+      <td class="num">${esc(u.weight ?? 1)}</td><td>${upstreamDailySummary(u, true)}</td>
+      <td class="small text-2">${u.models == null ? '尚未读取' : `${u.models.length} 个模型`}</td>
+      <td><button class="btn sm ghost" data-route-upstream="${esc(u.id)}">编辑</button></td></tr>`;
+  });
+  $('routing-rows').innerHTML = [...accountRows, ...apiRows].join('') || '<tr><td colspan="7" class="muted">暂无节点，请先添加账号或 API 上游。</td></tr>';
+}
+
+for (const [id, key] of [['set-routing-mode', 'routingMode'], ['set-upstream-strategy', 'upstreamStrategy'], ['set-quota-time-zone', 'quotaTimeZone']]) {
+  $(id).addEventListener('change', run(async (e) => {
+    const input = e.target;
+    const value = input.value.trim() || (key === 'quotaTimeZone' ? 'Asia/Shanghai' : '');
+    if (key === 'quotaTimeZone') {
+      try { new Intl.DateTimeFormat('en', { timeZone: value }).format(); }
+      catch { input.value = S.state.settings.quotaTimeZone || 'Asia/Shanghai'; throw new Error('请填写有效的 IANA 时区，例如 Asia/Shanghai 或 UTC'); }
+    }
+    input.disabled = true;
+    try {
+      await api('PUT', '/settings', { [key]: value });
+      await refreshState();
+      toast(key === 'quotaTimeZone' ? '每日额度时区已保存' : '路由调度已保存，对新请求生效');
+    } catch (e) {
+      input.value = S.state.settings[key] || (key === 'quotaTimeZone' ? 'Asia/Shanghai' : key === 'routingMode' ? 'legacy' : 'priority');
+      throw e;
+    } finally { input.disabled = false; renderRouting(); }
+  }));
+}
+$('set-quota-time-zone').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+$('routing-rows').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-route-upstream]');
+  if (!button) return;
+  const upstream = S.state.upstreams.find((u) => u.id === button.dataset.routeUpstream);
+  if (upstream) openUpstream(upstream);
+});
 
 function renderUpstreams() {
   const cards = S.state.upstreams.map((u) => {
     const [cls, text] = UP_STATUS[u.status] || ['', u.status];
     const cooling = u.coolingUntil > Date.now();
     const models = u.models || [];
-    return `<div class="card account-card ${u.enabled ? '' : 'disabled'}">
+    return `<div class="card account-card ${u.enabled && !u.quotaExhausted && !u.quotaBlocked ? '' : 'disabled'}">
       <div class="account-top">
         <span class="badge provider">OpenAI</span>
         <div class="title" title="${esc(u.label)}">${esc(u.label)}</div>
-        ${u.enabled ? '' : '<span class="badge">已停用</span>'}
+        ${upstreamQuotaBadge(u)}
         ${cooling && u.enabled ? `<span class="badge warn" title="出错后暂时排到最后，${esc(new Date(u.coolingUntil).toLocaleTimeString('zh-CN', { hour12: false }))} 恢复">冷却中</span>` : ''}
         <span class="badge ${cls}"><span class="dot"></span>${text}</span>
       </div>
@@ -2138,8 +2287,10 @@ function renderUpstreams() {
         <span class="mono" style="flex:none">${esc(u.keyPreview)}</span>
         <span class="mono" style="overflow:hidden;text-overflow:ellipsis" title="${esc(u.baseUrl)}">${esc(u.baseUrl === DEFAULT_BASE_URL ? 'api.openai.com' : u.baseUrl)}</span>
         <span class="chip" style="flex:none;margin-left:auto" title="数字大的优先使用">优先级 ${esc(u.priority)}</span>
+        <span class="chip" style="flex:none" title="加权轮询时按比例分配，0 不参与">权重 ${esc(u.weight ?? 1)}</span>
       </div>
       <div class="account-section">${requestBlock(S.stats?.accounts[u.id])}</div>
+      <div class="account-section">${upstreamDailySummary(u)}${u.quotaReason && u.enabled !== false ? `<div class="small" style="color:var(--warn);margin-top:4px">${esc(upstreamQuotaText(u))}</div>` : ''}</div>
       ${models.length ? `<div class="account-section"><details class="notes-box" style="margin:0" data-models="${esc(u.id)}" ${upModelsOpen.has(u.id) ? 'open' : ''}>
         <summary>可用模型 ${models.length} 个（点击复制）</summary>
         <div class="chips" style="margin-top:8px">${models.map((m) => `<span class="chip mono" style="cursor:pointer" data-copy="${esc(m)}">${esc(m)}</span>`).join('')}</div>
@@ -2194,15 +2345,25 @@ function openUpstream(u) {
   $('up-org').value = u?.organization || '';
   $('up-project').value = u?.project || '';
   $('up-priority').value = u?.priority ?? 0;
+  $('up-weight').value = u?.weight ?? 1;
+  $('up-daily-usd').value = u?.dailyBudgetUsd ?? '';
+  $('up-daily-tokens').value = u?.dailyTokenLimit ?? '';
   $('upstream-dialog').showModal();
   (u ? $('up-label') : $('up-key')).focus();
 }
 document.querySelectorAll('[data-close-upstream]').forEach((b) => b.addEventListener('click', () => $('upstream-dialog').close()));
 $('upstream-form').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) $('up-submit').click(); });
 $('up-submit').addEventListener('click', run(async () => {
+  const weight = Number($('up-weight').value);
+  if ($('up-weight').value.trim() === '' || !Number.isInteger(weight) || weight < 0 || weight > 100) throw new Error('轮询权重必须是 0–100 的整数');
+  const dailyBudgetUsd = $('up-daily-usd').value.trim() === '' ? null : Number($('up-daily-usd').value);
+  const dailyTokenLimit = $('up-daily-tokens').value.trim() === '' ? null : Number($('up-daily-tokens').value);
+  if (dailyBudgetUsd != null && (!Number.isFinite(dailyBudgetUsd) || dailyBudgetUsd < 0)) throw new Error('每日美元额度必须是有效非负数，留空表示不限');
+  if (dailyTokenLimit != null && (!Number.isSafeInteger(dailyTokenLimit) || dailyTokenLimit < 0)) throw new Error('每日 Token 额度必须是非负整数，留空表示不限');
   const body = {
     label: $('up-label').value.trim(), baseUrl: $('up-base').value.trim(),
     organization: $('up-org').value.trim(), project: $('up-project').value.trim(), priority: Number($('up-priority').value) || 0,
+    weight, dailyBudgetUsd, dailyTokenLimit,
   };
   const key = $('up-key').value.trim();
   if (key) body.apiKey = key;
@@ -3098,7 +3259,7 @@ $('al-remove').addEventListener('click', run(async () => {
 }));
 
 // ============ API Key ============
-const CHANNEL ={ openai: ['accent', 'OpenAI API'], codex: ['', 'Codex 账号'] };
+const CHANNEL ={ openai: ['accent', 'OpenAI API'], codex: ['', '账号 / 混合池'] };
 const fmtTokens = (n) => (n >= 1e8 ? `${(n / 1e8).toFixed(2)} 亿` : n >= 1e4 ? `${(n / 1e4).toFixed(n >= 1e6 ? 0 : 1)} 万` : fmtNum(n));
 
 function usageCell(k) {
@@ -3164,7 +3325,7 @@ $('key-submit').addEventListener('click', run(async () => {
     $('new-key-value').textContent = key;
     $('new-key-hint').innerHTML = body.channel === 'openai'
       ? `渠道：OpenAI API${S.state.upstreams.length ? '' : '（还没有添加上游，请先去 <a href="#upstreams">API 上游</a> 添加官方 Key）'} · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>`
-      : '渠道：Codex 账号 · 请求走当前 ChatGPT 账号，仅供自己使用 · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>';
+      : '渠道：账号 / 混合池 · 按 <a href="#routing">路由调度</a> 设置选择账号或 API 上游 · 在 Codex CLI 里使用见 <a href="#overview" data-code-tab="codex">概览 → Codex CLI</a>';
     $('new-key').hidden = false;
   }
   $('key-dialog').close();
@@ -3179,50 +3340,92 @@ $('key-rows').addEventListener('click', run(async (e) => {
   await api('DELETE', `/keys/${b.dataset.delKey}`); toast('已删除'); await refreshState();
 }));
 
-// ============ 设置 ============
+// ============ 模型定价 ============
 const PRICE_FIELDS = ['input', 'cachedInput', 'output', 'imagePerImage', 'fastMultiplier'];
+function pricingValues(price) {
+  return Object.fromEntries(PRICE_FIELDS.map((key) => [key, String(price[key] ?? (key === 'fastMultiplier' ? 2 : ''))]));
+}
 function pricingRows(info) {
   return Object.entries(info.models || {}).sort(([a], [b]) => a.localeCompare(b)).map(([model, price]) => ({
-    model, originalModel: model, values: Object.fromEntries(PRICE_FIELDS.map((key) => [key, String(price[key] ?? (key === 'fastMultiplier' ? 2 : ''))])),
+    model, originalModel: model, values: pricingValues(price),
     source: price.source || (Object.hasOwn(info.overrides || {}, model) ? 'custom' : 'official'), changed: false,
   }));
 }
+function pricingBusy() {
+  const p = pricingEditor;
+  return p.loading || p.saving || p.syncing || p.autoSaving || Boolean(S.state?.pricing?.syncing);
+}
+function renderPricingControls() {
+  const p = pricingEditor, busy = pricingBusy(), ready = Boolean(p.rows && S.state?.pricing);
+  $('pricing-dirty').textContent = p.dirty ? '有未保存的修改，请保存或撤销后同步' : '';
+  $('pricing-save').disabled = !ready || !p.dirty || busy;
+  $('pricing-discard').disabled = !p.dirty || busy;
+  $('pricing-add').disabled = !ready || busy;
+  $('pricing-sync').disabled = !ready || p.dirty || busy;
+  $('pricing-sync').querySelector('span').textContent = p.syncing || S.state?.pricing?.syncing ? '正在同步…' : '同步参考价格';
+  $('pricing-sync').title = p.dirty ? '请先保存或撤销价格修改' : '';
+  $('pricing-auto-sync').disabled = !ready || busy;
+  $('pricing-auto-sync').checked = S.state?.pricing?.autoSync !== false;
+  $('pricing-rows').querySelectorAll('input, button').forEach((el) => { el.disabled = busy; });
+}
 function markPricingDirty() {
   pricingEditor.dirty = true;
-  $('pricing-dirty').textContent = '有未保存的修改';
-  $('pricing-save').disabled = pricingEditor.saving;
-  $('pricing-discard').disabled = false;
+  renderPricingControls();
 }
 function renderPricing(force = false) {
   const p = pricingEditor, info = S.state.pricing;
+  const focusedRow = document.activeElement?.closest('[data-price-row]');
   if (!info) {
     $('pricing-rows').innerHTML = '<tr><td colspan="7" class="muted">正在加载模型价格…</td></tr>';
     if (!p.loading) {
       p.loading = true;
-      api('GET', '/pricing').then((data) => { S.state.pricing = data; renderPricing(); })
-        .catch((e) => { $('pricing-rows').innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; })
-        .finally(() => { p.loading = false; });
+      api('GET', '/pricing').then((data) => { S.state.pricing = data; })
+        .catch((e) => { p.syncMessage = e.message; p.syncFailed = true; })
+        .finally(() => { p.loading = false; if (S.state.pricing) renderPricing(); else { $('pricing-rows').innerHTML = `<tr><td colspan="7" class="muted">${esc(p.syncMessage)}</td></tr>`; renderPricingControls(); } });
     }
+    renderPricingControls();
     return;
   }
-  if (!p.rows) { p.rows = pricingRows(info); p.overrides = structuredClone(info.overrides || {}); }
-  // 自动刷新时保留未保存的输入和焦点。
-  if (force || !p.dirty || !$('pricing-rows').contains(document.activeElement)) {
+  if (p.syncFailed && !info.syncError && info.syncedAt && info.syncedAt !== p.failedSyncedAt) {
+    p.syncFailed = false; p.syncMessage = '参考价格已同步，自定义价格已保留。';
+  }
+  if (!p.rows || (!p.dirty && !focusedRow)) {
+    p.rows = pricingRows(info); p.overrides = structuredClone(info.overrides || {}); p.removed.clear();
+  } else {
+    // 后台同步只更新未编辑的参考价，保留自定义草稿、恢复参考价和移除操作。
+    for (const [index, row] of p.rows.entries()) {
+      if (focusedRow && index === Number(focusedRow.dataset.priceRow)) continue;
+      if (!row.changed && row.source === 'official' && info.defaults?.[row.originalModel]) row.values = pricingValues(info.defaults[row.originalModel]);
+    }
+    if (!p.dirty) p.overrides = structuredClone(info.overrides || {});
+    const ids = new Set(p.rows.map((row) => row.originalModel || row.model.trim()));
+    for (const row of pricingRows(info)) {
+      if (!ids.has(row.originalModel) && !p.removed.has(row.originalModel)) p.rows.push(row);
+    }
+  }
+  // 自动刷新时保留输入焦点；离开输入后再更新表格。
+  if (force || !$('pricing-rows').contains(document.activeElement)) {
     $('pricing-rows').innerHTML = p.rows.map((row, index) => `<tr data-price-row="${index}">
       <td><input class="input mono price-model" data-price-field="model" aria-label="模型 ID" value="${esc(row.model)}" ${row.originalModel ? 'readonly' : ''}></td>
       ${PRICE_FIELDS.map((key) => `<td><input class="input num" type="number" min="0" step="any" data-price-field="${key}" aria-label="${esc(row.model || '新模型')} ${key}" value="${esc(row.values[key])}" ${key === 'imagePerImage' ? 'placeholder="未配置"' : ''}></td>`).join('')}
-      <td><span class="chip ${row.source === 'custom' ? 'on' : ''}">${row.source === 'custom' ? '自定义' : '官方参考'}</span> <button class="btn sm ghost" data-price-reset="${index}" title="恢复内置价格；没有内置价格的自定义模型将被移除">${row.originalModel && info.defaults?.[row.originalModel] ? '恢复默认' : '移除'}</button></td>
+      <td><span class="chip ${row.source === 'custom' ? 'on' : ''}">${row.source === 'custom' ? '自定义' : '官方参考'}</span> <button class="btn sm ghost" data-price-reset="${index}" title="恢复当前参考价格；没有参考价格的自定义模型将被移除">${row.originalModel && info.defaults?.[row.originalModel] ? '恢复参考价' : '移除'}</button></td>
     </tr>`).join('') || '<tr><td colspan="7" class="muted">暂无价格，点击「添加模型」配置。</td></tr>';
   }
   const source = /^https:\/\//.test(info.sourceUrl || '') ? `<a href="${esc(info.sourceUrl)}" target="_blank" rel="noopener">官方价格参考</a>` : '官方价格参考';
-  $('pricing-source').innerHTML = `${source}${info.verifiedAt ? ` · ${esc(info.verifiedAt)} 核对` : ''}<div class="muted">Fast 倍率由模型价格决定；可为上游别名配置精确模型 ID。</div>`;
-  $('pricing-dirty').textContent = p.dirty ? '有未保存的修改' : '';
-  $('pricing-save').disabled = !p.dirty || p.saving;
-  $('pricing-discard').disabled = !p.dirty || p.saving;
+  const verified = info.syncedAt ? `最近成功同步：${fmtTime(info.syncedAt)}` : info.verifiedAt ? `内置参考价格：${info.verifiedAt} 核对 · 尚未在线同步` : '尚未在线同步';
+  $('pricing-source').innerHTML = `${source} · ${esc(verified)}<div class="muted">自定义价格优先；Fast 倍率由模型价格决定，可为上游别名配置精确模型 ID。</div>`;
+  const status = $('pricing-sync-status');
+  const syncError = info.syncError?.message || info.syncError;
+  const message = p.syncing || info.syncing ? '正在获取官方参考价格，完成后自动更新费用估算…'
+    : p.syncFailed ? p.syncMessage : syncError ? `最近同步失败：${syncError}。继续使用已保存的参考价格，可点击同步重试。` : p.syncMessage;
+  status.hidden = !message;
+  status.className = `banner ${p.syncFailed || syncError ? 'warn' : 'info'}`;
+  status.textContent = message;
+  renderPricingControls();
 }
 $('pricing-rows').addEventListener('input', (e) => {
   const input = e.target.closest('[data-price-field]'), tr = e.target.closest('[data-price-row]');
-  if (!input || !tr) return;
+  if (!input || !tr || pricingBusy()) return;
   const row = pricingEditor.rows[Number(tr.dataset.priceRow)];
   if (input.dataset.priceField === 'model') row.model = input.value;
   else row.values[input.dataset.priceField] = input.value;
@@ -3231,7 +3434,7 @@ $('pricing-rows').addEventListener('input', (e) => {
   markPricingDirty();
 });
 $('pricing-add').addEventListener('click', () => {
-  if (!pricingEditor.rows) return;
+  if (!pricingEditor.rows || pricingBusy()) return;
   pricingEditor.rows.push({ model: '', originalModel: '', values: { input: '', cachedInput: '', output: '', imagePerImage: '', fastMultiplier: '2' }, source: 'custom', changed: true });
   markPricingDirty(); renderPricing(true);
   const inputs = $('pricing-rows').querySelectorAll('[data-price-field="model"]');
@@ -3239,19 +3442,24 @@ $('pricing-add').addEventListener('click', () => {
 });
 $('pricing-rows').addEventListener('click', (e) => {
   const button = e.target.closest('[data-price-reset]');
-  if (!button) return;
+  if (!button || pricingBusy()) return;
   const index = Number(button.dataset.priceReset), row = pricingEditor.rows[index], defaults = S.state.pricing.defaults?.[row.originalModel];
   delete pricingEditor.overrides[row.originalModel || row.model.trim()];
   if (defaults) {
-    row.values = Object.fromEntries(PRICE_FIELDS.map((key) => [key, String(defaults[key] ?? (key === 'fastMultiplier' ? 2 : ''))]));
+    row.values = pricingValues(defaults);
     row.changed = false; row.source = 'official';
-  } else pricingEditor.rows.splice(index, 1);
+  } else {
+    pricingEditor.removed.add(row.originalModel || row.model.trim());
+    pricingEditor.rows.splice(index, 1);
+  }
   markPricingDirty(); renderPricing(true);
 });
 $('pricing-discard').addEventListener('click', () => {
-  pricingEditor.rows = null; pricingEditor.dirty = false; renderPricing();
+  if (pricingBusy()) return;
+  pricingEditor.rows = null; pricingEditor.dirty = false; renderPricing(true);
 });
 $('pricing-save').addEventListener('click', run(async () => {
+  if (pricingBusy() || !pricingEditor.dirty) return;
   const p = pricingEditor, overrides = structuredClone(p.overrides), seen = new Set();
   for (const row of p.rows || []) {
     const model = row.model.trim();
@@ -3280,12 +3488,34 @@ $('pricing-save').addEventListener('click', run(async () => {
     await loadStats();
     await loadLogs();
     toast('模型价格已保存，费用统计已重新估算');
-  } finally { p.saving = false; renderPricing(); }
+  } finally { p.saving = false; renderPricing(true); }
 }));
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('[data-focus-pricing]')) return;
-  requestAnimationFrame(() => { $('pricing-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-});
+$('pricing-sync').addEventListener('click', run(async () => {
+  const p = pricingEditor;
+  if (pricingBusy() || p.dirty) return;
+  p.syncing = true; p.syncMessage = ''; p.syncFailed = false; renderPricing();
+  try {
+    S.state.pricing = await api('POST', '/pricing/sync');
+    p.rows = null;
+    p.syncMessage = '参考价格已同步，自定义价格已保留，费用统计已重新估算。';
+    toast('参考价格已同步');
+  } catch (e) {
+    p.syncFailed = true; p.failedSyncedAt = S.state.pricing?.syncedAt || null;
+    p.syncMessage = `同步失败：${e.message}。已保留原价格，可重试。`;
+    throw e;
+  } finally { p.syncing = false; renderPricing(true); }
+}));
+$('pricing-auto-sync').addEventListener('change', run(async (e) => {
+  if (pricingBusy()) return;
+  const p = pricingEditor, enabled = e.target.checked;
+  p.autoSaving = true; renderPricingControls();
+  try {
+    S.state.pricing = await api('PUT', '/pricing', { autoSync: enabled });
+    toast(enabled ? '已开启自动同步参考价格' : '已关闭自动同步参考价格');
+  } finally { p.autoSaving = false; renderPricing(); }
+}));
+
+// ============ 设置 ============
 function renderSettings() {
   const s = S.state.settings;
   // 自动刷新时不要覆盖正在输入的内容
@@ -3302,7 +3532,6 @@ function renderSettings() {
   $('set-fallback').checked = s.upstreamFallback;
   $('set-fallback-hint').innerHTML = s.upstreamFallback && !S.state.upstreams.some((u) => u.enabled)
     ? ' <b style="color:var(--danger)">还没有启用的 API 上游，暂不生效，请先去 <a href="#upstreams">API 上游</a> 添加。</b>' : '';
-  renderPricing();
   const a = activeAccount();
   const c = S.state.codex;
   const state = c.upgrading ? '<span class="badge warn">升级中</span>'

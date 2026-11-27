@@ -147,11 +147,14 @@ export function initializeRequestLogSchema(db) {
 }
 
 export class RequestLog {
-  constructor(db, { getPricing = () => ({}) } = {}) {
+  constructor(db, { getPricing = () => ({}), getReferencePricing = () => ({}) } = {}) {
     this.db = db;
     this.getPricing = getPricing;
+    this.getReferencePricing = getReferencePricing;
     // 每次落到账号或上游的尝试结束时调用（包括失败后换了账号的那次），告警按它统计失败率，见 alerts.js
     this.onAttempt = null;
+    // Daily upstream budgets settle independently from deletable request logs.
+    this.onUsage = null;
     if (!db) return;
     initializeRequestLogSchema(db);
     this.insert = db.prepare(
@@ -179,6 +182,15 @@ export class RequestLog {
       this.onAttempt(event);
     } catch (err) {
       console.warn('[gateway] 统计请求结果失败:', err.message);
+    }
+  }
+
+  settleUsage(event) {
+    if (!this.onUsage || !event.id) return;
+    try {
+      this.onUsage(event);
+    } catch (err) {
+      console.warn('[gateway] 结算上游日用量失败:', err.message);
     }
   }
 
@@ -210,6 +222,24 @@ export class RequestLog {
     this.db.prepare('DELETE FROM failed_attempts WHERE ts < ?').run(before);
   }
 
+  // Seed the independent budget ledger once on upgrade. Use the same attempt
+  // identifiers as live settlement so an interrupted migration can be resumed.
+  *settledUsageSince(since) {
+    if (!this.db) return;
+    for (const row of this.db.prepare(`SELECT r.*, (SELECT COALESCE(MAX(seq), 0)
+      FROM failed_attempts f WHERE f.request_id = r.id) AS attempt_index,
+      COALESCE((SELECT f.ts + f.duration_ms FROM failed_attempts f
+        WHERE f.request_id = r.id ORDER BY seq DESC LIMIT 1), r.ts) AS attempt_ts
+      FROM requests r WHERE ts >= ?`).iterate(since)) {
+      yield { id: row.account_id, ok: row.status === 'success', status: row.http_status,
+        aborted: row.status === 'aborted', row: { ...row, ts: row.attempt_ts }, attemptId: `${row.id}:${row.attempt_index}` };
+    }
+    for (const row of this.db.prepare('SELECT * FROM failed_attempts WHERE ts >= ?').iterate(since)) {
+      yield { id: row.account_id, ok: false, status: row.http_status, row,
+        attemptId: `${row.request_id}:${row.seq - 1}` };
+    }
+  }
+
   // 各下游 Key 从 since 起的请求数和 token 数（输入 + 输出），用于本月用量和额度
   keyUsage(since) {
     const usage = {};
@@ -230,8 +260,9 @@ export class RequestLog {
       GROUP BY r.api_key_id, ${COST_USAGE_COLUMNS.map((name) => `f.${name}`).join(', ')}
     `).all(since);
     const pricing = this.getPricing();
+    const reference = this.getReferencePricing();
     for (const row of [...costs, ...failed]) {
-      if (row.api_key_id && usage[row.api_key_id]) addCost(usage[row.api_key_id], estimateCost(row, pricing), row.cost_count);
+      if (row.api_key_id && usage[row.api_key_id]) addCost(usage[row.api_key_id], estimateCost(row, pricing, reference), row.cost_count);
     }
     return usage;
   }
@@ -296,9 +327,10 @@ export class RequestLog {
       .all(...args, Math.min(Number(limit) || 50, maxLimit), Number(offset) || 0);
     const attempts = this.attemptsFor(data.map((row) => row.id));
     const pricing = this.getPricing();
+    const reference = this.getReferencePricing();
     return { total: agg.n, summary, data: data.map((row) => {
-      const cost = estimateCost(row, pricing);
-      const previous = (attempts.get(row.id) || []).map((attempt) => ({ ...attempt, cost: estimateCost(attempt, pricing) }));
+      const cost = estimateCost(row, pricing, reference);
+      const previous = (attempts.get(row.id) || []).map((attempt) => ({ ...attempt, cost: estimateCost(attempt, pricing, reference) }));
       const costSummary = emptyCostSummary();
       for (const item of [...previous, { cost }]) addCost(costSummary, item.cost);
       return { ...row, tps: outputTps(row), cacheHitRate: cacheHitRate(row.cached_tokens, row.input_tokens), cost, costSummary, attempts: previous };
@@ -463,8 +495,9 @@ export class RequestLog {
       outcomeOf(stats);
     }
     const pricing = this.getPricing();
+    const reference = this.getReferencePricing();
     for (const row of [...this.costGroups('requests', since, 'account_id', until), ...this.costGroups('failed_attempts', since, 'account_id', until)]) {
-      const cost = estimateCost(row, pricing);
+      const cost = estimateCost(row, pricing, reference);
       addCost(result.overall, cost, row.cost_count);
       if (row.account_id) addCost((result.accounts[row.account_id] ||= emptyStats()), cost, row.cost_count);
     }
@@ -595,6 +628,13 @@ class LogEntry {
     if (model) this.row.resolved_model = model;
   }
 
+  // The mixed router remembers which provider owns a Responses continuation.
+  // This transient hook never stores response content in the request database.
+  responseId(id) {
+    if (typeof id !== 'string' || !id || id.length > 256) return;
+    try { this.onResponseId?.(id); } catch {}
+  }
+
   // 模型开始输出（推理、回答或工具调用）的时间，从收到请求算起，含之前失败尝试的耗时；只记第一次
   firstToken() {
     this.row.first_token_ms ??= this.elapsed();
@@ -621,6 +661,8 @@ class LogEntry {
     this.log.attempt({ id: this.row.account_id, label: this.row.account_email, ok: false, status, code: err?.code ?? null, message });
     const now = Date.now();
     const startedAt = this.attemptStartedAt ?? this.row.ts;
+    this.log.settleUsage({ id: this.row.account_id, ok: false, status,
+      row: { ...this.row, ts: startedAt }, attemptId: `${this.row.id}:${this.attempts.length}` });
     this.attempts.push({
       seq: this.attempts.length + 1,
       ts: startedAt,
@@ -674,6 +716,9 @@ class LogEntry {
     this.row.duration_ms = Date.now() - this.row.ts;
     if (this.row.http_status == null && this.row.status !== 'aborted') this.row.http_status = res?.statusCode || 200;
     const r = this.row;
+    this.log.settleUsage({ id: r.account_id, ok: r.status === 'success', status: r.http_status,
+      aborted: r.status === 'aborted', row: { ...r, ts: this.attemptStartedAt ?? r.ts },
+      attemptId: `${r.id}:${this.attempts.length}` });
     if (r.status !== 'aborted') {
       this.log.attempt({ id: r.account_id, label: r.account_email, ok: r.status === 'success', status: r.http_status, code: r.error_code, message: r.error_message });
     }

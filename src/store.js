@@ -20,6 +20,10 @@ const DEFAULT_SETTINGS = {
   fallbackModels: [],
   // 多账号调用策略：active 只用当前账号；even 平均轮询；weighted 按权重（见 codex/accountPicker.js）
   accountStrategy: 'active',
+  // Legacy keeps existing channel behavior until unified routing is enabled.
+  routingMode: 'legacy',
+  upstreamStrategy: 'priority',
+  quotaTimeZone: 'Asia/Shanghai',
   // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复
   autoDisableOnQuota: true,
   // 账号排队：每个账号同时处理的请求数、任意 60 秒内开始的请求数上限，0 不限；超出的排队（见 codex/accountQueue.js）
@@ -31,6 +35,8 @@ const DEFAULT_SETTINGS = {
   userAgentMode: DEFAULT_USER_AGENT_MODE,
   // Exact model ids; USD per 1M tokens, optional USD per generated image.
   modelPrices: {},
+  pricingAutoSync: true,
+  pricingReference: {},
 };
 const MAX_IMAGE_RECORDS = 500;
 export const CHANNELS = ['codex', 'openai'];
@@ -59,6 +65,7 @@ export class Store {
     data.modelCatalog ||= {};
     data.images ||= [];
     data.upstreams ||= [];
+    data.upstreamDailyUsage ||= {};
     // 1.2 之前的 Key 都走 Codex 账号
     for (const k of data.apiKeys) k.channel ||= 'codex';
     this.#write(data);

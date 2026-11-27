@@ -117,6 +117,7 @@ export async function handleResponses(req, res, body, ctx) {
     builder.finish(result);
     logResult(result);
     remember(result);
+    req.log?.responseId?.(builder.response.id);
     sendJson(res, 200, builder.response);
     return;
   }
@@ -131,6 +132,7 @@ export async function handleResponses(req, res, body, ctx) {
   let sequence = 0;
   builder.emit = (type, data) => {
     if (res.destroyed) return;
+    if (data.response?.id) req.log?.responseId?.(data.response.id);
     const text = `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`;
     if (PREAMBLE_EVENTS.has(type)) stream.hold(text);
     else stream.write(text);

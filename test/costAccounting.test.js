@@ -136,3 +136,42 @@ test('changing configured prices recalculates historical estimates without chang
   closeTo(log.list().data[0].cost.usd, 0.005);
   assert.equal(log.list().data[0].input_tokens, 1000);
 });
+
+test('newly synced reference prices recalculate historical attempts, account totals and key usage with custom rates taking precedence', (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  let reference = {};
+  const custom = {};
+  const log = new RequestLog(db, { getPricing: () => custom, getReferencePricing: () => reference });
+  const entry = begin(log);
+  entry.account({ id: 'first' });
+  entry.usage({ inputTokens: 1000, cachedInputTokens: 200, outputTokens: 100 });
+  entry.fallback(failure);
+  entry.request({ serviceTier: 'default' });
+  entry.account({ id: 'second' });
+  entry.usage({ inputTokens: 500, cachedInputTokens: 100, outputTokens: 50 });
+  entry.end({ statusCode: 200 });
+  const rawUsage = db.prepare('SELECT input_tokens, cached_tokens, output_tokens FROM requests WHERE id = ?').get(entry.id);
+  assert.equal(log.list().data[0].costSummary.unpricedAttempts, 2);
+  assert.equal(log.stats().overall.unpricedAttempts, 2);
+  assert.equal(log.keyUsage(Date.now() - 60_000).key.unpricedAttempts, 2);
+
+  reference = { models: prices, syncedAt: new Date().toISOString() };
+  const row = log.list().data[0];
+  closeTo(row.cost.usd, 0.00132);
+  closeTo(row.attempts[0].cost.usd, 0.00264);
+  closeTo(row.costSummary.costUsd, 0.00396);
+  assert.equal(row.cost.rateSource, 'official');
+  const stats = log.stats();
+  closeTo(stats.overall.costUsd, 0.00396);
+  closeTo(stats.accounts.first.costUsd, 0.00264);
+  closeTo(stats.accounts.second.costUsd, 0.00132);
+  closeTo(log.keyUsage(Date.now() - 60_000).key.costUsd, 0.00396);
+
+  custom['fixture-model'] = { input: 4, cachedInput: 0.4, output: 20 };
+  closeTo(log.list().data[0].costSummary.costUsd, 0.00792);
+  closeTo(log.stats().overall.costUsd, 0.00792);
+  closeTo(log.keyUsage(Date.now() - 60_000).key.costUsd, 0.00792);
+  assert.equal(log.list().data[0].cost.rateSource, 'custom');
+  assert.deepEqual(db.prepare('SELECT input_tokens, cached_tokens, output_tokens FROM requests WHERE id = ?').get(entry.id), rawUsage);
+});

@@ -16,8 +16,10 @@ import { applyServiceTierPolicy } from './codex/serviceTier.js';
 import { clip } from './requestLog.js';
 import { sendJson } from './http.js';
 import { parseMultipart } from './multipart.js';
+import { UpstreamQuota, validateUpstreamLimits } from './upstreamQuota.js';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+export const UPSTREAM_STRATEGIES = ['priority', 'round_robin', 'weighted'];
 const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'openai-beta', 'user-agent', 'idempotency-key'];
 const DROP_RESPONSE_HEADERS = new Set([
   'content-length', 'content-encoding', 'transfer-encoding', 'connection', 'keep-alive', 'set-cookie',
@@ -39,10 +41,13 @@ export class UpstreamManager {
   #cooldown = new Map();
   #turn = 0;
   #modelCatalog = new Map();
+  #weights = new Map();
 
-  constructor({ store, codex }) {
+  constructor({ store, codex, now = () => Date.now() }) {
     this.store = store;
     this.codex = codex;
+    this.now = now;
+    this.quota = new UpstreamQuota({ store, now });
   }
 
   get records() {
@@ -50,9 +55,13 @@ export class UpstreamManager {
   }
 
   list() {
-    const now = Date.now();
+    const now = this.now();
     return this.records.map(({ apiKey, ...rest }) => ({
       ...rest,
+      weight: weightOf(rest),
+      dailyBudgetUsd: rest.dailyBudgetUsd ?? null,
+      dailyTokenLimit: rest.dailyTokenLimit ?? null,
+      ...this.quota.state(rest),
       keyPreview: preview(apiKey),
       coolingUntil: this.#cooldown.get(rest.id) > now ? this.#cooldown.get(rest.id) : null,
     }));
@@ -62,8 +71,9 @@ export class UpstreamManager {
     return this.records.find((u) => u.id === id) || null;
   }
 
-  create({ label, apiKey, baseUrl, organization, project, priority }) {
+  create({ label, apiKey, baseUrl, organization, project, priority, ...limits }) {
     if (!apiKey?.trim()) throw httpError(400, '请填写 API Key');
+    const validated = validateUpstreamLimits(limits);
     const record = {
       id: `oa-${crypto.randomBytes(4).toString('hex')}`,
       type: 'openai',
@@ -73,6 +83,10 @@ export class UpstreamManager {
       organization: organization?.trim() || null,
       project: project?.trim() || null,
       priority: Number(priority) || 0,
+      weight: 1,
+      dailyBudgetUsd: null,
+      dailyTokenLimit: null,
+      ...validated,
       enabled: true,
       status: 'unknown',
       lastError: null,
@@ -90,6 +104,7 @@ export class UpstreamManager {
     if (!record) throw httpError(404, '上游不存在');
     const previousConnection = connectionKey(record);
     const baseUrl = 'baseUrl' in patch ? normalizeBaseUrl(patch.baseUrl) : record.baseUrl;
+    const limits = validateUpstreamLimits(patch);
     if ('label' in patch) record.label = String(patch.label || '').trim() || record.label;
     if (patch.apiKey?.trim()) record.apiKey = patch.apiKey.trim();
     record.baseUrl = baseUrl;
@@ -97,7 +112,9 @@ export class UpstreamManager {
     if ('project' in patch) record.project = patch.project?.trim() || null;
     if ('priority' in patch) record.priority = Number(patch.priority) || 0;
     if ('enabled' in patch) record.enabled = Boolean(patch.enabled);
+    Object.assign(record, limits);
     this.#modelCatalog.delete(id);
+    this.#weights.delete(id);
     if (previousConnection !== connectionKey(record)) {
       record.models = null;
       record.status = 'unknown';
@@ -172,9 +189,9 @@ export class UpstreamManager {
   #models(record, headers, search = '') {
     const signature = `${connectionKey(record)}|${headers['user-agent'] || ''}|${search}`;
     const previous = this.#modelCatalog.get(record.id);
-    if (!search && previous?.signature === signature && previous.expiresAt > Date.now()) return previous.promise;
+    if (!search && previous?.signature === signature && previous.expiresAt > this.now()) return previous.promise;
     const source = { ...record };
-    const cached = { signature, expiresAt: Date.now() + MODEL_CATALOG_TTL_MS };
+    const cached = { signature, expiresAt: this.now() + MODEL_CATALOG_TTL_MS };
     if (!search) this.#modelCatalog.set(record.id, cached);
     cached.promise = (async () => {
       let response;
@@ -188,12 +205,12 @@ export class UpstreamManager {
         const models = payload.data.filter((model) => typeof model?.id === 'string' && model.id);
         if (this.#modelCatalog.get(record.id) === cached) {
           record.models = [...new Set(models.map((model) => model.id))].sort();
-          this.#cooldown.delete(record.id);
-          this.#mark(record, 'ready', null, true);
+          if (this.#cooldown.get(record.id) > this.now()) this.store.save();
+          else this.#mark(record, 'ready', null, true);
         }
         return models;
       } catch (err) {
-        cached.expiresAt = Date.now() + 5_000;
+        cached.expiresAt = this.now() + 5_000;
         if (this.#modelCatalog.get(record.id) === cached && (!response || isFailover(response.statusCode))) {
           this.#fail(record, err.status || 0, err.message, response?.headers);
         }
@@ -203,37 +220,76 @@ export class UpstreamManager {
     return cached.promise;
   }
 
-  // 优先级高的在前；同优先级每次换一个起点轮流用；冷却中的排到最后，所有上游都在冷却时仍会尝试
-  candidates() {
-    const now = Date.now();
+  recordAttempt(event, options) { return this.quota.record(event, options); }
+
+  // Mixed scheduling reads candidates without advancing the API-only picker.
+  routingCandidates(model, { ordered = false } = {}) {
+    const source = ordered ? this.candidates({ model }) : this.records.toSorted((a, b) => (b.priority || 0) - (a.priority || 0));
+    return source.filter((upstream) => upstream.enabled && weightOf(upstream) > 0
+      && !(this.#cooldown.get(upstream.id) > this.now()) && !this.quota.state(upstream).quotaBlocked
+      && (!model || upstream.models == null || upstream.models.includes(model)));
+  }
+
+  // Priority preserves the legacy order. Round-robin and smooth weighted modes
+  // distribute the API pool globally; daily limits always take precedence.
+  candidates({ catalog = false, model } = {}) {
+    const now = this.now();
     const turn = this.#turn++;
     const groups = new Map();
     for (const u of this.records) {
-      if (!u.enabled) continue;
+      if (!u.enabled || (!catalog && (weightOf(u) === 0 || this.quota.state(u).quotaBlocked))) continue;
       if (!groups.has(u.priority)) groups.set(u.priority, []);
       groups.get(u.priority).push(u);
     }
-    const ordered = [...groups.keys()]
+    let ordered = [...groups.keys()]
       .sort((a, b) => b - a)
       .flatMap((p) => {
         const group = groups.get(p);
         const start = turn % group.length;
         return [...group.slice(start), ...group.slice(0, start)];
       });
+    const strategy = this.store.data.settings?.upstreamStrategy || 'priority';
+    const available = ordered.filter((u) => !(this.#cooldown.get(u.id) > now));
+    let pool = available.length ? available : ordered;
+    if (model && pool.length) {
+      const rank = (u) => u.models?.includes(model) ? 0 : u.models == null ? 1 : 2;
+      const best = Math.min(...pool.map(rank));
+      pool = pool.filter((u) => rank(u) === best);
+    }
+    if (!catalog && strategy === 'round_robin' && ordered.length) {
+      pool = this.records.filter((u) => pool.includes(u));
+      const start = turn % pool.length;
+      const primary = [...pool.slice(start), ...pool.slice(0, start)];
+      ordered = [...primary, ...ordered.filter((u) => !pool.includes(u))];
+    } else if (!catalog && strategy === 'weighted' && ordered.length) {
+      let total = 0, best;
+      for (const u of pool) {
+        const value = (this.#weights.get(u.id) || 0) + weightOf(u);
+        this.#weights.set(u.id, value); total += weightOf(u);
+        if (!best || value > this.#weights.get(best.id)) best = u;
+      }
+      this.#weights.set(best.id, this.#weights.get(best.id) - total);
+      ordered = [best, ...ordered.filter((u) => u !== best)];
+    }
     const cooling = (u) => this.#cooldown.get(u.id) > now;
     return [...ordered.filter((u) => !cooling(u)), ...ordered.filter(cooling)];
   }
 
   // 把下游请求转发给上游；subPath 是去掉 /v1 之后的路径，例如 /responses
-  async proxy(req, res, { subPath, search, body }) {
-    let list = this.candidates();
-    if (list.length === 0) {
-      throw httpError(503, '还没有可用的 OpenAI API Key 上游，请在后台「API 上游」页添加', 'no_upstream');
-    }
+  async proxy(req, res, { subPath, search, body, upstreamId, allowFallback = true, throwOnError = false }) {
+    const catalog = req.method === 'GET' && /^\/models(?:\/|$)/.test(subPath);
     const json = parseJsonRequest(req, body);
     const form = !json && /^multipart\/form-data\b/i.test(req.headers['content-type'] || '')
       ? parseMultipart(body, req.headers['content-type']) : null;
     const requestModel = json?.model ?? form?.fields.model;
+    const schedulingModel = req.method === 'POST' && MODEL_REQUEST_PATHS.has(subPath.replace(/\/$/, '')) ? requestModel : null;
+    let list = upstreamId
+      ? this.records.filter((u) => u.id === upstreamId && u.enabled && (catalog || (weightOf(u) > 0 && !this.quota.state(u).quotaBlocked && !(this.#cooldown.get(u.id) > this.now()))))
+      : this.candidates({ catalog, model: schedulingModel });
+    if (!allowFallback) list = list.slice(0, 1);
+    if (list.length === 0) {
+      throw httpError(503, '没有可用的 API 上游，请检查启用状态、权重和每日额度', 'no_upstream');
+    }
     let tier;
     if (json && req.method === 'POST' && (subPath === '/responses' || subPath === '/responses/')) {
       const payload = applyServiceTierPolicy(json, this.store.data.settings?.serviceTierMode, { explicitStandard: true });
@@ -257,15 +313,15 @@ export class UpstreamManager {
       try { model = decodeURIComponent(subPath.split('/')[2]); }
       catch { throw httpError(400, '模型 ID 编码无效', 'invalid_model'); }
     }
-    if (typeof model === 'string' && model) {
-      const now = Date.now();
+    const retryMissingModel = modelDetail || (req.method === 'POST' && MODEL_REQUEST_PATHS.has(subPath.replace(/\/$/, '')));
+    if (retryMissingModel && typeof model === 'string' && model) {
+      const now = this.now();
       const rank = (upstream) => {
         const match = upstream.models?.includes(model) ? 0 : upstream.models == null ? 1 : 2;
         return match + (this.#cooldown.get(upstream.id) > now ? 3 : 0);
       };
       list = list.toSorted((a, b) => rank(a) - rank(b));
     }
-    const retryMissingModel = modelDetail || req.method === 'POST' && MODEL_REQUEST_PATHS.has(subPath.replace(/\/$/, ''));
 
     // 流式对话默认不带用量，补上 include_usage 才能记 token、算额度；客户端没要的话把用量块过滤掉再回给它
     let stripUsageChunk = false;
@@ -277,6 +333,9 @@ export class UpstreamManager {
 
     for (let i = 0; i < list.length; i++) {
       const upstream = list[i];
+      // Another in-flight request may have consumed this node's remaining
+      // quota after candidates were collected. Recheck immediately before send.
+      if (!upstream.enabled || (!catalog && (weightOf(upstream) === 0 || this.quota.state(upstream).quotaBlocked))) continue;
       const isLast = i === list.length - 1;
       req.log?.account({ id: upstream.id, label: upstream.label });
       req.log?.request({ serviceTier: initialTier });
@@ -292,9 +351,22 @@ export class UpstreamManager {
         }
         throw httpError(502, `连接上游失败：${err.message}`, 'upstream_unreachable');
       }
+      if (throwOnError && upstreamRes.statusCode >= 400) {
+        const raw = await readAll(upstreamRes);
+        const info = parseJsonBody(raw, { embedding: subPath.replace(/\/$/, '') === '/embeddings' });
+        if (info.model) req.log?.resolvedModel(info.model);
+        if (info.usage) req.log?.usage(info.usage);
+        if (!tier && info.serviceTier != null) req.log?.request({ serviceTier: info.serviceTier });
+        const status = upstreamRes.statusCode;
+        const message = errorMessage(raw.toString('utf8'), status);
+        if (isFailover(status)) this.#fail(upstream, status, message, upstreamRes.headers);
+        let payload;
+        try { payload = JSON.parse(raw.toString('utf8')); } catch {}
+        throw httpError(status, message, payload?.error?.code || (isMissingModel(raw) ? 'model_not_found' : 'upstream_error'));
+      }
       if (!isLast && retryMissingModel && model && (upstreamRes.statusCode === 400 || upstreamRes.statusCode === 404)) {
         const raw = await readAll(upstreamRes);
-        if (modelDetail && upstreamRes.statusCode === 404 || isMissingModel(raw)) {
+        if ((modelDetail && upstreamRes.statusCode === 404) || isMissingModel(raw)) {
           req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, errorMessage(raw.toString('utf8'), upstreamRes.statusCode), 'model_not_found'));
           continue;
         }
@@ -305,7 +377,7 @@ export class UpstreamManager {
       }
       if (isFailover(upstreamRes.statusCode) && !isLast) {
         const text = (await readAll(upstreamRes)).toString('utf8');
-        const info = parseJsonBody(Buffer.from(text));
+        const info = parseJsonBody(Buffer.from(text), { embedding: subPath.replace(/\/$/, '') === '/embeddings' });
         if (info.model) req.log?.resolvedModel(info.model);
         if (info.usage) req.log?.usage(info.usage);
         if (!tier && info.serviceTier != null) req.log?.request({ serviceTier: info.serviceTier });
@@ -313,12 +385,13 @@ export class UpstreamManager {
         req.log?.failedAttempt?.(httpError(upstreamRes.statusCode, upstream.lastError, 'upstream_error'));
         continue;
       }
-      return this.#relay(upstream, upstreamRes, res, req.log, stripUsageChunk, tier);
+      return this.#relay(upstream, upstreamRes, res, req.log, stripUsageChunk, tier, subPath);
     }
+    throw httpError(503, '候选 API 上游的每日额度已用完或已停用', 'no_upstream');
   }
 
   // 把上游响应原样回写给下游，同时从里面取出用量、模型和错误用于日志
-  async #relay(upstream, upstreamRes, res, log, stripUsageChunk, tier) {
+  async #relay(upstream, upstreamRes, res, log, stripUsageChunk, tier, subPath) {
     if (res.destroyed) {
       upstreamRes.destroy();
       throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
@@ -334,6 +407,12 @@ export class UpstreamManager {
     const filter = tracker && stripUsageChunk ? new UsageChunkFilter() : null;
     const json = !tracker && type.includes('json') ? [] : null;
     let jsonBytes = 0;
+    let observedResponseId = null;
+    const rememberResponse = (info) => {
+      if (subPath.replace(/\/$/, '') !== '/responses' || !info.responseId || info.responseId === observedResponseId) return;
+      observedResponseId = info.responseId;
+      log?.responseId?.(info.responseId);
+    };
 
     await new Promise((resolve, reject) => {
       const forward = (data) => {
@@ -348,6 +427,7 @@ export class UpstreamManager {
           const text = tracker.feed(chunk);
           // Keep observed usage/tier even if the downstream closes before EOF.
           const info = tracker.result();
+          rememberResponse(info);
           if (info.output) log?.firstToken?.();
           if (info.model) log?.resolvedModel(info.model);
           if (tier) recordResponsesTier(log, tier, info.earlyTier, info.terminalTier);
@@ -379,7 +459,8 @@ export class UpstreamManager {
     });
     res.end();
 
-    const info = tracker ? tracker.result() : json ? parseJsonBody(Buffer.concat(json)) : {};
+    const info = tracker ? tracker.result() : json ? parseJsonBody(Buffer.concat(json), { embedding: subPath.replace(/\/$/, '') === '/embeddings' }) : {};
+    rememberResponse(info);
     log?.resolvedModel(info.model);
     log?.usage(info.usage);
     if (info.images != null) log?.images(info.images);
@@ -407,7 +488,7 @@ export class UpstreamManager {
     const ms = status === 401 || status === 403 ? 10 * 60_000
       : status === 429 ? (retryAfter > 0 ? Math.min(retryAfter, 600) * 1000 : 30_000)
       : status >= 500 ? 15_000 : 30_000;
-    this.#cooldown.set(record.id, Date.now() + ms);
+    this.#cooldown.set(record.id, this.now() + ms);
     this.#mark(record, status === 401 ? 'invalid' : 'error', message);
   }
 
@@ -416,7 +497,7 @@ export class UpstreamManager {
     const changed = force || record.status !== status || record.lastError !== error;
     record.status = status;
     record.lastError = error;
-    record.lastCheckedAt = new Date().toISOString();
+    record.lastCheckedAt = new Date(this.now()).toISOString();
     if (changed) this.store.save();
   }
 }
@@ -475,7 +556,7 @@ class SseTracker {
   constructor() {
     this.decoder = new StringDecoder('utf8');
     this.buffer = '';
-    this.info = { model: null, usage: null, serviceTier: null, earlyTier: null, terminalTier: null, error: null, errorCode: null, output: false };
+    this.info = { model: null, responseId: null, usage: null, serviceTier: null, earlyTier: null, terminalTier: null, error: null, errorCode: null, output: false };
   }
 
   // 返回这一块解码后的文本，过滤用量块时要用
@@ -497,6 +578,7 @@ class SseTracker {
   }
 
   #take(event) {
+    if (typeof event.response?.id === 'string') this.info.responseId = event.response.id;
     this.info.output ||= isOutputEvent(event) || hasChatOutput(event);
     this.info.model ||= event.model || event.response?.model || null;
     const tier = event.response?.service_tier ?? event.service_tier;
@@ -560,17 +642,18 @@ function isUsageOnlyChunk(event) {
   }
 }
 
-function parseJsonBody(buf) {
+function parseJsonBody(buf, options) {
   try {
     const json = JSON.parse(buf.toString('utf8'));
     // Embeddings also return `data`, so count only image-shaped entries.
     const images = Array.isArray(json.data) ? json.data.filter((item) => item &&
       (typeof item.url === 'string' || typeof item.b64_json === 'string')).length : 0;
     return {
+      responseId: json.id || json.response?.id || null,
       model: json.model || json.response?.model || null,
       serviceTier: json.service_tier ?? json.response?.service_tier ?? null,
       responseStatus: json.response?.status ?? json.status ?? null,
-      usage: toUsage(json.usage || json.response?.usage),
+      usage: toUsage(json.usage || json.response?.usage, options),
       images: images || null,
       error: json.error?.message || null,
       errorCode: json.error?.code || json.error?.type || null,
@@ -593,13 +676,15 @@ function recordResponsesTier(log, tier, early, actual) {
 }
 
 // Chat（prompt/completion）和 Responses（input/output）两种用量格式统一成日志用的字段
-function toUsage(u) {
+function toUsage(u, { embedding = false } = {}) {
   if (!u || typeof u !== 'object') return null;
   if (u.input_tokens == null && u.prompt_tokens == null && u.output_tokens == null && u.completion_tokens == null) return null;
   return {
     inputTokens: u.input_tokens ?? u.prompt_tokens ?? null,
     cachedInputTokens: u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0,
-    outputTokens: u.output_tokens ?? u.completion_tokens ?? null,
+    // Embeddings report prompt/input usage and have no generated token output.
+    // Other endpoints must preserve an absent output count as unknown.
+    outputTokens: u.output_tokens ?? u.completion_tokens ?? (embedding && (u.input_tokens != null || u.prompt_tokens != null) ? 0 : null),
     reasoningOutputTokens: u.output_tokens_details?.reasoning_tokens ?? u.completion_tokens_details?.reasoning_tokens ?? 0,
   };
 }
@@ -636,6 +721,10 @@ function isMissingModel(raw) {
 
 function connectionKey(record) {
   return JSON.stringify([record.baseUrl, record.apiKey, record.organization, record.project]);
+}
+
+function weightOf(record) {
+  return Number.isInteger(record.weight) && record.weight >= 0 && record.weight <= 100 ? record.weight : 1;
 }
 
 function normalizeBaseUrl(value) {

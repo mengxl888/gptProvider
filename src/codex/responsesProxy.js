@@ -266,6 +266,8 @@ export class CodexResponsesProxy {
         diag.bytes += chunk.length;
         diag.firstChunkMs ??= ms();
         tracker.feed(chunk);
+        const observedResponseId = tracker.response?.id || tracker.initial?.id;
+        if (observedResponseId) req.log?.responseId?.(observedResponseId);
         if (tracker.output && diag.firstOutputMs == null) {
           diag.firstOutputMs = ms();
           req.log?.firstToken?.();
@@ -320,6 +322,7 @@ export class CodexResponsesProxy {
         if (targetScope) diag.routing.received = this.routingCookies.store(targetScope, RESPONSES_URL, pendingRouting.setCookies);
       }
       const response = tracker.response;
+      req.log?.responseId?.(response.id);
       response.model ||= payload.model;
       req.log?.resolvedModel(response.model);
       if (response.usage) {

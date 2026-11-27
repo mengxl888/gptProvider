@@ -16,6 +16,9 @@ import { handleChatCompletions } from './openai/chat.js';
 import { IMAGE_MODEL_IDS, handleImageEdits, handleImageGenerations, isImageModel } from './openai/images.js';
 import { handleResponses } from './openai/responses.js';
 import { openRequestLog, withLog } from './requestLog.js';
+import { PricingCatalog } from './pricingCatalog.js';
+import { PoolRouter } from './poolRouter.js';
+import { parseMultipart } from './multipart.js';
 import { readRequestBody, requestBodyRejection } from './requestBody.js';
 import { Store, safeEqual } from './store.js';
 import { AppUpdater, RESTART_EXIT_CODE } from './updater.js';
@@ -36,7 +39,20 @@ const accounts = new AccountManager({
 });
 const upstreams = new UpstreamManager({ store, codex });
 const images = new ImageLibrary({ store, dataDir: config.dataDir });
-const requestLog = await openRequestLog(config.dataDir, { getPricing: () => store.data.settings.modelPrices || {} });
+const pricing = new PricingCatalog({ store });
+const requestLog = await openRequestLog(config.dataDir, {
+  getPricing: () => store.data.settings.modelPrices || {},
+  getReferencePricing: () => store.data.settings.pricingReference || {},
+});
+requestLog.onUsage = (event) => upstreams.recordAttempt(event);
+if (!store.data.upstreamDailyUsageMigrated && requestLog.enabled) {
+  for (const event of requestLog.settledUsageSince(Date.now() - 3 * 24 * 3600_000)) {
+    upstreams.recordAttempt(event, { save: false });
+  }
+  store.data.upstreamDailyUsageMigrated = true;
+  store.save();
+}
+const poolRouter = new PoolRouter({ store, accounts, upstreams });
 const updater = new AppUpdater({ config });
 const accountResponses = new CodexResponsesProxy({ accounts, store, codex });
 const alerts = new AlertMonitor({ store, accounts, appVersion: config.appVersion });
@@ -46,7 +62,7 @@ requestLog.onAttempt = (event) => {
   if (!event.ok && event.status === 429 && store.getAccount(event.id)) accounts.refreshAfterLimit(event.id);
 };
 const fastBenchmark = new FastBenchmark({ accounts, proxy: accountResponses, codex });
-const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, fastBenchmark, alerts, restart };
+const ctx = { store, accounts, upstreams, images, codex, requestLog, updater, accountResponses, fastBenchmark, alerts, pricing, restart };
 
 // 对话类请求：model 是过载后换用的备用模型（null 用请求里的）。第一次解析时记下请求实际要用的模型，
 // 换备用模型时排除它；生图模型不换。
@@ -128,6 +144,9 @@ async function route(req, res) {
     requireBearer(req, (token) => (keyRecord = store.findApiKey(token)), 'API Key 无效');
     store.touchApiKey(keyRecord);
     if (keyRecord.channel === 'openai') return proxyToUpstream(req, res, url, keyRecord);
+    if (store.data.settings.routingMode && store.data.settings.routingMode !== 'legacy') {
+      return proxyToPool(req, res, url, keyRecord);
+    }
 
     if (req.method === 'GET' && pathname === '/v1/models') {
       const account = accounts.activeAccount();
@@ -168,6 +187,64 @@ async function route(req, res) {
   }
 
   throw httpError(404, `未找到 ${req.method} ${pathname}`, 'not_found');
+}
+
+// Unified routing leaves the dedicated API channel intact; Codex-channel keys
+// opt into the global policy, so existing installations retain legacy behavior.
+async function proxyToPool(req, res, url, keyRecord) {
+  const subPath = url.pathname.slice('/v1'.length);
+  if (req.method === 'GET' && (subPath === '/models' || subPath === '/models/')) {
+    const models = new Map();
+    const catalogSources = [];
+    for (const account of store.data.accounts) {
+      if (!accounts.usable(account) || account.weight === 0) continue;
+      catalogSources.push((async () => modelIdsForApi(await accounts.listModels(account.id), accounts.supportsImageGeneration(account) ? IMAGE_MODEL_IDS : [])
+        .map((id) => ({ id, object: 'model', created: 0, owned_by: 'openai' })))());
+    }
+    if (upstreams.records.some((upstream) => upstream.enabled && upstream.weight !== 0)) {
+      catalogSources.push((async () => {
+        let payload;
+        const sink = { writeHead() {}, end(text) { payload = JSON.parse(text); } };
+        await upstreams.proxy(req, sink, { subPath: '/models', search: url.search, body: Buffer.alloc(0) });
+        return payload.data;
+      })());
+    }
+    const catalogs = await Promise.allSettled(catalogSources);
+    for (const catalog of catalogs) if (catalog.status === 'fulfilled') {
+      for (const model of catalog.value) if (!models.has(model.id)) models.set(model.id, model);
+    }
+    if (!catalogs.some((catalog) => catalog.status === 'fulfilled')) throw httpError(503, '没有可用节点可获取模型目录', 'no_pool_node');
+    return sendJson(res, 200, { object: 'list', data: [...models.values()] });
+  }
+  const endpoint = LOGGED_ENDPOINTS[`${req.method} ${url.pathname}`];
+  // Stateful resource ids belong to their API provider; only inference endpoints
+  // and metadata lookup enter the pool, other API operations keep API semantics.
+  if (!endpoint && (req.method !== 'POST' || !['/embeddings', '/completions', '/moderations', '/audio/speech', '/audio/transcriptions', '/audio/translations'].includes(subPath))) {
+    return proxyToUpstream(req, res, url, keyRecord);
+  }
+  const name = endpoint?.name || endpointName(subPath);
+  const entry = requestLog.begin({ endpoint: name, source: 'api', apiKey: keyRecord, userAgent: req.headers['user-agent'] });
+  return withLog(req, res, entry, async () => {
+    checkQuota(keyRecord);
+    const raw = await readBody(req);
+    entry.diag({ request: { bodyBytes: raw.length, bodyReadMs: entry.elapsed() } });
+    const multipart = String(req.headers['content-type'] || '').startsWith('multipart/form-data');
+    const body = multipart ? parseMultipart(raw, req.headers['content-type'])?.fields : parseJson(raw);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, '请求体格式无效', 'invalid_json');
+    const requested = body.model || (name.startsWith('images.') ? 'gpt-image-2' : store.data.settings.defaultModel || DEFAULT_MODEL);
+    body.model = requested;
+    req.backupModels = isImageModel(requested) ? [] : backupModelsFor(store.data.settings, requested);
+    return poolRouter.run({
+      req, res, body, endpoint: name,
+      handleAccount: (_target, model) => endpoint.handle(req, res, raw, model),
+      handleUpstream: (target) => upstreams.proxy(req, res, {
+        subPath, search: url.search,
+        body: fallbackBody(raw, { contentType: req.headers['content-type'], endpoint: name, defaultModel: requested }),
+        upstreamId: target.id, allowFallback: false, throwOnError: true,
+      }),
+      backupModels: () => req.backupModels || [],
+    });
+  });
 }
 
 // 用「API 上游」把请求再发一次；上游也失败就返回上游的错误。
@@ -274,6 +351,7 @@ function sendError(res, err) {
 
 // 一键更新完成后调用：停掉 app-server，以退出码 75 退出，由启动器重启到新版本。
 function restart() {
+  pricing.stop();
   accounts.shutdown();
   server.close();
   setTimeout(() => process.exit(RESTART_EXIT_CODE), 800).unref();
@@ -300,10 +378,12 @@ server.listen(config.port, config.host, () => {
   alerts.start();
   codex.startLatestCheck();
   updater.startLatestCheck();
+  pricing.start();
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    pricing.stop();
     accounts.shutdown();
     server.close();
     setTimeout(() => process.exit(0), 500).unref();

@@ -34,8 +34,8 @@ async function mockUpstream(t, id, reply, options = {}) {
       raw: Buffer.concat(chunks),
     };
     calls.push(call);
-    const { status = 200, body } = await reply(call);
-    res.writeHead(status, { 'content-type': 'application/json' });
+    const { status = 200, body, headers } = await reply(call);
+    res.writeHead(status, { 'content-type': 'application/json', ...headers });
     res.end(JSON.stringify(body));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -310,4 +310,42 @@ test('multipart uploads select the advertised model upstream and preserve file b
   assert.deepEqual(wrong.calls, []);
   assert.equal(matching.calls.length, 1);
   assert.deepEqual(matching.calls[0].raw, raw);
+});
+
+test('a successful model list does not clear an inference rate-limit cooldown', async (t) => {
+  const preferredModel = model('gpt-test', 'openai');
+  const backupModel = model('other-test', 'relay');
+  const rateLimited = await mockUpstream(t, 'rate-limited', ({ method }) => {
+    if (method === 'GET') return catalog(preferredModel);
+    return {
+      status: 429,
+      headers: { 'retry-after': '120' },
+      body: { error: { message: 'Inference rate limited' } },
+    };
+  }, { priority: 10, models: [preferredModel.id] });
+  const healthy = await mockUpstream(t, 'healthy', ({ method }) =>
+    method === 'GET' ? catalog(backupModel) : { body: { model: preferredModel.id } },
+  { models: [backupModel.id] });
+  const manager = managerFor(rateLimited, healthy);
+  const cooldownState = () => {
+    const { coolingUntil, status, lastError } = manager.list().find(({ id }) => id === rateLimited.record.id);
+    return { coolingUntil, status, lastError };
+  };
+  const request = { model: preferredModel.id, input: 'Hello' };
+  const expected = { status: 200, body: { model: preferredModel.id } };
+
+  const started = Date.now();
+  assert.deepEqual(await proxy(manager, '/responses', request), expected);
+  const cooling = cooldownState();
+  assert.ok(cooling.coolingUntil >= started + 120_000);
+  assert.equal(cooling.status, 'error');
+  assert.equal(cooling.lastError, 'Inference rate limited');
+
+  const { body } = await proxy(manager, '/models');
+  assert.ok(body.data.some(({ id }) => id === preferredModel.id));
+  assert.deepEqual(cooldownState(), cooling);
+
+  assert.deepEqual(await proxy(manager, '/responses', request), expected);
+  assert.deepEqual(rateLimited.calls.map(({ method }) => method), ['POST', 'GET']);
+  assert.deepEqual(healthy.calls.map(({ method }) => method), ['POST', 'GET', 'POST']);
 });

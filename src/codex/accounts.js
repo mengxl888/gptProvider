@@ -115,10 +115,14 @@ export class AccountManager {
       // 会分到请求的账号也要刷新状态和额度，才能跳过失效或额度用满的账号、额度重置后及时恢复：
       // 轮询时是参与轮询的账号；「当前账号」策略下当前账号不能用时，请求改走其他账号，也要刷新它们。
       const strategy = this.store.data.settings.accountStrategy;
+      const mixed = this.store.data.settings.routingMode && this.store.data.settings.routingMode !== 'legacy';
       const active = this.store.getAccount(id);
-      const others = (strategy && strategy !== 'active') || !active || !this.usable(active)
+      const others = mixed || (strategy && strategy !== 'active') || !active || !this.usable(active)
         ? this.store.data.accounts.filter((a) => a.id !== id && ready(a) && a.enabled !== false && accountWeight(a) > 0) : [];
-      for (const a of others) await this.refreshStatus(a.id).catch(() => {});
+      for (const a of others) {
+        await this.refreshStatus(a.id).catch(() => {});
+        if (mixed) await this.refreshModels(a.id).catch(() => {});
+      }
       if (!id || !ready(this.store.getAccount(id))) return;
       await this.refreshStatus(id).catch(() => {});
       await this.refreshModels(id).catch(() => {});
@@ -633,8 +637,14 @@ export class AccountManager {
   // 选好账号后按「账号排队」等它空出位置再开始处理，客户端断开时放弃排队。
   // 空位在这次尝试结束时归还：runWithFailover 换账号、换备用模型前调用 retry.release()，响应关闭时也会归还。
   async reserveAccount({ req, res, accountId, ...options }) {
+    // A unified-pool request already selected a specific account. An explicit
+    // accountId (e.g. an administrator's Fast check) retains precedence.
+    accountId ??= req?.routeAccountId;
     const account = accountId == null ? this.pickAccount(options) : this.store.getAccount(accountId);
     if (!account) throw httpError(404, '账号不存在', 'account_not_found');
+    if (accountId != null && options.retry) {
+      Object.assign(options.retry, { current: account.id, needsImage: Boolean(options.needsImage) });
+    }
     if (accountId != null && !this.usable(account)) {
       throw httpError(503, '指定账号当前不可用', 'account_not_ready');
     }
