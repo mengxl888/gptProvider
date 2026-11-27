@@ -238,7 +238,8 @@ async function proxyToPool(req, res, url, keyRecord) {
     req.backupModels = isImageModel(requested) ? [] : backupModelsFor(store.data.settings, requested);
     return poolRouter.run({
       req, res, body, endpoint: name,
-      handleAccount: (_target, model) => endpoint.handle(req, res, raw, model),
+      handleAccount: (_target, model) => endpoint.handle(req, res, raw,
+        model || (name === 'responses' || name === 'chat.completions' ? requested : null)),
       handleUpstream: (target) => upstreams.proxy(req, res, {
         subPath, search: url.search,
         body: fallbackBody(raw, { contentType: req.headers['content-type'], endpoint: name, defaultModel: requested }),

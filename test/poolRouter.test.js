@@ -3,9 +3,12 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import test from 'node:test';
 
 import { AccountManager } from '../src/codex/accounts.js';
+import { CodexResponsesProxy } from '../src/codex/responsesProxy.js';
+import { handleResponses } from '../src/openai/responses.js';
 import { MAX_POOL_ATTEMPTS, MAX_RESPONSE_OWNERS, RESPONSE_OWNER_TTL_MS, PoolRouter } from '../src/poolRouter.js';
 
 const NOW = Date.parse('2026-11-27T08:00:00Z');
@@ -159,6 +162,82 @@ test('overloaded accounts try configured, supported backup models and release be
   assert.equal(state.fallbacks.length, 1);
 });
 
+test('pool HTTP and SSE overloads use the original account twice without stacking slots', async (t) => {
+  const { router, store } = fixture({
+    accounts: [account('a'), account('b')],
+    settings: { routingMode: 'accounts_first', accountRetry: true, accountMaxConcurrent: 1, modelFallback: true, fallbackModels: ['gpt-backup'] },
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-pool-router-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  store.getAccount = (id) => store.data.accounts.find((item) => item.id === id);
+  const manager = new AccountManager({ store, dataDir: dir });
+  manager.responsesAuth = async (id) => ({ accountId: id, accessToken: 'synthetic-token' });
+  router.accounts = manager;
+  const state = request();
+  for (const method of ['account', 'request', 'resolvedModel', 'usage', 'fail']) state.req.log[method] = () => {};
+  state.req.headers['session-id'] = 'synthetic-session';
+  const res = new Writable({ autoDestroy: false, write(_chunk, _encoding, callback) { callback(); } });
+  Object.assign(res, {
+    headers: new Map(), headersSent: false,
+    setHeader(name, value) { this.headers.set(name, value); },
+    getHeaderNames() { return [...this.headers.keys()]; },
+    removeHeader(name) { this.headers.delete(name); },
+    writeHead(status) { this.statusCode = status; this.headersSent = true; },
+  });
+  const attempts = [];
+  const proxy = new CodexResponsesProxy({
+    accounts: manager, store, codex: { version: '0.172.0' },
+    fetchImpl: async (_url, options) => {
+      const id = options.headers['chatgpt-account-id'];
+      const { model } = JSON.parse(options.body);
+      attempts.push([id, model]);
+      assert.equal(options.headers['session-id'], 'synthetic-session');
+      assert.equal(manager.queue.snapshot(id).active, 1);
+      assert.equal(manager.queue.snapshot(id === 'a' ? 'b' : 'a').active, 0);
+      const overload = { code: 'server_is_overloaded', message: 'overloaded' };
+      if (attempts.length === 1) return Response.json({ error: overload }, { status: 503, headers: { 'retry-after': '0' } });
+      const failed = attempts.length <= 3;
+      const type = failed ? 'response.failed' : 'response.completed';
+      const response = { id: `synthetic-${attempts.length}`, model, status: failed ? 'failed' : 'completed', output: [],
+        ...(failed ? { error: overload } : {}) };
+      return new Response(`event: ${type}\ndata: ${JSON.stringify({ type, response })}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'retry-after': '0' },
+      });
+    },
+  });
+  const body = { model: 'gpt-test', input: 'Hello', stream: true };
+  state.req.headers['x-openai-internal-codex-responses-lite'] = 'true';
+  await router.run({ ...state, res, body,
+    handleAccount: (_target, model) => handleResponses(state.req, res, model ? { ...body, model } : body, { accountResponses: proxy }),
+    handleUpstream: async () => assert.fail('another Codex account is available'),
+  });
+  const [first, second] = attempts.map(([id]) => id).filter((id, index, ids) => ids.indexOf(id) === index);
+  assert.notEqual(first, second);
+  assert.deepEqual(attempts, [[first, body.model], [first, body.model], [first, body.model], [second, body.model]]);
+  assert.equal(state.fallbacks.length, 3);
+  assert.equal(res.statusCode, 200);
+  assert.equal(manager.queue.snapshot('a').active, 0);
+  assert.equal(manager.queue.snapshot('b').active, 0);
+});
+
+test('pool in-place overload retries count toward the global attempt cap', async () => {
+  const { router } = fixture({ accounts: Array.from({ length: 8 }, (_, index) => account(`a${index}`)),
+    settings: { routingMode: 'accounts_first', accountRetry: true } });
+  const state = request();
+  const seen = [];
+  await assert.rejects(router.run({ ...state,
+    handleAccount: async (node) => {
+      state.req.accountRetry.current = node.id;
+      seen.push(node.id);
+      throw Object.assign(error(503, 'server_is_overloaded'), { retryAfter: '0' });
+    },
+    handleUpstream: async () => assert.fail('account attempts should exhaust the cap'),
+  }), { code: 'server_is_overloaded' });
+  assert.equal(seen.length, MAX_POOL_ATTEMPTS);
+  assert.equal(new Set(seen).size, 4);
+  assert.equal(state.fallbacks.length, seen.length - 1);
+});
+
 test('malformed requests before account allocation, policy errors and started streams are not retried', async () => {
   for (const kind of ['validation', 'policy', 'stream', 'aborted']) {
     const { router } = fixture({ settings: { routingMode: 'accounts_first' } });
@@ -286,6 +365,24 @@ test('a failed continuation never switches provider or falls back to another mod
   assert.equal(calls, 1);
   assert.equal(state.fallbacks.length, 0);
   assert.equal(Object.hasOwn(state.req.log, 'onResponseId'), false);
+});
+
+test('an overloaded continuation retries its owner twice without changing node or model', async () => {
+  const { router } = fixture({ accounts: [account('a'), account('b')], settings: { accountRetry: true } });
+  router.rememberResponse('resp-owned', { type: 'account', id: 'a' });
+  const state = request();
+  const seen = [];
+  await assert.rejects(router.run({ ...state, body: { model: 'gpt-test', previous_response_id: 'resp-owned' },
+    handleAccount: async (node, model) => {
+      state.req.accountRetry.current = node.id;
+      seen.push([node.id, model]);
+      throw Object.assign(error(503, 'server_is_overloaded'), { retryAfter: '0' });
+    },
+    handleUpstream: async () => assert.fail('must not switch the continuation owner'),
+    backupModels: () => assert.fail('must not change the continuation model'),
+  }), { code: 'response_continuation_failed', status: 503 });
+  assert.deepEqual(seen, [['a', null], ['a', null], ['a', null]]);
+  assert.equal(state.fallbacks.length, 2);
 });
 
 test('response ownership is bounded and conflicting provider IDs are never guessed', () => {

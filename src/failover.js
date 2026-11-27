@@ -40,7 +40,7 @@ export function shouldFallback(err, { res, settings, upstreams }) {
 // 以及只带「overloaded」提示的 503（例如 Our servers are currently overloaded）。
 const OVERLOAD_CODES = new Set(['server_is_overloaded', 'server_overloaded', 'serverOverloaded']);
 export function isOverloadError(err) {
-  return OVERLOAD_CODES.has(err?.code) || (err?.status === 503 && /overloaded/i.test(String(err?.message || '')));
+  return Boolean(err?.upstreamOverloaded) || OVERLOAD_CODES.has(err?.code) || (err?.status === 503 && /overloaded/i.test(String(err?.message || '')));
 }
 
 export const MAX_BACKUP_MODELS = 5;
@@ -80,23 +80,21 @@ export async function runWithFailover({ req, res, handle, accounts, settings, up
   let sameAccountRetries = 0;
   let waitMs = 0;
   for (;;) {
-    if (waitMs) await waitForRetry(res, waitMs);
+    if (waitMs) await waitForAccountRetry(res, waitMs);
     waitMs = 0;
     retry.current = null;
     try {
       return await handle(model);
     } catch (err) {
-      const overloaded = retry.current && (err?.upstreamOverloaded || isOverloadError(err)) && retryable(err, res);
-      if (overloaded && retry.overloadInPlace && model == null && sameAccountRetries < MAX_SAME_ACCOUNT_RETRIES) {
-        const ms = overloadRetryDelay({ get: () => err.retryAfter ?? null });
-        if (ms != null) {
-          sameAccountRetries++;
-          retry.pinned = retry.current;
-          waitMs = ms;
-          req.log?.fallback(err);
-          clearHeaders(res);
-          continue;
-        }
+      const overloaded = retry.current && isOverloadError(err) && retryable(err, res);
+      const ms = model == null ? sameAccountRetryDelay(retry, err, res, sameAccountRetries) : null;
+      if (ms != null) {
+        sameAccountRetries++;
+        retry.pinned = retry.current;
+        waitMs = ms;
+        req.log?.fallback(err);
+        clearHeaders(res);
+        continue;
       }
 
       const tried = new Set(retry.tried);
@@ -129,7 +127,13 @@ export async function runWithFailover({ req, res, handle, accounts, settings, up
   }
 }
 
-async function waitForRetry(res, ms) {
+export function sameAccountRetryDelay(retry, err, res, retries) {
+  if (!retry.overloadInPlace || !retry.current || retries >= MAX_SAME_ACCOUNT_RETRIES
+    || !isOverloadError(err) || !retryable(err, res)) return null;
+  return overloadRetryDelay({ get: () => err.retryAfter ?? null });
+}
+
+export async function waitForAccountRetry(res, ms) {
   const controller = new AbortController();
   const onClose = () => controller.abort();
   res.once?.('close', onClose);
