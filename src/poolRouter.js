@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import { accountUsable, accountWeight, affinityKey } from './codex/accountPicker.js';
 import { httpError } from './codex/accounts.js';
-import { backupModelsFor, clearHeaders, DEFAULT_MODEL, isOverloadError, retryable } from './failover.js';
+import { backupModelsFor, clearHeaders, DEFAULT_MODEL, isOverloadError, retryable, sameAccountRetryDelay, waitForAccountRetry } from './failover.js';
 import { isImageModel } from './openai/images.js';
 
 export const ROUTING_MODES = ['legacy', 'accounts_first', 'api_first', 'round_robin', 'weighted'];
@@ -145,6 +145,8 @@ export class PoolRouter {
     }
     const owner = previousResponseId ? this.responseOwner(previousResponseId) : null;
     const retry = (req.accountRetry = { tried: new Set(), current: null, needsImage: false, release: null });
+    retry.overloadInPlace = Boolean(this.store.data.settings.accountRetry)
+      && (endpoint === 'responses' || endpoint === 'chat.completions');
     let attempts = 0, lastError = null, pendingFallback = null;
     const previousAccountId = req.routeAccountId;
     const previousResponseHook = req.log?.onResponseId;
@@ -174,14 +176,26 @@ export class PoolRouter {
         }
         currentTarget = target;
         req.routeAccountId = target.type === 'account' ? target.id : null;
-        let model = null, backups = null;
+        let model = null, backups = null, sameAccountRetries = 0, waitMs = 0;
         for (;;) {
+          if (waitMs) await waitForAccountRetry(res, waitMs);
+          waitMs = 0;
           attempts++;
           retry.current = null;
           try {
             return target.type === 'account' ? await handleAccount(target, model) : await handleUpstream(target);
           } catch (err) {
             lastError = err;
+            // Keep the selected node and model; release() in finally runs before the wait and the next reservation.
+            const ms = target.type === 'account' && model == null && attempts < MAX_POOL_ATTEMPTS
+              ? sameAccountRetryDelay(retry, err, res, sameAccountRetries) : null;
+            if (ms != null) {
+              sameAccountRetries++;
+              waitMs = ms;
+              req.log?.fallback(err);
+              clearHeaders(res);
+              continue;
+            }
             if (owner) {
               if (err.aborted || res.headersSent || res.destroyed) throw err;
               throw httpError(err.status || 502, `续聊所属节点请求失败，不能改用其他节点：${err.message}`, 'response_continuation_failed');
@@ -194,7 +208,9 @@ export class PoolRouter {
             // Validation before account allocation is independent of the node;
             // do not send malformed requests to more accounts or paid APIs.
             if (target.type === 'account' && !retry.current) throw err;
-            if (target.type === 'account' && isOverloadError(err) && attempts < MAX_POOL_ATTEMPTS) {
+            const otherAccount = retry.overloadInPlace
+              && available.some((node) => node.type === 'account' && node.id !== target.id);
+            if (target.type === 'account' && !otherAccount && isOverloadError(err) && attempts < MAX_POOL_ATTEMPTS) {
               backups ??= [...backupModels()].filter((id) => this.supportsModel(target.record, id));
               if (backups.length) {
                 model = backups.shift();

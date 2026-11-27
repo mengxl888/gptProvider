@@ -97,7 +97,7 @@ export class CodexResponsesProxy {
     }, { fastCheckAccount: accountId });
   }
 
-  async handle(req, res, body, { fastCheckAccount } = {}) {
+  async handle(req, res, body, { fastCheckAccount, limitExempt, clientMeta } = {}) {
     const fastCheck = fastCheckAccount != null;
     const checkSession = fastCheck ? randomUUID() : null;
     const clientHeaders = checkSession
@@ -117,13 +117,13 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = await this.accounts.reserveAccount({ accountId: fastCheckAccount, affinityKey: affinityKey(body, clientHeaders), retry: req.accountRetry, req, res });
+    const account = await this.accounts.reserveAccount({ accountId: fastCheckAccount, limitExempt: !fastCheck && limitExempt, affinityKey: affinityKey(body, clientHeaders), retry: req.accountRetry, req, res });
     req.log?.account(account);
 
     // 时间都从收到请求头算起（没有日志条目时从这里算起）
     const startedAt = Date.now() - (req.log?.elapsed?.() ?? 0);
     const ms = () => Date.now() - startedAt;
-    const client = codexClientMeta(clientHeaders, body);
+    const client = clientMeta ?? codexClientMeta(clientHeaders, body);
     const threadKey = client.threadId || affinityKey(body, clientHeaders);
     const inputItems = typeof body.input === 'string' ? [{ type: 'message', role: 'user' }] : body.input;
     client.concurrent = threadKey ? inflightThreads.get(threadKey) || 0 : null;
@@ -219,7 +219,7 @@ export class CodexResponsesProxy {
         }
         if (!upstream.ok) {
           upstreamError = await readResponseError(upstream, { secrets });
-          if (!fastCheck && isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
+          if (!fastCheck && !req.accountRetry?.overloadInPlace && isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
             retriedOverload = true;
             if (await waitForOverloadRetry(upstream.headers, abort.signal)) continue;
           }
@@ -234,6 +234,10 @@ export class CodexResponsesProxy {
         if (error.type) err.type = error.type;
         if (error.param !== undefined) err.param = error.param;
         err.details = error.details;
+        if (req.accountRetry?.overloadInPlace && isOverloaded(error, upstream.status)) {
+          err.upstreamOverloaded = true;
+          err.retryAfter = error.headers['retry-after'];
+        }
         for (const [name, value] of Object.entries(error.headers)) res.setHeader(name, value);
         throw err;
       }
@@ -268,6 +272,8 @@ export class CodexResponsesProxy {
         tracker.feed(chunk);
         const observedResponseId = tracker.response?.id || tracker.initial?.id;
         if (observedResponseId) req.log?.responseId?.(observedResponseId);
+        const failure = tracker.failure;
+        if (failure && !tracker.failureAfterOutput) failure.retryAfter = upstream.headers.get('retry-after');
         if (tracker.output && diag.firstOutputMs == null) {
           diag.firstOutputMs = ms();
           req.log?.firstToken?.();
@@ -279,7 +285,7 @@ export class CodexResponsesProxy {
         if (body.stream) {
           if (res.destroyed) throw abortedError();
           // 客户端还什么都没收到就失败了，按普通错误抛出
-          if (!stream.committed && tracker.failure && !tracker.failureAfterOutput) throw tracker.failure;
+          if (!stream.committed && failure && !tracker.failureAfterOutput) throw failure;
           if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) {
             const waitStarted = Date.now();
             diag.drainWaits = (diag.drainWaits || 0) + 1;
@@ -332,7 +338,10 @@ export class CodexResponsesProxy {
       if (response.status === 'failed') {
         const failure = failedError(response.error);
         // 非流式还没写出任何内容，按普通错误抛出，交给 failover.js 换账号或改用 API 上游
-        if (!body.stream) throw failure;
+        if (!body.stream) {
+          failure.retryAfter = upstream.headers.get('retry-after');
+          throw failure;
+        }
         req.log?.fail(failure);
       }
       if (fastCheck) {

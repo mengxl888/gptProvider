@@ -600,7 +600,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="control"><label class="switch"><input type="checkbox" id="set-auto-disable"><span></span></label></div>
         </div>
         <div class="setting">
-          <div class="desc"><b>账号排队</b><span>每个账号同时最多处理<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="同时处理上限">个请求，每分钟最多开始<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-per-minute" aria-label="每分钟上限">个请求（任意 60 秒内），超出的按到达顺序排队，前面的请求结束或满 60 秒后放行；填 0 表示不限。换账号重试、换备用模型时重新排队；客户端断开时离开队列，排队超过 10 分钟返回 503（开了「失败时换账号重试」会换账号）。账号卡片上显示正在处理和排队的请求数。</span></div>
+          <div class="desc"><b>账号限额</b><span>每个账号前 4 路为常态，并发硬上限为<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="并发硬上限">路（默认 6），只统计正在处理的流。达到上限时立即走已启用的失败兜底；没有可用兜底则返回繁忙，不排队。填 0 表示不限。</span></div>
         </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
@@ -909,11 +909,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>失败时换账号重试</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，先换一个还没试过的账号再试（已登录、权重大于 0 的账号，一个请求最多用 3 个账号）；内容安全拒绝、请求体错误不重试。</span></div>
+            <div class="desc"><b>失败时换账号重试</b><span>对话和 Responses 请求遇到上游过载且尚未输出时，先在原账号用原模型重试最多两次，再换未尝试的账号（最多 3 个账号）。并发满等其他可重试错误直接走换账号，不等待原账号。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-account-retry"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>过载时切换备用模型</b><span>Codex 账号渠道的对话 / Responses 请求遇到模型过载（<span class="mono">server_is_overloaded</span>，「Our servers are currently overloaded」）、还没向客户端输出内容时，先按下面的顺序换用备用模型再试，账号不变；备用模型都过载了才换账号、改用 API 上游，这两步用回请求的模型。请求的模型本身在列表里时会跳过它。<span id="set-model-fallback-hint"></span></span></div>
+            <div class="desc"><b>过载时切换备用模型</b><span>对话和 Responses 请求遇到过载时，如果没有可换账号或未开启换账号重试，才按下面的顺序尝试备用模型。请求的模型在列表里时会跳过。<span id="set-model-fallback-hint"></span></span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-model-fallback"><span></span></label></div>
           </div>
           <div class="setting">
@@ -1037,6 +1037,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
         <label class="option"><input type="radio" name="channel" value="codex">
           <div class="ico"><svg class="i" data-icon="users"></svg></div><b>账号 / 混合池</b><span>按「路由调度」设置使用 ChatGPT 账号或 API 上游，支持账号优先、API 优先、统一轮询和加权轮询</span></label>
       </div>
+    </div>
+    <div id="key-subagent-setting" hidden>
+      <label><input id="key-trusted-subagents" type="checkbox"> 子 Agent 不计入账号限额</label>
+      <div class="small muted">仅用于你信任的客户端。开启后，此 Key 自报为子 Agent 的 Responses 请求不占网关的并发位置。</div>
     </div>
     <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
       <div class="small muted" style="margin-top:5px">按调用日志统计本自然月的输入 + 输出 token，到了上限返回 429，下月 1 日恢复</div></div>
@@ -1908,14 +1912,13 @@ function accountShares(st) {
   return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
 }
 
-// 账号排队：正在处理 / 上限，有排队时标黄；都为 0 时不显示
+// 账号卡片分别显示受限流和豁免子流。
 function queueChip(a, settings) {
   const q = a.queue;
-  if (!q || (!q.active && !q.queued)) return '';
+  if (!q || (!q.active && !q.subagentActive)) return '';
   const max = settings.accountMaxConcurrent;
-  const perMinute = settings.accountMaxPerMinute;
-  const title = `正在处理 ${q.active} 个${max ? `（上限 ${max}）` : ''}，排队 ${q.queued} 个，最近 60 秒开始 ${q.recent} 个${perMinute ? `（上限 ${perMinute}）` : ''}`;
-  return `<span class="chip ${q.queued ? 'warn' : 'on'}" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}${q.queued ? ` · 排队 ${q.queued}` : ''}</span>`;
+  const title = `受限流 ${q.active} 路${max ? `（上限 ${max}）` : ''}，豁免子流 ${q.subagentActive || 0} 路`;
+  return `<span class="chip on" style="flex:none" title="${esc(title)}">受限流 ${q.active}${max ? `/${max}` : ''}${q.subagentActive ? ` · 子流 ${q.subagentActive}` : ''}</span>`;
 }
 
 const fastCheckBusy = new Set();
@@ -2012,9 +2015,8 @@ function renderAccounts() {
     ? `停用的账号不参与；${st.settings.autoDisableOnQuota ? '' : '额度用满的账号在还有其他账号可用时暂时跳过；'}没有可轮询的账号时用「默认」账号。`
     : '当前账号停用、额度用完自动停用或登录失效时，请求改用其他可用账号。'}`;
   $('set-auto-disable').checked = Boolean(st.settings.autoDisableOnQuota);
-  for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
-    if (document.activeElement !== $(id)) $(id).value = st.settings[key] ?? 0;
-  }
+  const concurrentInput = $('set-max-concurrent');
+  if (document.activeElement !== concurrentInput) concurrentInput.value = st.settings.accountMaxConcurrent ?? 0;
   const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
     const quotaBusy = quotaResetBusy.has(a.id);
@@ -2165,19 +2167,17 @@ $('set-auto-disable').addEventListener('change', run(async (e) => {
   toast(e.target.checked ? '已开启：额度用完自动停用' : '已关闭：额度用完自动停用');
   await refreshState();
 }));
-for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
-  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
-  $(id).addEventListener('change', run(async (e) => {
-    const value = Number(e.target.value);
-    if (e.target.value.trim() === '' || !Number.isInteger(value) || value < 0 || value > 100) {
-      e.target.value = S.state.settings[key] ?? 0;
-      return toast('请填 0–100 的整数，0 表示不限', 'error');
-    }
-    await api('PUT', '/settings', { [key]: value });
-    toast('账号排队设置已保存');
-    await refreshState();
-  }));
-}
+$('set-max-concurrent').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+$('set-max-concurrent').addEventListener('change', run(async (e) => {
+  const value = Number(e.target.value);
+  if (e.target.value.trim() === '' || !Number.isInteger(value) || value < 0 || value > 100) {
+    e.target.value = S.state.settings.accountMaxConcurrent ?? 0;
+    return toast('请填 0–100 的整数，0 表示不限', 'error');
+  }
+  await api('PUT', '/settings', { accountMaxConcurrent: value });
+  toast('账号限额已保存');
+  await refreshState();
+}));
 
 // ============ API 上游 ============
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -3300,12 +3300,14 @@ function openKeyDialog(k) {
   const channel = k?.channel || (S.state.upstreams.length || !S.state.accounts.length ? 'openai' : 'codex');
   document.querySelector(`input[name=channel][value=${channel}]`).checked = true;
   $('key-channels').dispatchEvent(new Event('change'));
+  $('key-trusted-subagents').checked = k?.trustedSubagents === true;
   $('key-limit').value = k?.monthlyTokenLimit ?? '';
   $('key-dialog').showModal();
   $('key-name').focus();
 }
 $('key-channels').addEventListener('change', () => {
   document.querySelectorAll('#key-channels .option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked));
+  $('key-subagent-setting').hidden = !document.querySelector('input[name=channel][value=codex]').checked;
 });
 document.querySelectorAll('[data-close-key]').forEach((b) => b.addEventListener('click', () => $('key-dialog').close()));
 $('create-key').addEventListener('click', () => openKeyDialog(null));
@@ -3316,6 +3318,7 @@ $('key-submit').addEventListener('click', run(async () => {
     name: $('key-name').value.trim(),
     channel: document.querySelector('input[name=channel]:checked').value,
     monthlyTokenLimit: limit === '' ? null : Number(limit),
+    trustedSubagents: !$('key-subagent-setting').hidden && $('key-trusted-subagents').checked,
   };
   if (keyTarget) {
     await api('PATCH', `/keys/${keyTarget.id}`, body);

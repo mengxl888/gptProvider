@@ -144,6 +144,7 @@ async function route(req, res) {
     requireBearer(req, (token) => (keyRecord = store.findApiKey(token)), 'API Key 无效');
     store.touchApiKey(keyRecord);
     if (keyRecord.channel === 'openai') return proxyToUpstream(req, res, url, keyRecord);
+    req.trustedSubagents = keyRecord.trustedSubagents === true;
     if (store.data.settings.routingMode && store.data.settings.routingMode !== 'legacy') {
       return proxyToPool(req, res, url, keyRecord);
     }
@@ -171,7 +172,7 @@ async function route(req, res) {
         checkQuota(keyRecord);
         const raw = await readBody(req);
         entry.diag({ request: { bodyBytes: raw.length, bodyReadMs: entry.elapsed() } });
-        // 过载先换备用模型，失败后再换账号重试，最后交给 API 上游，见 failover.js
+        // 对话请求过载时短暂重试原账号、原模型，再按设置切换。
         await runWithFailover({
           req,
           res,
@@ -181,6 +182,7 @@ async function route(req, res) {
           upstreams: upstreams.records,
           upstream: (err) => fallbackToUpstream(req, res, url, raw, endpoint.name, err),
           backupModels: () => req.backupModels || [],
+          retryOverloadInPlace: endpoint.name === 'responses' || endpoint.name === 'chat.completions',
         });
       });
     }
@@ -236,7 +238,8 @@ async function proxyToPool(req, res, url, keyRecord) {
     req.backupModels = isImageModel(requested) ? [] : backupModelsFor(store.data.settings, requested);
     return poolRouter.run({
       req, res, body, endpoint: name,
-      handleAccount: (_target, model) => endpoint.handle(req, res, raw, model),
+      handleAccount: (_target, model) => endpoint.handle(req, res, raw,
+        model || (name === 'responses' || name === 'chat.completions' ? requested : null)),
       handleUpstream: (target) => upstreams.proxy(req, res, {
         subPath, search: url.search,
         body: fallbackBody(raw, { contentType: req.headers['content-type'], endpoint: name, defaultModel: requested }),

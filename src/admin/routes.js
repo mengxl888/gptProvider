@@ -222,7 +222,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // POST /admin/api/keys        {name, channel, monthlyTokenLimit}
+  // POST /admin/api/keys        {name, channel, monthlyTokenLimit, trustedSubagents}
   // PATCH /admin/api/keys/:id   同上，字段可选
   if (parts[0] === 'keys') {
     if (method === 'POST' && !parts[1]) {
@@ -230,6 +230,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
         name: body.name?.trim(),
         channel: body.channel || undefined,
         monthlyTokenLimit: body.monthlyTokenLimit,
+        trustedSubagents: body.trustedSubagents,
       });
       const { hash, ...rest } = record;
       return ok({ key, record: rest });
@@ -245,7 +246,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
   }
 
   // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
-  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode, userAgentMode}
+  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, serviceTierMode, userAgentMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = { ...store.data.settings };
     const before = settings.webSearch;
@@ -282,13 +283,12 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.fallbackModels = normalizeBackupModels(ids);
     }
     if ('autoDisableOnQuota' in body) settings.autoDisableOnQuota = Boolean(body.autoDisableOnQuota);
-    for (const [name, label] of [['accountMaxConcurrent', '同时处理上限'], ['accountMaxPerMinute', '每分钟上限']]) {
-      if (!(name in body)) continue;
-      const n = body[name];
+    if ('accountMaxConcurrent' in body) {
+      const n = body.accountMaxConcurrent;
       if (!Number.isInteger(n) || n < 0 || n > MAX_QUEUE_LIMIT) {
-        throw httpError(400, `${label}必须是 0–${MAX_QUEUE_LIMIT} 的整数，0 表示不限`, 'invalid_parameter');
+        throw httpError(400, `并发上限必须是 0–${MAX_QUEUE_LIMIT} 的整数，0 表示不限`, 'invalid_parameter');
       }
-      settings[name] = n;
+      settings.accountMaxConcurrent = n;
     }
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');
@@ -305,7 +305,6 @@ export async function handleAdmin(req, res, url, body, ctx) {
     const previous = store.data.settings;
     store.data.settings = settings;
     try { store.save(); } catch (err) { store.data.settings = previous; throw err; }
-    accounts.queue.drainAll();
     // web_search 和 service_tier 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before || settings.serviceTierMode !== beforeServiceTier) accounts.restartAll();
     return ok({ settings });

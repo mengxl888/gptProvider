@@ -42,7 +42,7 @@ test('backup models skip the requested model, blanks and duplicates, and stay em
 
 // ---- 兜底链路：真实的 AccountManager 和调用日志，处理函数按「账号 + 模型」决定成功或失败 ----
 
-function chain(t, { accounts, settings, fail, affinityKey = null, upstreams = [{ id: 'oa-1', enabled: true }] }) {
+function chain(t, { accounts, settings, fail, affinityKey = null, upstreams = [{ id: 'oa-1', enabled: true }], retryOverloadInPlace = false }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-fallback-'));
   const db = new DatabaseSync(':memory:');
   t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -59,7 +59,7 @@ function chain(t, { accounts, settings, fail, affinityKey = null, upstreams = [{
   const calls = [];
   const upstreamCalls = [];
   const run = (requested = SOL) => runWithFailover({
-    req, res, accounts: manager, settings: data.settings, upstreams,
+    req, res, accounts: manager, settings: data.settings, upstreams, retryOverloadInPlace,
     backupModels: () => backupModelsFor(data.settings, requested),
     handle: async (model) => {
       const account = manager.pickAccount({ affinityKey, retry: req.accountRetry });
@@ -153,11 +153,56 @@ test('with the switch off, without backups, or when the request asked for the on
 
 test('no model switch once output has reached the client', async (t) => {
   const c = chain(t, {
-    accounts: [acct('b'), acct('a')], settings: enabled,
+    accounts: [acct('b'), acct('a')], settings: enabled, retryOverloadInPlace: true,
     fail: (id, model, res) => { res.headersSent = true; return overload(); },
   });
   await assert.rejects(c.run(), { code: 'server_is_overloaded' });
   assert.deepEqual(c.calls, [`b:${SOL}`]);
+});
+
+test('two original-model retries pin the account before falling back, even without a session key', async (t) => {
+  const c = chain(t, {
+    accounts: [acct('b'), acct('a')], settings: { ...enabled, accountStrategy: 'even' },
+    retryOverloadInPlace: true,
+    fail: (id) => id === 'b' && Object.assign(overload(), { retryAfter: '0' }),
+  });
+  assert.equal(await c.run(), `ok:a:${SOL}`);
+  assert.deepEqual(c.calls, [`b:${SOL}`, `b:${SOL}`, `b:${SOL}`, `a:${SOL}`]);
+});
+
+test('disconnect during in-place backoff releases the slot without another upstream call', async () => {
+  const req = {};
+  const res = new EventEmitter();
+  res.getHeaderNames = () => [];
+  let calls = 0;
+  let releases = 0;
+  await assert.rejects(runWithFailover({
+    req, res, accounts: {}, settings: { accountRetry: true }, upstreams: [], retryOverloadInPlace: true,
+    handle: async () => {
+      calls++;
+      req.accountRetry.current = 'original';
+      req.accountRetry.release = () => { releases++; };
+      setImmediate(() => { res.destroyed = true; res.emit('close'); });
+      throw Object.assign(overload(), { retryAfter: '1' });
+    },
+  }), { status: 499, aborted: true });
+  assert.equal(calls, 1);
+  assert.equal(releases, 1);
+  assert.equal(res.listenerCount('close'), 0);
+});
+
+test('local saturation and a long Retry-After skip in-place retry', async (t) => {
+  for (const failure of [
+    err(503, 'account_busy'),
+    Object.assign(overload(), { retryAfter: '9' }),
+  ]) {
+    const c = chain(t, {
+      accounts: [acct('b'), acct('a')], settings: enabled, retryOverloadInPlace: true,
+      fail: (id) => id === 'b' && failure,
+    });
+    assert.equal(await c.run(), `ok:a:${SOL}`);
+    assert.deepEqual(c.calls, [`b:${SOL}`, `a:${SOL}`]);
+  }
 });
 
 // ---- 原生 Responses 转发：备用模型真的发到了上游，日志按尝试记下各自的模型 ----
@@ -222,4 +267,48 @@ test('native Responses forwarding sends the backup model upstream after an overl
   assert.equal(row.account_id, account.id);
   assert.deepEqual(row.attempts.map((a) => [a.account_id, a.model, a.http_status, a.error_code]),
     [[account.id, SOL, 503, 'server_is_overloaded']]);
+});
+
+
+test('native HTTP and SSE overloads share two retries, with no nested HTTP retry', async (t) => {
+  const account = acct('a');
+  const fallback = acct('b');
+  const calls = [];
+  const sessionHeaders = [];
+  const req = new EventEmitter();
+  req.headers = { 'session-id': 'synthetic-session' };
+  const res = new Sink();
+  const accounts = {
+    hasRetryAccount: (retry) => !retry.tried.has(fallback.id),
+    reserveAccount: async ({ retry }) => {
+      const selected = retry.pinned ? account : retry.tried.has(account.id) ? fallback : account;
+      retry.pinned = null;
+      retry.current = selected.id;
+      return selected;
+    },
+    responsesAuth: async (id) => ({ accessToken: 'synthetic-token', accountId: id }),
+  };
+  const proxy = new CodexResponsesProxy({
+    accounts, store: { data: { settings: {} } }, codex: { version: '0.165.0' },
+    fetchImpl: async (_url, init) => {
+      calls.push([init.headers['chatgpt-account-id'], JSON.parse(init.body).model]);
+      sessionHeaders.push(init.headers['session-id']);
+      const error = { code: 'server_is_overloaded', message: 'overloaded' };
+      if (calls.length === 1) return Response.json({ error }, { status: 503, headers: { 'retry-after': '0' } });
+      const response = calls.length <= 3
+        ? { id: 'fail', status: 'failed', model: SOL, output: [], error }
+        : { id: 'ok', status: 'completed', model: SOL, output: [] };
+      const type = `response.${response.status}`;
+      return new Response(`event: ${type}\ndata: ${JSON.stringify({ type, response })}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'retry-after': '0' },
+      });
+    },
+  });
+  await runWithFailover({
+    req, res, accounts, settings: { accountRetry: true }, upstreams: [], retryOverloadInPlace: true,
+    handle: () => proxy.handle(req, res, { model: SOL, stream: true, input: 'Hello' }),
+  });
+  assert.deepEqual(calls, [['a', SOL], ['a', SOL], ['a', SOL], ['b', SOL]]);
+  assert.deepEqual(sessionHeaders, Array(4).fill('synthetic-session'));
+  assert.equal(res.statusCode, 200);
 });

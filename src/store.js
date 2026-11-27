@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_PER_MINUTE } from './codex/accountQueue.js';
+import { DEFAULT_MAX_CONCURRENT } from './codex/accountQueue.js';
 import { DEFAULT_USER_AGENT_MODE, USER_AGENT_MODES } from './codex/clientCompatibility.js';
 import { DEFAULT_SERVICE_TIER_MODE } from './codex/serviceTier.js';
 
@@ -26,9 +26,8 @@ const DEFAULT_SETTINGS = {
   quotaTimeZone: 'Asia/Shanghai',
   // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复
   autoDisableOnQuota: true,
-  // 账号排队：每个账号同时处理的请求数、任意 60 秒内开始的请求数上限，0 不限；超出的排队（见 codex/accountQueue.js）
+  // 账号并发：0 不限；满载时立即走兜底，不排队。
   accountMaxConcurrent: DEFAULT_MAX_CONCURRENT,
-  accountMaxPerMinute: DEFAULT_MAX_PER_MINUTE,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
   // 原生 Responses 转发的 User-Agent：always 统一改成官方桌面版 UA，non_codex 只改写非 Codex 客户端（见 codex/clientCompatibility.js）
@@ -130,15 +129,17 @@ export class Store {
   // channel：codex = 走 Codex 账号；openai = 原样转发到官方 API Key 上游
   // monthlyTokenLimit：本自然月输入 + 输出 token 上限，null 表示不限
 
-  createApiKey({ name, channel, monthlyTokenLimit } = {}) {
+  createApiKey({ name, channel, monthlyTokenLimit, trustedSubagents } = {}) {
+    channel = validChannel(channel ?? 'codex');
     const key = `sk-local-${crypto.randomBytes(24).toString('base64url')}`;
     const record = {
       id: crypto.randomUUID(),
       name: name || '未命名',
       hash: hashKey(key),
       preview: `${key.slice(0, 13)}…${key.slice(-4)}`,
-      channel: validChannel(channel ?? 'codex'),
+      channel,
       monthlyTokenLimit: validLimit(monthlyTokenLimit),
+      trustedSubagents: channel === 'codex' && trustedSubagents === true,
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
     };
@@ -156,6 +157,7 @@ export class Store {
     if ('name' in patch) record.name = String(patch.name || '').trim() || record.name;
     record.channel = channel;
     record.monthlyTokenLimit = limit;
+    record.trustedSubagents = channel === 'codex' && ('trustedSubagents' in patch ? patch.trustedSubagents : record.trustedSubagents) === true;
     this.save();
     return record;
   }
