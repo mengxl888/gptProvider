@@ -600,7 +600,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="control"><label class="switch"><input type="checkbox" id="set-auto-disable"><span></span></label></div>
         </div>
         <div class="setting">
-          <div class="desc"><b>账号排队</b><span>每个账号同时最多处理<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="同时处理上限">个请求，每分钟最多开始<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-per-minute" aria-label="每分钟上限">个请求（任意 60 秒内），超出的按到达顺序排队，前面的请求结束或满 60 秒后放行；填 0 表示不限。换账号重试、换备用模型时重新排队；客户端断开时离开队列，排队超过 10 分钟返回 503（开了「失败时换账号重试」会换账号）。账号卡片上显示正在处理和排队的请求数。</span></div>
+          <div class="desc"><b>账号限额</b><span>每个账号前 4 路为常态，并发硬上限为<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="并发硬上限">路（默认 6），每分钟最多开始<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-per-minute" aria-label="每分钟上限">个请求（任意 60 秒内），达到任一上限时立即走已启用的失败兜底；没有可用兜底则返回繁忙，不排队。填 0 表示不限。</span></div>
         </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
@@ -1908,14 +1908,14 @@ function accountShares(st) {
   return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
 }
 
-// 账号排队：正在处理 / 上限，有排队时标黄；都为 0 时不显示
+// 账号卡片显示正在处理和最近 60 秒的启动次数。
 function queueChip(a, settings) {
   const q = a.queue;
-  if (!q || (!q.active && !q.queued)) return '';
+  if (!q || (!q.active && !q.recent)) return '';
   const max = settings.accountMaxConcurrent;
   const perMinute = settings.accountMaxPerMinute;
-  const title = `正在处理 ${q.active} 个${max ? `（上限 ${max}）` : ''}，排队 ${q.queued} 个，最近 60 秒开始 ${q.recent} 个${perMinute ? `（上限 ${perMinute}）` : ''}`;
-  return `<span class="chip ${q.queued ? 'warn' : 'on'}" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}${q.queued ? ` · 排队 ${q.queued}` : ''}</span>`;
+  const title = `正在处理 ${q.active} 个${max ? `（上限 ${max}）` : ''}，最近 60 秒开始 ${q.recent} 个${perMinute ? `（上限 ${perMinute}）` : ''}`;
+  return `<span class="chip on" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}</span>`;
 }
 
 const fastCheckBusy = new Set();
@@ -2174,7 +2174,7 @@ for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-m
       return toast('请填 0–100 的整数，0 表示不限', 'error');
     }
     await api('PUT', '/settings', { [key]: value });
-    toast('账号排队设置已保存');
+    toast('账号限额已保存');
     await refreshState();
   }));
 }

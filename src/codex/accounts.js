@@ -634,7 +634,7 @@ export class AccountManager {
       && (!retry.needsImage || this.supportsImageGeneration(a)));
   }
 
-  // 选好账号后按「账号排队」等它空出位置再开始处理，客户端断开时放弃排队。
+  // 选好账号后立即检查容量；已满则交给失败兜底，不等待空位。
   // 空位在这次尝试结束时归还：runWithFailover 换账号、换备用模型前调用 retry.release()，响应关闭时也会归还。
   async reserveAccount({ req, res, accountId, ...options }) {
     // A unified-pool request already selected a specific account. An explicit
@@ -648,32 +648,24 @@ export class AccountManager {
     if (accountId != null && !this.usable(account)) {
       throw httpError(503, '指定账号当前不可用', 'account_not_ready');
     }
-    const closed = new AbortController();
-    const onClose = () => closed.abort();
-    if (res.destroyed) closed.abort();
-    else res.once('close', onClose);
-    const waitStarted = Date.now();
+    if (res.destroyed) {
+      throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
+    }
     let slot;
     try {
-      slot = await this.queue.acquire(account.id, { signal: closed.signal });
+      slot = this.queue.acquire(account.id);
     } catch (err) {
       req.log?.account?.(account);
-      req.log?.diag?.({ queue: { waitMs: Date.now() - waitStarted, result: err.aborted ? 'client_closed' : 'timeout' } });
+      req.log?.diag?.({ accountLimit: err.limit });
       throw err;
-    } finally {
-      res.off('close', onClose);
     }
     const release = () => {
       res.off('close', release);
       slot.release();
     };
-    if (res.destroyed) {
-      release();
-      throw Object.assign(new Error('客户端已断开'), { aborted: true, status: 499 });
-    }
     res.once('close', release);
+    if (slot.burst) req.log?.diag?.({ accountBurst: true });
     if (options.retry) options.retry.release = release;
-    if (slot.waitedMs) req.log?.diag?.({ queue: { waitMs: slot.waitedMs, ahead: slot.ahead } });
     return account;
   }
 

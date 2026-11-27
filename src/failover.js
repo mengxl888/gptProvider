@@ -63,7 +63,7 @@ export function backupModelsFor(settings, requestedModel) {
 }
 
 // 处理一个 Codex 账号渠道请求。handle(model) 里选账号时带上 req.accountRetry，记下这次用的账号和归还排队空位的 release；
-// 每次尝试结束都先归还空位，换备用模型、换账号时重新排队。
+// 每次尝试结束都先归还空位，换备用模型、换账号时重新检查限额。
 // model 为 null 时用请求里的模型，否则改用这个备用模型。
 // 过载时先换没试过的备用模型（账号不算失败：同一会话照样落在它固定的账号上），
 // 其他失败（或备用模型用完）换没试过的账号、换回请求的模型再调 handle()，账号都失败再调 upstream(err) 交给 API 上游，

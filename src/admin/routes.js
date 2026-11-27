@@ -305,7 +305,6 @@ export async function handleAdmin(req, res, url, body, ctx) {
     const previous = store.data.settings;
     store.data.settings = settings;
     try { store.save(); } catch (err) { store.data.settings = previous; throw err; }
-    accounts.queue.drainAll();
     // web_search 和 service_tier 写在每个账号的 config.toml 里，变更后重启 app-server 生效。
     if (settings.webSearch !== before || settings.serviceTierMode !== beforeServiceTier) accounts.restartAll();
     return ok({ settings });
