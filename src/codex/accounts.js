@@ -584,6 +584,16 @@ export class AccountManager {
   // 没有可参与轮询的账号时退回当前账号；「当前账号」策略下当前账号不能用（停用、额度用完自动停用、登录失效）时改用其他可用账号。
   // retry 是这个请求的换账号记录 {tried, current, needsImage}：已经失败过的账号不会再选，见 server.js。
   pickAccount({ needsImage = false, affinityKey = null, retry = null } = {}) {
+    const pinned = retry?.pinned;
+    if (pinned) {
+      retry.pinned = null;
+      retry.current = pinned;
+      const account = this.store.getAccount(pinned);
+      if (!this.usable(account) || (needsImage && !this.supportsImageGeneration(account))) {
+        throw httpError(503, '原账号当前不可用', 'account_not_ready');
+      }
+      return account;
+    }
     const account = retry?.tried.size ? this.#pickRetry(retry, needsImage) : this.#pick(needsImage, affinityKey);
     if (retry) Object.assign(retry, { current: account.id, needsImage });
     return account;

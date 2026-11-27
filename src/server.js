@@ -172,7 +172,7 @@ async function route(req, res) {
         checkQuota(keyRecord);
         const raw = await readBody(req);
         entry.diag({ request: { bodyBytes: raw.length, bodyReadMs: entry.elapsed() } });
-        // 过载先换备用模型，失败后再换账号重试，最后交给 API 上游，见 failover.js
+        // 对话请求过载时短暂重试原账号、原模型，再按设置切换。
         await runWithFailover({
           req,
           res,
@@ -182,6 +182,7 @@ async function route(req, res) {
           upstreams: upstreams.records,
           upstream: (err) => fallbackToUpstream(req, res, url, raw, endpoint.name, err),
           backupModels: () => req.backupModels || [],
+          retryOverloadInPlace: endpoint.name === 'responses' || endpoint.name === 'chat.completions',
         });
       });
     }

@@ -909,11 +909,11 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
             <div class="control"><label class="switch"><input type="checkbox" id="set-chat-image"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>失败时换账号重试</b><span>Codex 账号渠道的请求返回 4xx / 5xx、还没向客户端输出内容时，先换一个还没试过的账号再试（已登录、权重大于 0 的账号，一个请求最多用 3 个账号）；内容安全拒绝、请求体错误不重试。</span></div>
+            <div class="desc"><b>失败时换账号重试</b><span>对话和 Responses 请求遇到上游过载且尚未输出时，先在原账号用原模型重试最多两次，再换未尝试的账号（最多 3 个账号）。并发满等其他可重试错误直接走换账号，不等待原账号。</span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-account-retry"><span></span></label></div>
           </div>
           <div class="setting">
-            <div class="desc"><b>过载时切换备用模型</b><span>Codex 账号渠道的对话 / Responses 请求遇到模型过载（<span class="mono">server_is_overloaded</span>，「Our servers are currently overloaded」）、还没向客户端输出内容时，先按下面的顺序换用备用模型再试，账号不变；备用模型都过载了才换账号、改用 API 上游，这两步用回请求的模型。请求的模型本身在列表里时会跳过它。<span id="set-model-fallback-hint"></span></span></div>
+            <div class="desc"><b>过载时切换备用模型</b><span>对话和 Responses 请求遇到过载时，如果没有可换账号或未开启换账号重试，才按下面的顺序尝试备用模型。请求的模型在列表里时会跳过。<span id="set-model-fallback-hint"></span></span></div>
             <div class="control"><label class="switch"><input type="checkbox" id="set-model-fallback"><span></span></label></div>
           </div>
           <div class="setting">

@@ -219,7 +219,7 @@ export class CodexResponsesProxy {
         }
         if (!upstream.ok) {
           upstreamError = await readResponseError(upstream, { secrets });
-          if (!fastCheck && isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
+          if (!fastCheck && !req.accountRetry?.overloadInPlace && isOverloaded(upstreamError, upstream.status) && !retriedOverload) {
             retriedOverload = true;
             if (await waitForOverloadRetry(upstream.headers, abort.signal)) continue;
           }
@@ -234,6 +234,10 @@ export class CodexResponsesProxy {
         if (error.type) err.type = error.type;
         if (error.param !== undefined) err.param = error.param;
         err.details = error.details;
+        if (req.accountRetry?.overloadInPlace && isOverloaded(error, upstream.status)) {
+          err.upstreamOverloaded = true;
+          err.retryAfter = error.headers['retry-after'];
+        }
         for (const [name, value] of Object.entries(error.headers)) res.setHeader(name, value);
         throw err;
       }
@@ -268,6 +272,8 @@ export class CodexResponsesProxy {
         tracker.feed(chunk);
         const observedResponseId = tracker.response?.id || tracker.initial?.id;
         if (observedResponseId) req.log?.responseId?.(observedResponseId);
+        const failure = tracker.failure;
+        if (failure && !tracker.failureAfterOutput) failure.retryAfter = upstream.headers.get('retry-after');
         if (tracker.output && diag.firstOutputMs == null) {
           diag.firstOutputMs = ms();
           req.log?.firstToken?.();
@@ -279,7 +285,7 @@ export class CodexResponsesProxy {
         if (body.stream) {
           if (res.destroyed) throw abortedError();
           // 客户端还什么都没收到就失败了，按普通错误抛出
-          if (!stream.committed && tracker.failure && !tracker.failureAfterOutput) throw tracker.failure;
+          if (!stream.committed && failure && !tracker.failureAfterOutput) throw failure;
           if (!(tracker.output ? stream.write(chunk) : stream.hold(chunk))) {
             const waitStarted = Date.now();
             diag.drainWaits = (diag.drainWaits || 0) + 1;
@@ -332,7 +338,10 @@ export class CodexResponsesProxy {
       if (response.status === 'failed') {
         const failure = failedError(response.error);
         // 非流式还没写出任何内容，按普通错误抛出，交给 failover.js 换账号或改用 API 上游
-        if (!body.stream) throw failure;
+        if (!body.stream) {
+          failure.retryAfter = upstream.headers.get('retry-after');
+          throw failure;
+        }
         req.log?.fail(failure);
       }
       if (fastCheck) {
