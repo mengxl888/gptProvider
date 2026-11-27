@@ -71,18 +71,37 @@ export class AppUpdater {
   async check() {
     if (!this.repo) throw httpError(400, 'package.json 里没有 GitHub 仓库地址，也没有设置 UPDATE_REPO');
     try {
-      const releases = await this.#fetchReleases();
-      const tag = (await this.#latestTag()) || newestStableTag(releases);
+      // A tag can exist before Actions creates a GitHub Release. Read both
+      // sources so a billing-locked or otherwise unavailable workflow does not
+      // hide a perfectly downloadable tagged source archive from the backend.
+      let releases = [];
+      let releaseError = null;
+      try {
+        releases = await this.#fetchReleases();
+      } catch (err) {
+        releaseError = err;
+      }
+      let tags = [];
+      try {
+        tags = await this.#fetchTags();
+      } catch (err) {
+        if (!releaseError) releaseError = err;
+      }
+      const catalog = mergeReleaseEntries(releases, tags);
+      const releaseTag = await this.#latestTag();
+      const catalogTag = newestStableTag(catalog);
+      const tag = higherStableTag(releaseTag, catalogTag);
+      if (!tag && releaseError) throw releaseError;
       if (!tag) {
         this.latest = null;
       } else {
         const version = TAG_PATTERN.exec(tag)?.[1];
         if (!version) throw new Error(`无法识别的版本标签：${tag}`);
-        const entry = releases.find((r) => r.tag === tag);
+        const entry = catalog.find((r) => r.tag === tag);
         this.latest = {
           version,
           tag,
-          url: `https://github.com/${this.repo}/releases/tag/${encodeURIComponent(tag)}`,
+          url: entry?.url || `https://github.com/${this.repo}/releases/tag/${encodeURIComponent(tag)}`,
           publishedAt: entry?.updated || null,
           title: entry?.title || tag,
           notes: entry ? releaseNotes(entry) : '',
@@ -138,6 +157,23 @@ export class AppUpdater {
         notes,
       };
     }).filter((r) => r.tag);
+  }
+
+  // The tags page is public and does not require the GitHub API. It is a
+  // fallback for repositories where the tag was pushed but Actions could not
+  // create the corresponding Release (for example, a billing lock).
+  async #fetchTags() {
+    const res = await fetch(ghUrl(`https://github.com/${this.repo}/tags`), { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`获取标签列表失败：HTTP ${res.status}`);
+    const text = await res.text();
+    if (Buffer.byteLength(text) > 4 * 1024 * 1024) throw new Error('GitHub 标签页面过大');
+    return parseTagPage(text).map((tag) => ({
+      tag,
+      title: tag,
+      updated: null,
+      notes: '',
+      url: `https://github.com/${this.repo}/tree/${encodeURIComponent(tag)}`,
+    }));
   }
 
   async update() {
@@ -213,6 +249,32 @@ function newestStableTag(releases) {
     if (!best || compareVersions(version, best.version) > 0) best = { tag: r.tag, version };
   }
   return best?.tag || null;
+}
+
+function higherStableTag(first, second) {
+  const a = TAG_PATTERN.exec(first || '')?.[1];
+  const b = TAG_PATTERN.exec(second || '')?.[1];
+  if (!a) return b ? `v${b}` : null;
+  if (!b) return `v${a}`;
+  return compareVersions(a, b) >= 0 ? `v${a}` : `v${b}`;
+}
+
+function mergeReleaseEntries(releases, tags) {
+  const merged = new Map();
+  for (const entry of [...releases, ...tags]) {
+    if (!entry?.tag || merged.has(entry.tag)) continue;
+    merged.set(entry.tag, entry);
+  }
+  return [...merged.values()];
+}
+
+export function parseTagPage(html) {
+  if (typeof html !== 'string' || Buffer.byteLength(html) > 4 * 1024 * 1024) return [];
+  const found = new Set();
+  for (const match of html.matchAll(/\/(?:tree|releases\/tag)\/((?:v)?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:[/?#"'])/g)) {
+    try { found.add(decodeURIComponent(match[1])); } catch {}
+  }
+  return [...found];
 }
 
 // releases.atom 里 (from, to] 之间的版本，新的在前；目标是正式版时跳过中间的预发布版。
