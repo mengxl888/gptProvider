@@ -20,8 +20,9 @@ export class AccountQueue {
     this.now = now;
   }
 
-  acquire(id) {
+  acquire(id, { limitExempt = false } = {}) {
     const lane = this.#lane(id);
+    if (limitExempt) return this.#occupy(lane, 'subagentActive');
     const { maxConcurrent, perMinute } = this.#limits();
     this.#prune(lane);
     const limit = maxConcurrent && lane.active >= maxConcurrent ? 'concurrent'
@@ -29,25 +30,30 @@ export class AccountQueue {
     if (limit) {
       throw Object.assign(new Error('账号繁忙，请稍后重试'), { status: 503, code: 'account_busy', limit });
     }
-    lane.active++;
     lane.starts.push(this.now());
+    const slot = this.#occupy(lane, 'active');
+    return { ...slot, burst: lane.active > BASE_CONCURRENT };
+  }
+
+  #occupy(lane, counter) {
+    lane[counter]++;
     let released = false;
-    return { burst: lane.active > BASE_CONCURRENT, release() {
+    return { release() {
       if (released) return;
       released = true;
-      lane.active--;
+      lane[counter]--;
     } };
   }
 
   snapshot(id) {
     const lane = this.#lanes.get(id);
     if (lane) this.#prune(lane);
-    return { active: lane?.active ?? 0, queued: 0, recent: lane?.starts.length ?? 0 };
+    return { active: lane?.active ?? 0, subagentActive: lane?.subagentActive ?? 0, queued: 0, recent: lane?.starts.length ?? 0 };
   }
 
   #lane(id) {
     let lane = this.#lanes.get(id);
-    if (!lane) this.#lanes.set(id, (lane = { active: 0, starts: [] }));
+    if (!lane) this.#lanes.set(id, (lane = { active: 0, subagentActive: 0, starts: [] }));
     return lane;
   }
 

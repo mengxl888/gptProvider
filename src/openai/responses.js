@@ -11,7 +11,7 @@ import { finalText, runTurn } from '../codex/turn.js';
 import { DeferredStream, sendJson } from '../http.js';
 import { IMAGE_CHAT_INSTRUCTIONS, NO_IMAGE_INSTRUCTIONS, buildPrompt } from './chat.js';
 import { IMAGE_MODEL_ID, isImageModel } from './images.js';
-import { PREAMBLE_EVENTS, needsNativeResponses } from '../codex/responsesProxy.js';
+import { PREAMBLE_EVENTS, codexClientMeta, needsNativeResponses } from '../codex/responsesProxy.js';
 import { turnServiceTier } from '../codex/serviceTier.js';
 
 const HOSTED_TOOLS = new Set(['image_generation', 'web_search', 'web_search_preview']);
@@ -27,7 +27,11 @@ const KEEP_ALIVE_MS = 5_000;
 const history = new Map();
 
 export async function handleResponses(req, res, body, ctx) {
-  if (needsNativeResponses(body, req.headers)) return ctx.accountResponses.handle(req, res, body);
+  const meta = codexClientMeta(req.headers, body);
+  // 客户端标记是自报的，只给管理员明确授权的 Key 使用。
+  const limitExempt = req.trustedSubagents === true
+    && (meta.threadSource === 'subagent' || meta.subagent === 'collab_spawn');
+  if (needsNativeResponses(body, req.headers)) return ctx.accountResponses.handle(req, res, body, { limitExempt, clientMeta: meta });
   const { accounts, store, images } = ctx;
   req.log?.request({ model: body.model, stream: body.stream });
   if (body.background) throw httpError(400, '不支持 background 模式', 'unsupported_parameter');
@@ -39,6 +43,7 @@ export async function handleResponses(req, res, body, ctx) {
   const imageGeneration = imageMode || tools.imageGeneration;
   const { account, client } = await accounts.pickClient({
     needsImage: imageGeneration,
+    limitExempt,
     affinityKey: affinityKey(body, req.headers),
     retry: req.accountRetry,
     req,

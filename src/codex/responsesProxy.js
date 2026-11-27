@@ -97,7 +97,7 @@ export class CodexResponsesProxy {
     }, { fastCheckAccount: accountId });
   }
 
-  async handle(req, res, body, { fastCheckAccount } = {}) {
+  async handle(req, res, body, { fastCheckAccount, limitExempt, clientMeta } = {}) {
     const fastCheck = fastCheckAccount != null;
     const checkSession = fastCheck ? randomUUID() : null;
     const clientHeaders = checkSession
@@ -117,13 +117,13 @@ export class CodexResponsesProxy {
       res.setHeader('x-gptprovider-ignored-parameters', 'max_output_tokens');
       res.setHeader('access-control-expose-headers', 'x-gptprovider-ignored-parameters');
     }
-    const account = await this.accounts.reserveAccount({ accountId: fastCheckAccount, affinityKey: affinityKey(body, clientHeaders), retry: req.accountRetry, req, res });
+    const account = await this.accounts.reserveAccount({ accountId: fastCheckAccount, limitExempt: !fastCheck && limitExempt, affinityKey: affinityKey(body, clientHeaders), retry: req.accountRetry, req, res });
     req.log?.account(account);
 
     // 时间都从收到请求头算起（没有日志条目时从这里算起）
     const startedAt = Date.now() - (req.log?.elapsed?.() ?? 0);
     const ms = () => Date.now() - startedAt;
-    const client = codexClientMeta(clientHeaders, body);
+    const client = clientMeta ?? codexClientMeta(clientHeaders, body);
     const threadKey = client.threadId || affinityKey(body, clientHeaders);
     const inputItems = typeof body.input === 'string' ? [{ type: 'message', role: 'user' }] : body.input;
     client.concurrent = threadKey ? inflightThreads.get(threadKey) || 0 : null;

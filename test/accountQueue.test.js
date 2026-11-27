@@ -8,6 +8,7 @@ import test from 'node:test';
 import { AccountQueue } from '../src/codex/accountQueue.js';
 import { AccountManager } from '../src/codex/accounts.js';
 import { runWithFailover } from '../src/failover.js';
+import { Store } from '../src/store.js';
 
 const queue = (limits, options) => new AccountQueue({ limits: () => limits, ...options });
 test('four normal slots and two burst slots use the same account; the seventh fails immediately', () => {
@@ -15,7 +16,7 @@ test('four normal slots and two burst slots use the same account; the seventh fa
   const slots = Array.from({ length: 6 }, () => q.acquire('a'));
   assert.deepEqual(slots.map((slot) => slot.burst), [false, false, false, false, true, true]);
   assert.throws(() => q.acquire('a'), { status: 503, code: 'account_busy', limit: 'concurrent' });
-  assert.deepEqual(q.snapshot('a'), { active: 6, queued: 0, recent: 6 });
+  assert.deepEqual(q.snapshot('a'), { active: 6, subagentActive: 0, queued: 0, recent: 6 });
   q.acquire('b').release();
   slots[0].release();
   slots[0].release();
@@ -29,7 +30,7 @@ test('the rolling limit rejects excess starts even with a free slot, then permit
   for (let i = 0; i < 6; i++) q.acquire('a').release();
   now = 59_999;
   assert.throws(() => q.acquire('a'), { status: 503, code: 'account_busy', limit: 'per_minute' });
-  assert.deepEqual(q.snapshot('a'), { active: 0, queued: 0, recent: 6 });
+  assert.deepEqual(q.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 6 });
   now = 60_000;
   q.acquire('a').release();
   assert.equal(q.snapshot('a').recent, 1);
@@ -96,7 +97,7 @@ test('the seventh concurrent request goes straight to an available fallback acco
     ...second, accounts: manager, settings: data.settings, upstreams: [], handle,
   });
   assert.equal(fallback.id, 'b');
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 6, queued: 0, recent: 6 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 6, subagentActive: 0, queued: 0, recent: 6 });
   assert.equal(manager.queue.snapshot('b').active, 0);
   for (const r of active) r.res.emit('close');
 });
@@ -149,5 +150,33 @@ test('an already disconnected client does not take a slot', async (t) => {
   const closed = request();
   closed.res.destroyed = true;
   await assert.rejects(manager.reserveAccount(closed), { aborted: true });
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, queued: 0, recent: 0 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 0 });
+});
+
+test('exempt subagent streams stay observable but consume neither main capacity nor rolling starts', async (t) => {
+  const { manager } = setup(t, { accountMaxPerMinute: 1 });
+  const main = request();
+  const sub = request();
+  await manager.reserveAccount(main);
+  assert.equal((await manager.reserveAccount({ ...sub, limitExempt: true })).id, 'a');
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 1, subagentActive: 1, queued: 0, recent: 1 });
+  assert.deepEqual(sub.diag.at(-1), { accountLimitExempt: 'subagent' });
+  await assert.rejects(manager.reserveAccount(request()), { limit: 'concurrent' });
+
+  main.res.emit('close');
+  await assert.rejects(manager.reserveAccount(request()), { limit: 'per_minute' });
+  sub.res.emit('close');
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 1 });
+});
+
+test('subagent exemptions are only enabled by explicitly opting a Codex Key in', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-key-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new Store(dir);
+  const { record } = store.createApiKey({ trustedSubagents: 'true' });
+  assert.equal(record.trustedSubagents, false);
+  assert.equal(store.updateApiKey(record.id, { trustedSubagents: true }).trustedSubagents, true);
+  assert.equal(new Store(dir).data.apiKeys[0].trustedSubagents, true);
+  assert.equal(store.updateApiKey(record.id, { channel: 'openai' }).trustedSubagents, false);
+  assert.equal(store.createApiKey({ channel: 'openai', trustedSubagents: true }).record.trustedSubagents, false);
 });

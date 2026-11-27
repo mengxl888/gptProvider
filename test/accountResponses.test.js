@@ -268,6 +268,33 @@ test('explicit Lite header and additional_tools select native routing without in
   assert.equal(JSON.parse(h.fetchCalls[0][1].body).model, 'gpt-5.6-sol');
 });
 
+test('only explicit subagent markers on a trusted key exempt native and app-server Responses', async () => {
+  for (const [trusted, headers, bodyMeta, expected] of [
+    [true, { 'x-openai-subagent': 'collab_spawn' }, undefined, true],
+    [true, {}, { thread_source: 'subagent' }, true],
+    [false, { 'x-openai-subagent': 'collab_spawn' }, undefined, false],
+    [true, { 'x-codex-parent-thread-id': 'parent' }, { thread_source: 'user' }, false],
+  ]) {
+    const h = harness();
+    const req = request();
+    req.trustedSubagents = trusted;
+    Object.assign(req.headers, headers);
+    const body = { input: 'Hello', client_metadata: bodyMeta };
+    let nativeExempt;
+    h.accounts.reserveAccount = async (options) => {
+      nativeExempt = options.limitExempt;
+      return h.account;
+    };
+    await handleResponses(req, new ResponseSink(), toolBody(body), { accountResponses: h.proxy });
+    assert.equal(nativeExempt, expected);
+    const stop = new Error('stop before starting an app-server turn');
+    let localExempt;
+    const ctx = { accounts: { async pickClient(options) { localExempt = options.limitExempt; throw stop; } } };
+    await assert.rejects(handleResponses(req, new ResponseSink(), body, ctx), (err) => err === stop);
+    assert.equal(localExempt, expected);
+  }
+});
+
 test('Lite request header is passed through verbatim only when present', async () => {
   const lite = 'x-openai-internal-codex-responses-lite';
   for (const value of [undefined, 'true', 'false']) {

@@ -130,15 +130,17 @@ export class Store {
   // channel：codex = 走 Codex 账号；openai = 原样转发到官方 API Key 上游
   // monthlyTokenLimit：本自然月输入 + 输出 token 上限，null 表示不限
 
-  createApiKey({ name, channel, monthlyTokenLimit } = {}) {
+  createApiKey({ name, channel, monthlyTokenLimit, trustedSubagents } = {}) {
+    channel = validChannel(channel ?? 'codex');
     const key = `sk-local-${crypto.randomBytes(24).toString('base64url')}`;
     const record = {
       id: crypto.randomUUID(),
       name: name || '未命名',
       hash: hashKey(key),
       preview: `${key.slice(0, 13)}…${key.slice(-4)}`,
-      channel: validChannel(channel ?? 'codex'),
+      channel,
       monthlyTokenLimit: validLimit(monthlyTokenLimit),
+      trustedSubagents: channel === 'codex' && trustedSubagents === true,
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
     };
@@ -156,6 +158,7 @@ export class Store {
     if ('name' in patch) record.name = String(patch.name || '').trim() || record.name;
     record.channel = channel;
     record.monthlyTokenLimit = limit;
+    record.trustedSubagents = channel === 'codex' && ('trustedSubagents' in patch ? patch.trustedSubagents : record.trustedSubagents) === true;
     this.save();
     return record;
   }

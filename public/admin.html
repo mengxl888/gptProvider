@@ -1038,6 +1038,10 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="ico"><svg class="i" data-icon="users"></svg></div><b>账号 / 混合池</b><span>按「路由调度」设置使用 ChatGPT 账号或 API 上游，支持账号优先、API 优先、统一轮询和加权轮询</span></label>
       </div>
     </div>
+    <div id="key-subagent-setting" hidden>
+      <label><input id="key-trusted-subagents" type="checkbox"> 子 Agent 不计入账号限额</label>
+      <div class="small muted">仅用于你信任的客户端。开启后，此 Key 自报为子 Agent 的 Responses 请求不占网关的并发与每分钟启动额度。</div>
+    </div>
     <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
       <div class="small muted" style="margin-top:5px">按调用日志统计本自然月的输入 + 输出 token，到了上限返回 429，下月 1 日恢复</div></div>
   </div>
@@ -1911,11 +1915,11 @@ function accountShares(st) {
 // 账号卡片显示正在处理和最近 60 秒的启动次数。
 function queueChip(a, settings) {
   const q = a.queue;
-  if (!q || (!q.active && !q.recent)) return '';
+  if (!q || (!q.active && !q.subagentActive && !q.recent)) return '';
   const max = settings.accountMaxConcurrent;
   const perMinute = settings.accountMaxPerMinute;
-  const title = `正在处理 ${q.active} 个${max ? `（上限 ${max}）` : ''}，最近 60 秒开始 ${q.recent} 个${perMinute ? `（上限 ${perMinute}）` : ''}`;
-  return `<span class="chip on" style="flex:none" title="${esc(title)}">处理中 ${q.active}${max ? `/${max}` : ''}</span>`;
+  const title = `受限主流 ${q.active} 路${max ? `（上限 ${max}）` : ''}，豁免子流 ${q.subagentActive || 0} 路，最近 60 秒受限主流启动 ${q.recent} 次${perMinute ? `（上限 ${perMinute}）` : ''}`;
+  return `<span class="chip on" style="flex:none" title="${esc(title)}">主流 ${q.active}${max ? `/${max}` : ''}${q.subagentActive ? ` · 子流 ${q.subagentActive}` : ''}</span>`;
 }
 
 const fastCheckBusy = new Set();
@@ -3300,12 +3304,14 @@ function openKeyDialog(k) {
   const channel = k?.channel || (S.state.upstreams.length || !S.state.accounts.length ? 'openai' : 'codex');
   document.querySelector(`input[name=channel][value=${channel}]`).checked = true;
   $('key-channels').dispatchEvent(new Event('change'));
+  $('key-trusted-subagents').checked = k?.trustedSubagents === true;
   $('key-limit').value = k?.monthlyTokenLimit ?? '';
   $('key-dialog').showModal();
   $('key-name').focus();
 }
 $('key-channels').addEventListener('change', () => {
   document.querySelectorAll('#key-channels .option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked));
+  $('key-subagent-setting').hidden = !document.querySelector('input[name=channel][value=codex]').checked;
 });
 document.querySelectorAll('[data-close-key]').forEach((b) => b.addEventListener('click', () => $('key-dialog').close()));
 $('create-key').addEventListener('click', () => openKeyDialog(null));
@@ -3316,6 +3322,7 @@ $('key-submit').addEventListener('click', run(async () => {
     name: $('key-name').value.trim(),
     channel: document.querySelector('input[name=channel]:checked').value,
     monthlyTokenLimit: limit === '' ? null : Number(limit),
+    trustedSubagents: !$('key-subagent-setting').hidden && $('key-trusted-subagents').checked,
   };
   if (keyTarget) {
     await api('PATCH', `/keys/${keyTarget.id}`, body);

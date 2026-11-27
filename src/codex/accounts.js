@@ -653,7 +653,7 @@ export class AccountManager {
     }
     let slot;
     try {
-      slot = this.queue.acquire(account.id);
+      slot = this.queue.acquire(account.id, { limitExempt: options.limitExempt });
     } catch (err) {
       req.log?.account?.(account);
       req.log?.diag?.({ accountLimit: err.limit });
@@ -664,6 +664,7 @@ export class AccountManager {
       slot.release();
     };
     res.once('close', release);
+    if (options.limitExempt) req.log?.diag?.({ accountLimitExempt: 'subagent' });
     if (slot.burst) req.log?.diag?.({ accountBurst: true });
     if (options.retry) options.retry.release = release;
     return account;

@@ -144,6 +144,7 @@ async function route(req, res) {
     requireBearer(req, (token) => (keyRecord = store.findApiKey(token)), 'API Key 无效');
     store.touchApiKey(keyRecord);
     if (keyRecord.channel === 'openai') return proxyToUpstream(req, res, url, keyRecord);
+    req.trustedSubagents = keyRecord.trustedSubagents === true;
     if (store.data.settings.routingMode && store.data.settings.routingMode !== 'legacy') {
       return proxyToPool(req, res, url, keyRecord);
     }

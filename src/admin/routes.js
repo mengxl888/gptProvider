@@ -222,7 +222,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
     }
   }
 
-  // POST /admin/api/keys        {name, channel, monthlyTokenLimit}
+  // POST /admin/api/keys        {name, channel, monthlyTokenLimit, trustedSubagents}
   // PATCH /admin/api/keys/:id   同上，字段可选
   if (parts[0] === 'keys') {
     if (method === 'POST' && !parts[1]) {
@@ -230,6 +230,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
         name: body.name?.trim(),
         channel: body.channel || undefined,
         monthlyTokenLimit: body.monthlyTokenLimit,
+        trustedSubagents: body.trustedSubagents,
       });
       const { hash, ...rest } = record;
       return ok({ key, record: rest });
