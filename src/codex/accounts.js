@@ -76,10 +76,7 @@ export class AccountManager {
     this.accountChanges = new Set();
     this.picker = new AccountPicker();
     this.queue = new AccountQueue({
-      limits: () => ({
-        maxConcurrent: this.store.data.settings.accountMaxConcurrent,
-        perMinute: this.store.data.settings.accountMaxPerMinute,
-      }),
+      maxConcurrent: () => this.store.data.settings.accountMaxConcurrent,
     });
     this.suspended = false;
     fs.mkdirSync(this.accountsDir, { recursive: true });

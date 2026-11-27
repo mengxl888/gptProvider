@@ -246,7 +246,7 @@ export async function handleAdmin(req, res, url, body, ctx) {
   }
 
   // PUT /admin/api/settings {defaultModel, webSearch, chatImageGeneration, accountRetry, upstreamFallback, modelFallback, fallbackModels,
-  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, accountMaxPerMinute, serviceTierMode, userAgentMode}
+  //                          accountStrategy, autoDisableOnQuota, accountMaxConcurrent, serviceTierMode, userAgentMode}
   if (parts[0] === 'settings' && method === 'PUT') {
     const settings = { ...store.data.settings };
     const before = settings.webSearch;
@@ -283,13 +283,12 @@ export async function handleAdmin(req, res, url, body, ctx) {
       settings.fallbackModels = normalizeBackupModels(ids);
     }
     if ('autoDisableOnQuota' in body) settings.autoDisableOnQuota = Boolean(body.autoDisableOnQuota);
-    for (const [name, label] of [['accountMaxConcurrent', '同时处理上限'], ['accountMaxPerMinute', '每分钟上限']]) {
-      if (!(name in body)) continue;
-      const n = body[name];
+    if ('accountMaxConcurrent' in body) {
+      const n = body.accountMaxConcurrent;
       if (!Number.isInteger(n) || n < 0 || n > MAX_QUEUE_LIMIT) {
-        throw httpError(400, `${label}必须是 0–${MAX_QUEUE_LIMIT} 的整数，0 表示不限`, 'invalid_parameter');
+        throw httpError(400, `并发上限必须是 0–${MAX_QUEUE_LIMIT} 的整数，0 表示不限`, 'invalid_parameter');
       }
-      settings[name] = n;
+      settings.accountMaxConcurrent = n;
     }
     if ('accountStrategy' in body) {
       if (!STRATEGIES.includes(body.accountStrategy)) throw httpError(400, 'accountStrategy 取值无效');

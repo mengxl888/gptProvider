@@ -10,13 +10,13 @@ import { AccountManager } from '../src/codex/accounts.js';
 import { runWithFailover } from '../src/failover.js';
 import { Store } from '../src/store.js';
 
-const queue = (limits, options) => new AccountQueue({ limits: () => limits, ...options });
+const queue = (limits) => new AccountQueue({ maxConcurrent: () => limits.maxConcurrent });
 test('four normal slots and two burst slots use the same account; the seventh fails immediately', () => {
-  const q = queue({ perMinute: 0 });
+  const q = queue({});
   const slots = Array.from({ length: 6 }, () => q.acquire('a'));
   assert.deepEqual(slots.map((slot) => slot.burst), [false, false, false, false, true, true]);
   assert.throws(() => q.acquire('a'), { status: 503, code: 'account_busy', limit: 'concurrent' });
-  assert.deepEqual(q.snapshot('a'), { active: 6, subagentActive: 0, queued: 0, recent: 6 });
+  assert.deepEqual(q.snapshot('a'), { active: 6, subagentActive: 0, queued: 0 });
   q.acquire('b').release();
   slots[0].release();
   slots[0].release();
@@ -24,20 +24,8 @@ test('four normal slots and two burst slots use the same account; the seventh fa
   q.acquire('a').release();
 });
 
-test('the rolling limit rejects excess starts even with a free slot, then permits new requests at expiry', () => {
-  let now = 0;
-  const q = queue({ maxConcurrent: 1, perMinute: 6 }, { now: () => now });
-  for (let i = 0; i < 6; i++) q.acquire('a').release();
-  now = 59_999;
-  assert.throws(() => q.acquire('a'), { status: 503, code: 'account_busy', limit: 'per_minute' });
-  assert.deepEqual(q.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 6 });
-  now = 60_000;
-  q.acquire('a').release();
-  assert.equal(q.snapshot('a').recent, 1);
-});
-
 test('zero limits allow all starts, and new limits take effect on the next request', () => {
-  const limits = { maxConcurrent: 0, perMinute: 0 };
+  const limits = { maxConcurrent: 0 };
   const q = queue(limits);
   const slots = Array.from({ length: 20 }, () => q.acquire('a'));
   limits.maxConcurrent = 20;
@@ -97,7 +85,7 @@ test('the seventh concurrent request goes straight to an available fallback acco
     ...second, accounts: manager, settings: data.settings, upstreams: [], handle,
   });
   assert.equal(fallback.id, 'b');
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 6, subagentActive: 0, queued: 0, recent: 6 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 6, subagentActive: 0, queued: 0 });
   assert.equal(manager.queue.snapshot('b').active, 0);
   for (const r of active) r.res.emit('close');
 });
@@ -150,23 +138,36 @@ test('an already disconnected client does not take a slot', async (t) => {
   const closed = request();
   closed.res.destroyed = true;
   await assert.rejects(manager.reserveAccount(closed), { aborted: true });
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 0 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0 });
 });
 
-test('exempt subagent streams stay observable but consume neither main capacity nor rolling starts', async (t) => {
-  const { manager } = setup(t, { accountMaxPerMinute: 1 });
+test('exempt subagent streams stay observable but do not consume main capacity', async (t) => {
+  const { manager } = setup(t);
   const main = request();
   const sub = request();
   await manager.reserveAccount(main);
   assert.equal((await manager.reserveAccount({ ...sub, limitExempt: true })).id, 'a');
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 1, subagentActive: 1, queued: 0, recent: 1 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 1, subagentActive: 1, queued: 0 });
   assert.deepEqual(sub.diag.at(-1), { accountLimitExempt: 'subagent' });
   await assert.rejects(manager.reserveAccount(request()), { limit: 'concurrent' });
 
   main.res.emit('close');
-  await assert.rejects(manager.reserveAccount(request()), { limit: 'per_minute' });
+  const nextMain = request();
+  await manager.reserveAccount(nextMain);
+  assert.equal(manager.queue.snapshot('a').active, 1);
+  nextMain.res.emit('close');
   sub.res.emit('close');
-  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0, recent: 1 });
+  assert.deepEqual(manager.queue.snapshot('a'), { active: 0, subagentActive: 0, queued: 0 });
+});
+
+test('released slots are immediately reusable even when a legacy minute limit is configured', async (t) => {
+  const { manager } = setup(t, { accountMaxPerMinute: 1 });
+  for (let i = 0; i < 8; i++) {
+    const turn = request();
+    assert.equal((await manager.reserveAccount(turn)).id, 'a');
+    turn.res.emit('close');
+  }
+  assert.equal(manager.queue.snapshot('a').active, 0);
 });
 
 test('subagent exemptions are only enabled by explicitly opting a Codex Key in', (t) => {

@@ -600,7 +600,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
           <div class="control"><label class="switch"><input type="checkbox" id="set-auto-disable"><span></span></label></div>
         </div>
         <div class="setting">
-          <div class="desc"><b>账号限额</b><span>每个账号前 4 路为常态，并发硬上限为<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="并发硬上限">路（默认 6），每分钟最多开始<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-per-minute" aria-label="每分钟上限">个请求（任意 60 秒内），达到任一上限时立即走已启用的失败兜底；没有可用兜底则返回繁忙，不排队。填 0 表示不限。</span></div>
+          <div class="desc"><b>账号限额</b><span>每个账号前 4 路为常态，并发硬上限为<input class="input inline-num" type="number" min="0" max="100" step="1" id="set-max-concurrent" aria-label="并发硬上限">路（默认 6），只统计正在处理的流。达到上限时立即走已启用的失败兜底；没有可用兜底则返回繁忙，不排队。填 0 表示不限。</span></div>
         </div>
       </div>
       <div class="grid account-grid" id="account-grid"></div>
@@ -1040,7 +1040,7 @@ dialog.lightbox { width: min(1100px, calc(100vw - 32px)); }
     </div>
     <div id="key-subagent-setting" hidden>
       <label><input id="key-trusted-subagents" type="checkbox"> 子 Agent 不计入账号限额</label>
-      <div class="small muted">仅用于你信任的客户端。开启后，此 Key 自报为子 Agent 的 Responses 请求不占网关的并发与每分钟启动额度。</div>
+      <div class="small muted">仅用于你信任的客户端。开启后，此 Key 自报为子 Agent 的 Responses 请求不占网关的并发位置。</div>
     </div>
     <div class="field"><label>每月 Token 上限</label><input id="key-limit" class="input" type="number" min="0" step="1" placeholder="留空表示不限">
       <div class="small muted" style="margin-top:5px">按调用日志统计本自然月的输入 + 输出 token，到了上限返回 429，下月 1 日恢复</div></div>
@@ -1912,14 +1912,13 @@ function accountShares(st) {
   return Object.fromEntries(pool.map((a) => [a.id, (strategy === 'weighted' ? accountWeight(a) : 1) / total]));
 }
 
-// 账号卡片显示正在处理和最近 60 秒的启动次数。
+// 账号卡片分别显示受限流和豁免子流。
 function queueChip(a, settings) {
   const q = a.queue;
-  if (!q || (!q.active && !q.subagentActive && !q.recent)) return '';
+  if (!q || (!q.active && !q.subagentActive)) return '';
   const max = settings.accountMaxConcurrent;
-  const perMinute = settings.accountMaxPerMinute;
-  const title = `受限主流 ${q.active} 路${max ? `（上限 ${max}）` : ''}，豁免子流 ${q.subagentActive || 0} 路，最近 60 秒受限主流启动 ${q.recent} 次${perMinute ? `（上限 ${perMinute}）` : ''}`;
-  return `<span class="chip on" style="flex:none" title="${esc(title)}">主流 ${q.active}${max ? `/${max}` : ''}${q.subagentActive ? ` · 子流 ${q.subagentActive}` : ''}</span>`;
+  const title = `受限流 ${q.active} 路${max ? `（上限 ${max}）` : ''}，豁免子流 ${q.subagentActive || 0} 路`;
+  return `<span class="chip on" style="flex:none" title="${esc(title)}">受限流 ${q.active}${max ? `/${max}` : ''}${q.subagentActive ? ` · 子流 ${q.subagentActive}` : ''}</span>`;
 }
 
 const fastCheckBusy = new Set();
@@ -2016,9 +2015,8 @@ function renderAccounts() {
     ? `停用的账号不参与；${st.settings.autoDisableOnQuota ? '' : '额度用满的账号在还有其他账号可用时暂时跳过；'}没有可轮询的账号时用「默认」账号。`
     : '当前账号停用、额度用完自动停用或登录失效时，请求改用其他可用账号。'}`;
   $('set-auto-disable').checked = Boolean(st.settings.autoDisableOnQuota);
-  for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
-    if (document.activeElement !== $(id)) $(id).value = st.settings[key] ?? 0;
-  }
+  const concurrentInput = $('set-max-concurrent');
+  if (document.activeElement !== concurrentInput) concurrentInput.value = st.settings.accountMaxConcurrent ?? 0;
   const shares = accountShares(st);
   const cards = st.accounts.map((a) => {
     const quotaBusy = quotaResetBusy.has(a.id);
@@ -2169,19 +2167,17 @@ $('set-auto-disable').addEventListener('change', run(async (e) => {
   toast(e.target.checked ? '已开启：额度用完自动停用' : '已关闭：额度用完自动停用');
   await refreshState();
 }));
-for (const [id, key] of [['set-max-concurrent', 'accountMaxConcurrent'], ['set-max-per-minute', 'accountMaxPerMinute']]) {
-  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
-  $(id).addEventListener('change', run(async (e) => {
-    const value = Number(e.target.value);
-    if (e.target.value.trim() === '' || !Number.isInteger(value) || value < 0 || value > 100) {
-      e.target.value = S.state.settings[key] ?? 0;
-      return toast('请填 0–100 的整数，0 表示不限', 'error');
-    }
-    await api('PUT', '/settings', { [key]: value });
-    toast('账号限额已保存');
-    await refreshState();
-  }));
-}
+$('set-max-concurrent').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+$('set-max-concurrent').addEventListener('change', run(async (e) => {
+  const value = Number(e.target.value);
+  if (e.target.value.trim() === '' || !Number.isInteger(value) || value < 0 || value > 100) {
+    e.target.value = S.state.settings.accountMaxConcurrent ?? 0;
+    return toast('请填 0–100 的整数，0 表示不限', 'error');
+  }
+  await api('PUT', '/settings', { accountMaxConcurrent: value });
+  toast('账号限额已保存');
+  await refreshState();
+}));
 
 // ============ API 上游 ============
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';

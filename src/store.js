@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_PER_MINUTE } from './codex/accountQueue.js';
+import { DEFAULT_MAX_CONCURRENT } from './codex/accountQueue.js';
 import { DEFAULT_USER_AGENT_MODE, USER_AGENT_MODES } from './codex/clientCompatibility.js';
 import { DEFAULT_SERVICE_TIER_MODE } from './codex/serviceTier.js';
 
@@ -26,9 +26,8 @@ const DEFAULT_SETTINGS = {
   quotaTimeZone: 'Asia/Shanghai',
   // 账号 Codex 额度用满时自动停用（不再分配请求，「当前账号」策略下改用其他账号），额度重置后自动恢复
   autoDisableOnQuota: true,
-  // 账号限额：每个账号同时处理的请求数、任意 60 秒内开始的请求数上限，0 不限；超出时立即拒绝（见 codex/accountQueue.js）
+  // 账号并发：0 不限；满载时立即走兜底，不排队。
   accountMaxConcurrent: DEFAULT_MAX_CONCURRENT,
-  accountMaxPerMinute: DEFAULT_MAX_PER_MINUTE,
   // Codex 速度档位：client 跟随客户端，fast 强制 Fast，standard 强制标准速度。
   serviceTierMode: DEFAULT_SERVICE_TIER_MODE,
   // 原生 Responses 转发的 User-Agent：always 统一改成官方桌面版 UA，non_codex 只改写非 Codex 客户端（见 codex/clientCompatibility.js）
